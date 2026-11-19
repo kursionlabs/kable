@@ -1,4 +1,4 @@
-use async::{Outcome, Sleep!, run_sequence, sequence, sleep};
+use async::{Outcome, PlanOutput, Sleep!, run_sequence, sequence, sleep};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
 use std::option::Option;
@@ -65,16 +65,15 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
 }
 
 fn main() -> i32 {
-    let suffix = 3u32;
-    let plan = sequence(sleep(0u64, 4u32)).then(|outcome| match outcome {
-        Outcome::Ready(value) => Option::Some.(sleep(0u64, value + suffix)),
-        Outcome::Cancelled(value) => trap(),
-        Outcome::Failed(value, code) => trap(),
-    });
+    let plan = sequence(sleep(0u64, 7u32).map(|outcome| outcome))
+        .then(|outcome| Option::Some.(sleep(0u64, outcome)));
     let result = run_sequence(plan, Option::None);
     match result {
         Option::Some(outcome) => match outcome {
-            Outcome::Ready(value) => { if value != 7u32 { trap(); } },
+            Outcome::Ready(previous) => match previous {
+                Outcome::Ready(value) => { if value != 7u32 { trap(); } },
+                _ => trap(),
+            },
             _ => trap(),
         },
         Option::None => trap(),

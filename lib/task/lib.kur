@@ -14,7 +14,11 @@ trait PlanDriver {
     fn next(&scope: Driver) -> i32;
 }
 
-/// The plan and its driver determine the outcome type.
+/// The outcome a plan exposes independently of where it runs.
+forall Task -> Output.
+trait PlanOutput {}
+
+/// Stages and collects a plan on a driver that supports it.
 forall Task, Driver -> Output.
 trait Plan {
     fn stage(&task: Task, &scope: Driver) -> usize;
@@ -66,6 +70,15 @@ exposed enum JoinOutcome {
     Cancelled(A, B),
     Failed(A, B, i32),
 }
+
+forall T.
+instance PlanOutput[Sleep![T] -> Outcome[T]] {}
+
+forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
+instance PlanOutput[Select![First, Second] -> RaceOutcome[A, B]] {}
+
+forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
+instance PlanOutput[Join![First, Second] -> JoinOutcome[A, B]] {}
 
 forall T, Driver where PlanDriver[Driver].
 instance Plan[Sleep![T], Driver -> Outcome[T]] {
@@ -148,7 +161,7 @@ instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
     }
 }
 
-use package::sequence::{Chain, Clock, Continuation!, HostedChain, Sequence!, StageDriver, StageHost,
+use package::sequence::{Chain, Clock, Continuation!, HostedChain, Sequence!, SequenceOutput, StageDriver, StageHost,
     continuation, drive_sequence, host_sequence, remaining_budget, sequence};
 
 export Chain;
@@ -156,6 +169,7 @@ export Clock;
 export Continuation!;
 export HostedChain;
 export Sequence!;
+export SequenceOutput;
 export StageDriver;
 export StageHost;
 export continuation;
@@ -169,9 +183,27 @@ struct Map! { task: Task, transform: closure[Env](Input) -> Output }
 
 /// Transforms the outcome after the scope joins. The closure runs once,
 /// including for a cancelled or failed outcome, and may own captured values.
-forall Task, Input, Output, Env.
+forall Task, Input, Output, Env where PlanOutput[Task -> Input].
 fn map(task: Task, transform: closure[Env](Input) -> Output) -> Map![Task, Input, Output, Env] {
     Map!.{ task, transform }
+}
+
+forall Task, Input, Output, Env where PlanOutput[Task -> Input].
+instance PlanOutput[Map![Task, Input, Output, Env] -> Output] {}
+
+forall Task, Input where PlanOutput[Task -> Input].
+impl Task {
+    /// Transforms the outcome once after this plan has joined.
+    forall Env, Mapped.
+    fn map(self, transform: closure[Env](Input) -> Mapped) -> Map![Task, Input, Mapped, Env] {
+        map(self, transform)
+    }
+
+    /// Gives this plan a local deadline in milliseconds.
+    fn within(self, ms: u64)
+        -> Map![Select![Sleep![()], Task], RaceOutcome[Outcome[()], Input], WithinOutcome[Input], ()] {
+        within(ms, self)
+    }
 }
 
 forall Task, Input, Output, Env, Driver where Plan[Task, Driver -> Input].
@@ -210,14 +242,6 @@ fn sleep_value(outcome: Outcome[T]) -> T {
     }
 }
 
-forall Task.
-struct Within! { selection: Select![Sleep![()], Task] }
-
-/// Races a plan against a local timer. The outcome includes the inner
-/// plan's result after it and the timer have joined.
-forall Task.
-fn within(ms: u64, task: Task) -> Within![Task] { Within!.{ selection: select(sleep(ms, ()), task) } }
-
 forall Output.
 exposed enum WithinOutcome {
     Completed(Output),
@@ -226,25 +250,14 @@ exposed enum WithinOutcome {
     Failed(Output, i32),
 }
 
-forall Task, Output, Driver where PlanDriver[Driver], Plan[Task, Driver -> Output].
-instance Plan[Within![Task], Driver -> WithinOutcome[Output]] {
-    fn stage(&task: Within![Task], &scope: Driver) -> usize {
-        let { selection: { first, second } } = task;
-        let id = stage_pair[Sleep![()], Task, Outcome[()], Output, Driver](
-            &first, &second, &scope, Branch::Select);
-        task = Within!.{ selection: select(first, second) };
-        id
-    }
-
-    fn collect(task: Within![Task], &scope: Driver) -> WithinOutcome[Output] {
-        let { selection: { first, second } } = task;
-        let (timer, outcome, code) = collect_pair[Sleep![()], Task, Outcome[()], Output, Driver](
-            first, second, &scope);
-        match race_outcome(timer, outcome, code) {
-            RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
-            RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),
-            RaceOutcome::Cancelled(timer, outcome) => WithinOutcome::Cancelled.(outcome),
-            RaceOutcome::Failed(timer, outcome, code) => WithinOutcome::Failed.(outcome, code),
-        }
-    }
+/// Races a plan against a local timer and returns its outcome after both join.
+forall Task, Output where PlanOutput[Task -> Output].
+fn within(ms: u64, task: Task)
+    -> Map![Select![Sleep![()], Task], RaceOutcome[Outcome[()], Output], WithinOutcome[Output], ()] {
+    map(select(sleep(ms, ()), task), |result| match result {
+        RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
+        RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),
+        RaceOutcome::Cancelled(timer, outcome) => WithinOutcome::Cancelled.(outcome),
+        RaceOutcome::Failed(timer, outcome, code) => WithinOutcome::Failed.(outcome, code),
+    })
 }

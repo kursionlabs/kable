@@ -7,10 +7,11 @@ use std::bytes::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::{Option, Result};
 use std::ptr::is_null;
-use task::{Continuation!, HostedChain, Plan, Sequence!, StageHost, continuation, host_sequence};
+use task::{Continuation!, HostedChain, Plan, PlanOutput, Sequence!, StageHost, continuation, host_sequence};
 
-// Callers import Plan to bring the defer extension method into scope.
+// Callers import these traits to bring the plan extension methods into scope.
 export Plan;
+export PlanOutput;
 
 extern "C" fn kable_bind(port: u16,
     callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,
@@ -47,7 +48,7 @@ struct DeferredPlan! {
 
 /// Runs the plan in the request's scope. The continuation consumes its
 /// outcome once, including on cancellation, so it can reclaim owned values.
-forall Task, Output, Env where Plan[Task, Scope! -> Output].
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn defer(task: Task, reply: closure[Env](Output) -> Response!) -> Action! {
     defer_plan(task, |outcome: Output, active: bool| {
         let response = reply(outcome);
@@ -60,7 +61,7 @@ fn defer(task: Task, reply: closure[Env](Output) -> Response!) -> Action! {
     })
 }
 
-forall Task, Output where Plan[Task, Scope! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 impl Task {
     /// Defers a reply until this plan has joined within the request scope.
     forall Env.
@@ -71,7 +72,7 @@ impl Task {
 
 struct RequestHost {}
 
-forall Task, Output where Plan[Task, Scope! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 instance StageHost[Task, RequestHost, Action! -> Output] {
     fn schedule(task: Task, next: Continuation![Output, Action!]) -> Action! {
         defer_plan(task, |outcome: Output, active: bool| {
@@ -104,7 +105,7 @@ impl Sequence![Stages] {
     }
 }
 
-forall Task, Output, Env where Plan[Task, Scope! -> Output].
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn defer_plan(task: Task, finish: closure[Env](Output, bool) -> Option[Action!]) -> Action! {
     let prepared = prepare(task);
     let (scope, root) = unsafe &prepared.native();
@@ -123,7 +124,7 @@ unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
     result
 }
 
-forall Task, Output, Env where Plan[Task, Scope! -> Output].
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 unsafe fn finish_plan(raw: *u8, client: *u8, ready: u8, head: u8, http10: u8) -> i32 {
     let { prepared, finish } = unsafe *(unsafe (raw as *DeferredPlan![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));

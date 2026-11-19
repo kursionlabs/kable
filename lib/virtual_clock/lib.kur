@@ -2,12 +2,13 @@
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::process::trap;
-use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, RaceOutcome, ScopeState!, Sleep!, WithinOutcome,
+use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, ScopeState!, Sleep!, WithinOutcome,
     join, map, race, select, sleep, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export JoinOutcome;
 export Outcome;
+export PlanOutput;
 export RaceOutcome;
 export Sleep!;
 export join;
@@ -129,13 +130,13 @@ fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) -> u64 {
 
 fn ignore_timer(timer: Option[u64]) {}
 
-forall Task, Output where Plan[Task, Virtual! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn drive(task: Task, deadline: Option[u64]) -> Output {
     let (result, elapsed) = drive_timed(task, deadline);
     result
 }
 
-forall Task, Output where Plan[Task, Virtual! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[u64]) -> (Output, u64) {
     var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), cursor: 0usize };
     let root = Plan[Task, Virtual! -> Output]::stage(&task, &scope);
@@ -147,10 +148,10 @@ fn drive_timed(task: Task, deadline: Option[u64]) -> (Output, u64) {
     (result, elapsed)
 }
 
-forall Task, Output where Plan[Task, Virtual! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn run(task: Task) -> Output { drive(task, Option::None) }
 
-forall Task, Output where Plan[Task, Virtual! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn timeout(ms: u64, task: Task) -> Output { drive(task, Option::Some.(ms)) }
 
 struct SequenceClock! { time: u64 }
@@ -163,7 +164,7 @@ instance Clock[SequenceClock!] {
     }
 }
 
-forall Task, Output where Plan[Task, Virtual! -> Output].
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 instance StageDriver[Task, SequenceClock! -> Output] {
     fn drive(task: Task, &engine: SequenceClock!, deadline: Option[u64]) -> Output {
         let remaining = remaining_budget(&engine, deadline);

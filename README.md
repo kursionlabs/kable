@@ -51,7 +51,7 @@ by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
 Handlers run on the event loop and should return promptly. A handler bound with
-`Server!::bind_async` can import `server::Plan` and use
+`Server!::bind_async` can import `server::{Plan, PlanOutput}` and use
 `plan.defer(continuation)` to run a timer, file read, or joined plan on the
 listener’s loop. The continuation can capture
 owned request values and runs once after the plan joins, including on
@@ -90,10 +90,10 @@ cancellation, and exposes results after all operations have retired.
 event. It builds and links without libuv. The integration suite builds
 the same timer program against both drivers and compares its outcomes.
 
-The runner determines a result type from the plan and its driver through
-`Plan[Task, Driver -> Output]`. For example, `run(sleep(0u64, 7u32))`
-infers `Outcome[u32]`, and HTTP’s `.defer` infers the closure’s input from
-the submitted plan.
+`PlanOutput[Task -> Output]` determines the outcome type from the plan
+alone. The runner uses `Plan[Task, Driver -> Output]` to check whether its
+driver can run the plan and return that outcome. A file plan has a known
+outcome even when the selected driver cannot execute file reads.
 
 Build a wait with `sleep(ms, value)` and drive it with the chosen engine's
 `run`. `race` runs two waits in one scope and cancels the loser when the first
@@ -120,7 +120,8 @@ nested waits.
 ### Explicit sequencing
 
 `sequence(first).then(resume)` builds a chain of adapters in the style
-of Kursal’s iterator chaining. The closure consumes the previous outcome
+of Kursal’s iterator chaining. The previous plan determines the closure’s
+input type. The closure consumes the previous outcome
 and returns `Some(next)` to start another stage or `None` to stop. Both
 the closure captures and the previous outcome must be copyable because
 the handoff can be skipped.
@@ -147,9 +148,9 @@ timer won, and `Cancelled` means the enclosing scope cancelled the plan.
 Every branch returns the inner outcome after cleanup so the caller can
 reclaim owned values. A local timeout leaves unrelated sibling plans running.
 
-Import `async::Plan` for libuv’s `plan.map(transform)` and
-`plan.within(ms)` methods. `server::Plan` brings the same trait into scope
-in HTTP handlers. The free functions work with either driver.
+Import `PlanOutput` from the task package, either driver, or the HTTP server
+to use `plan.map(transform)` and `plan.within(ms)`. The methods and free
+functions build the same portable plans.
 
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain

@@ -1,6 +1,6 @@
 use async::{Outcome, sleep};
 use http::{Method, Request!, Response!};
-use server::{Action!, Plan, Server!};
+use server::{Action!, Plan, PlanOutput, Server!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};

@@ -563,6 +563,44 @@ path="{ROOT / 'lib/virtual_clock'}"
     return build(str(virtual_package), directory / f"virtual-{name}")
 
 
+def check_virtual_file_rejected(directory):
+    package = directory / "virtual-file-source"
+    package.mkdir()
+    (package / "kur.toml").write_text(f"""
+[package]
+name="virtual_file_test"
+source_root="."
+kind="executable"
+entry="main"
+
+[dependencies.std]
+path="{(ROOT / '../kursal/lib/std').resolve()}"
+
+[dependencies.async]
+path="{ROOT / 'lib/async'}"
+
+[dependencies.virtual_clock]
+path="{ROOT / 'lib/virtual_clock'}"
+""")
+    (package / "lib.kur").write_text("""
+use async::{PlanOutput, read_file};
+use std::slice::StaticRead;
+
+fn main() {
+    let access = StaticRead::new();
+    let file = read_file(&access, "README.md", 65_536usize).map(|outcome| outcome);
+    let result = virtual_clock::run(file);
+}
+""")
+    result = subprocess.run(
+        [str(ROOT / "../kursal/bin/kursal"), "build", str(package), "-o", str(directory / "virtual-file")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0 and "no instance of task::Plan[ReadFile!, Virtual!, FileOutcome!]" in result.stderr, result
+
+
 def check_timer_engines(directory):
     native = build("examples/timer-race", directory / "timer-race")
     virtual = build_virtual_example("timer-race", directory)
@@ -588,6 +626,7 @@ def check_timer_engines(directory):
     assert b"Deadline reclaimed the first result and the pending state" in expected
     assert output(virtual_chain) == expected
     print("Kable libuv and virtual sequence checks passed")
+    check_virtual_file_rejected(directory)
 
 
 if __name__ == "__main__":
