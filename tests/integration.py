@@ -988,7 +988,7 @@ fn main() {
         text=True,
     )
     assert result.returncode != 0, result
-    assert "no instance of" in result.stderr and "Plan[ReadFile!, Virtual!, FileOutcome!]" in result.stderr, result
+    assert "no instance of" in result.stderr and "Plan[ReadFile!, Virtual!, Completion[Buffer!]]" in result.stderr, result
 
 
 def check_timer_engines(directory):

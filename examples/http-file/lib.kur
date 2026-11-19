@@ -1,4 +1,4 @@
-use async::{FileOutcome!, WithinOutcome, read_file};
+use async::{Completion, WithinOutcome, read_file};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
 use server::{Action!, PlanOutput, RequestState, Server!};
@@ -45,30 +45,30 @@ fn timed_reply(result: WithinOutcome[Output], state: RequestState,
     }
 }
 
-fn file_response(outcome: FileOutcome!) -> Response! {
+fn file_response(outcome: Completion[Buffer!]) -> Response! {
     match outcome {
-        FileOutcome!::Read(bytes) => Response!::ok(bytes),
-        FileOutcome!::Cancelled => {
+        Completion::Ready(bytes) => Response!::ok(bytes),
+        Completion::Cancelled => {
             eprint_buffer(f"File request cancelled.\n");
             Response!::rejected(408)
         },
-        FileOutcome!::Failed(code) => Response!::rejected(500),
+        Completion::Failed(code) => Response!::rejected(500),
     }
 }
 
-fn discard_file(outcome: FileOutcome!) {
+fn discard_file(outcome: Completion[Buffer!]) {
     match outcome {
-        FileOutcome!::Read(bytes) => bytes.destroy(),
-        FileOutcome!::Cancelled => (),
-        FileOutcome!::Failed(code) => (),
+        Completion::Ready(bytes) => bytes.destroy(),
+        Completion::Cancelled => (),
+        Completion::Failed(code) => (),
     }
 }
 
-fn append_file(first: Buffer!, second: FileOutcome!) -> Response! {
+fn append_file(first: Buffer!, second: Completion[Buffer!]) -> Response! {
     match second {
-        FileOutcome!::Read(bytes) => Response!::ok(first.push_buffer(bytes)),
-        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408) },
-        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500) },
+        Completion::Ready(bytes) => Response!::ok(first.push_buffer(bytes)),
+        Completion::Cancelled => { first.destroy(); Response!::rejected(408) },
+        Completion::Failed(code) => { first.destroy(); Response!::rejected(500) },
     }
 }
 

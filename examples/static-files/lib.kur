@@ -1,4 +1,4 @@
-use async::{OpenOutcome!, WithinOutcome, open_file_beneath_cwd};
+use async::{Completion, OpenedFile!, WithinOutcome, open_file_beneath_cwd};
 use http::{Method, Request!, Response!};
 use server::{Action!, PlanOutput, RequestState, Server!, file_reply};
 use std::bytes::buffer::Buffer!;
@@ -36,7 +36,7 @@ fn serve(request: Request!) -> Action! {
     file.within(OPEN_DEADLINE).defer(|outcome, state| file_response(content_type, outcome, state))
 }
 
-fn file_response(content_type: Slice[u8, 'static], result: WithinOutcome[OpenOutcome!],
+fn file_response(content_type: Slice[u8, 'static], result: WithinOutcome[Completion[OpenedFile!]],
     state: RequestState) -> Option[Action!] {
     let (outcome, status) = match result {
         WithinOutcome::Completed(outcome) => (outcome, 0u16),
@@ -53,16 +53,16 @@ fn file_response(content_type: Slice[u8, 'static], result: WithinOutcome[OpenOut
         return Option::Some.(Response!::rejected(status).reply());
     }
     Option::Some.(match outcome {
-        OpenOutcome!::Opened(file) => file_reply(file, content_type),
-        OpenOutcome!::Cancelled => Response!::rejected(408).reply(),
-        OpenOutcome!::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)).reply(),
+        Completion::Ready(file) => file_reply(file, content_type),
+        Completion::Cancelled => Response!::rejected(408).reply(),
+        Completion::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)).reply(),
     })
 }
 
-fn discard_file(outcome: OpenOutcome!) {
+fn discard_file(outcome: Completion[OpenedFile!]) {
     match outcome {
-        OpenOutcome!::Opened(file) => file.close(),
-        OpenOutcome!::Cancelled | OpenOutcome!::Failed => (),
+        Completion::Ready(file) => file.close(),
+        Completion::Cancelled | Completion::Failed => (),
     }
 }
 

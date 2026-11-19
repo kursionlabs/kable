@@ -1,37 +1,38 @@
-use async::{FileOutcome!, JoinOutcome, join, read_file, run_with_deadline};
+use async::{Completion, JoinOutcome, join, read_file, run_with_deadline};
+use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Option;
 use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::StaticRead;
 
-fn discard(result: FileOutcome!) {
+fn discard(result: Completion[Buffer!]) {
     match result {
-        FileOutcome!::Read(bytes) => bytes.destroy(),
-        FileOutcome!::Cancelled => (),
-        FileOutcome!::Failed(code) => (),
+        Completion::Ready(bytes) => bytes.destroy(),
+        Completion::Cancelled => (),
+        Completion::Failed(code) => (),
     }
 }
 
-fn print_pair(left: FileOutcome!, right: FileOutcome!) -> i32 {
+fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
     match left {
-        FileOutcome!::Read(first) => match right {
-            FileOutcome!::Read(second) => {
+        Completion::Ready(first) => match right {
+            Completion::Ready(second) => {
                 if print_buffer(first.push_buffer(second)).is_err() { 1i32 } else { 0i32 }
             },
-            FileOutcome!::Failed(code) => {
+            Completion::Failed(code) => {
                 first.destroy();
                 eprint_buffer(f"async-read: second file failed (libuv error {code})\n");
                 1i32
             },
-            FileOutcome!::Cancelled => { first.destroy(); 1i32 },
+            Completion::Cancelled => { first.destroy(); 1i32 },
         },
-        FileOutcome!::Failed(code) => {
+        Completion::Failed(code) => {
             discard(right);
             eprint_buffer(f"async-read: first file failed (libuv error {code})\n");
             1i32
         },
-        FileOutcome!::Cancelled => { discard(right); 1i32 },
+        Completion::Cancelled => { discard(right); 1i32 },
     }
 }
 

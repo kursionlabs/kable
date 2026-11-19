@@ -9,6 +9,14 @@ use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 forall Task -> Output.
 trait PlanOutput {}
 
+/// The value an operation produces on success, or the reason it stopped.
+forall T.
+exposed enum Completion {
+    Ready(T),
+    Cancelled,
+    Failed(i32),
+}
+
 /// A source that builds a one-shot plan for its next item.
 /// The plan returns (Source, StreamOutcome![Item]) after joining.
 forall Source -> Next.

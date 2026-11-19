@@ -1,5 +1,5 @@
 //! Chooses a footer from the first file's contents and appends it.
-use async::{FileOutcome!, read_file};
+use async::{Completion, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file};
 use server::{Action!, PlanOutput, RequestState};
@@ -15,7 +15,7 @@ fn serve() -> Action! {
     first.defer(|outcome, state| read_footer(outcome, state))
 }
 
-fn read_footer(outcome: FileOutcome!, state: RequestState) -> Option[Action!] {
+fn read_footer(outcome: Completion[Buffer!], state: RequestState) -> Option[Action!] {
     match state {
         RequestState::Cancelled => {
             discard_file(outcome);
@@ -25,17 +25,17 @@ fn read_footer(outcome: FileOutcome!, state: RequestState) -> Option[Action!] {
         RequestState::Active => (),
     }
     match outcome {
-        FileOutcome!::Read(first) => {
+        Completion::Ready(first) => {
             let path = footer_path(&first);
             let access = StaticRead::new();
             let footer = read_file(&access, path, FILE_LIMIT);
             Option::Some.(footer.defer(|outcome, state| finish_footer(first, outcome, state)))
         },
-        FileOutcome!::Cancelled | FileOutcome!::Failed => Option::Some.(Response!::rejected(500).reply()),
+        Completion::Cancelled | Completion::Failed => Option::Some.(Response!::rejected(500).reply()),
     }
 }
 
-fn finish_footer(first: Buffer!, footer: FileOutcome!, state: RequestState) -> Option[Action!] {
+fn finish_footer(first: Buffer!, footer: Completion[Buffer!], state: RequestState) -> Option[Action!] {
     match state {
         RequestState::Active => Option::Some.(append_file(first, footer).reply()),
         RequestState::Cancelled => {

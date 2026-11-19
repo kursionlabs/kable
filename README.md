@@ -254,8 +254,10 @@ bin/task-chain
 
 ### Bounded file reads
 
-`read_file(&access, path, limit)` plans a regular-file read. `run` or `run_with_deadline`
-returns an owned `Buffer!`, cancellation, or a libuv error. The work runs
+`read_file(&access, path, limit)` plans a regular-file read. After the plan
+joins, match `Completion::Ready(bytes)`, `Completion::Cancelled`, or
+`Completion::Failed(code)`. The same cases apply to `open_file` and
+`create_file`, whose ready values are owned file handles. The work runs
 on libuv's worker pool. Cancellation skips queued work when possible and
 asks a running worker to stop between reads. The scope waits for the worker
 to return and close its descriptor before handing back the result.

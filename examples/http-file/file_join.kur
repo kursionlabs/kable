@@ -1,8 +1,9 @@
 //! Reads two independent files under one local deadline.
-use async::{FileOutcome!, JoinOutcome, join, read_file};
+use async::{Completion, JoinOutcome, join, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file, timed_reply};
 use server::{Action!, PlanOutput};
+use std::bytes::buffer::Buffer!;
 use std::slice::StaticRead;
 
 fn serve() -> Action! {
@@ -15,7 +16,7 @@ fn serve() -> Action! {
     })
 }
 
-fn joined_response(files: JoinOutcome[FileOutcome!, FileOutcome!]) -> Response! {
+fn joined_response(files: JoinOutcome[Completion[Buffer!], Completion[Buffer!]]) -> Response! {
     match files {
         JoinOutcome::Ready(first, second) => file_response(first, second),
         JoinOutcome::Cancelled(first, second) => reject_files(first, second, 408),
@@ -23,15 +24,15 @@ fn joined_response(files: JoinOutcome[FileOutcome!, FileOutcome!]) -> Response! 
     }
 }
 
-fn file_response(first: FileOutcome!, second: FileOutcome!) -> Response! {
+fn file_response(first: Completion[Buffer!], second: Completion[Buffer!]) -> Response! {
     match first {
-        FileOutcome!::Read(left) => append_file(left, second),
-        FileOutcome!::Cancelled => { discard_file(second); Response!::rejected(408) },
-        FileOutcome!::Failed(code) => { discard_file(second); Response!::rejected(500) },
+        Completion::Ready(left) => append_file(left, second),
+        Completion::Cancelled => { discard_file(second); Response!::rejected(408) },
+        Completion::Failed(code) => { discard_file(second); Response!::rejected(500) },
     }
 }
 
-fn discard_join(files: JoinOutcome[FileOutcome!, FileOutcome!]) {
+fn discard_join(files: JoinOutcome[Completion[Buffer!], Completion[Buffer!]]) {
     let (first, second) = match files {
         JoinOutcome::Ready(first, second) => (first, second),
         JoinOutcome::Cancelled(first, second) => (first, second),
@@ -41,7 +42,7 @@ fn discard_join(files: JoinOutcome[FileOutcome!, FileOutcome!]) {
     discard_file(second);
 }
 
-fn reject_files(first: FileOutcome!, second: FileOutcome!, status: u16) -> Response! {
+fn reject_files(first: Completion[Buffer!], second: Completion[Buffer!], status: u16) -> Response! {
     discard_file(first);
     discard_file(second);
     Response!::rejected(status)

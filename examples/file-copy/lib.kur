@@ -1,4 +1,4 @@
-use async::{CreateOutcome!, FileChunks!, FileWriteOutcome, OpenOutcome!, OutputFile!, Stream, StreamOutcome!,
+use async::{Completion, FileChunks!, FileWriteOutcome, OutputFile!, Stream, StreamOutcome!,
     create_file, open_file, run, run_with_deadline};
 use std::io::eprint_buffer;
 use std::option::{Option, Result};
@@ -61,18 +61,18 @@ fn main(args: Args) -> i32 {
     };
 
     let input = match run(open_file(&access, source)) {
-        OpenOutcome!::Opened(file) => file,
-        OpenOutcome!::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
-        OpenOutcome!::Failed(code) => { eprint_buffer(f"file-copy: opening source failed ({code})\n"); return 1; },
+        Completion::Ready(file) => file,
+        Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
+        Completion::Failed(code) => { eprint_buffer(f"file-copy: opening source failed ({code})\n"); return 1; },
     };
     let destination = match run(create_file(&access, destination)) {
-        CreateOutcome!::Created(file) => file,
-        CreateOutcome!::Cancelled => {
+        Completion::Ready(file) => file,
+        Completion::Cancelled => {
             input.close();
             eprint_buffer(f"file-copy: destination creation cancelled\n");
             return 1;
         },
-        CreateOutcome!::Failed(code) => {
+        Completion::Failed(code) => {
             input.close();
             eprint_buffer(f"file-copy: creating destination failed ({code})\n");
             return 1;

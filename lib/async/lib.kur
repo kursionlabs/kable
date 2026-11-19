@@ -6,11 +6,12 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
-use task::{Join!, JoinOutcome, Outcome, PlanOutput, RaceOutcome, Select!, Sleep!, Stream, StreamOutcome!, WithinOutcome,
+use task::{Completion, Join!, JoinOutcome, Outcome, PlanOutput, RaceOutcome, Select!, Sleep!, Stream, StreamOutcome!, WithinOutcome,
     join, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
 
+export Completion;
 export Join!;
 export host;
 export JoinOutcome;
@@ -60,12 +61,6 @@ fn read_file_beneath_cwd(&cx: C, path: S, limit: usize) -> ReadFile! {
     ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, beneath: true, id: Option::None }
 }
 
-exposed enum FileOutcome! {
-    Read(Buffer!),
-    Cancelled,
-    Failed(i32),
-}
-
 struct OpenFile! { path: Buffer!, beneath: bool, id: Option[usize] }
 struct OpenedFile! { fd: i32, length: u64 }
 struct CreateFile! { path: Buffer!, id: Option[usize] }
@@ -76,18 +71,6 @@ struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
 struct NextFileChunk! { read: ReadChunk!, remaining: u64 }
 
 const FILE_CHUNK: u64 = 64 * 1024;
-
-exposed enum OpenOutcome! {
-    Opened(OpenedFile!),
-    Cancelled,
-    Failed(i32),
-}
-
-exposed enum CreateOutcome! {
-    Created(OutputFile!),
-    Cancelled,
-    Failed(i32),
-}
 
 /// Each variant records the bytes accepted by the file before the plan joined.
 exposed enum FileWriteOutcome {
@@ -302,16 +285,16 @@ impl Scope! {
         registered(id)
     }
 
-    fn file_result(&self, id: Option[usize]) -> FileOutcome! {
+    fn file_result(&self, id: Option[usize]) -> Completion[Buffer!] {
         let { raw } = self;
         let data = unsafe alloca[*u8]();
         let size = unsafe alloca[usize]();
         let code = unsafe kable_scope_file_result(raw, id.unwrap_or(usize::MAX), data, size);
         self = Scope!.{ raw };
-        if code < 0i32 { return FileOutcome!::Failed.(code); }
+        if code < 0i32 { return Completion::Failed.(code); }
         let bytes = unsafe *data;
         let len = unsafe *size;
-        FileOutcome!::Read.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+        Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
     }
 
     fn write_result(&self, id: Option[usize]) -> FileWriteOutcome {
@@ -332,12 +315,19 @@ impl Scope! {
         }
     }
 
-    fn take_descriptor(&self, id: Option[usize]) -> Result[(i32, u64), i32] {
+    forall File, Env where Copy[Env].
+    fn collect_descriptor(&self, id: Option[usize], wrap: closure[Env](i32, u64) -> File) -> Completion[File] {
+        match &self.result(id) {
+            Resolution::Completed => (),
+            Resolution::Cancelled => return Completion::Cancelled,
+            Resolution::Failed(code) => return Completion::Failed.(code),
+            Resolution::First | Resolution::Second => return Completion::Failed.(-1),
+        };
         let { raw } = self;
         let size = unsafe alloca[u64]();
         let fd = unsafe kable_scope_take_file(raw, id.unwrap_or(usize::MAX), size);
         self = Scope!.{ raw };
-        if fd < 0 { Result::Err.(fd) } else { Result::Ok.((fd, unsafe *size)) }
+        if fd < 0 { Completion::Failed.(fd) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
     }
 
     fn run(&self, root: Option[usize], deadline: Option[u64]) {
@@ -367,18 +357,18 @@ impl Scope! {
     }
 }
 
-fn collect_file(&scope: Scope!, id: Option[usize]) -> FileOutcome! {
+fn collect_file(&scope: Scope!, id: Option[usize]) -> Completion[Buffer!] {
     match &scope.result(id) {
         Resolution::Completed => &scope.file_result(id),
-        Resolution::Cancelled => FileOutcome!::Cancelled,
-        Resolution::Failed(code) => FileOutcome!::Failed.(code),
-        Resolution::First | Resolution::Second => FileOutcome!::Failed.(-1i32),
+        Resolution::Cancelled => Completion::Cancelled,
+        Resolution::Failed(code) => Completion::Failed.(code),
+        Resolution::First | Resolution::Second => Completion::Failed.(-1i32),
     }
 }
 
-instance PlanOutput[ReadFile! -> FileOutcome!] {}
+instance PlanOutput[ReadFile! -> Completion[Buffer!]] {}
 
-instance Plan[ReadFile!, Scope! -> FileOutcome!] {
+instance Plan[ReadFile!, Scope! -> Completion[Buffer!]] {
     fn stage(&task: ReadFile!, &scope: Scope!) -> Option[usize] {
         let { path, limit, beneath, id } = task;
         let id = &scope.add_file(&path, limit, if beneath { 1 } else { 0 });
@@ -386,16 +376,16 @@ instance Plan[ReadFile!, Scope! -> FileOutcome!] {
         id
     }
 
-    fn collect(task: ReadFile!, &scope: Scope!) -> FileOutcome! {
+    fn collect(task: ReadFile!, &scope: Scope!) -> Completion[Buffer!] {
         let { path, limit, beneath, id } = task;
         path.destroy();
         collect_file(&scope, id)
     }
 }
 
-instance PlanOutput[ReadChunk! -> (OpenedFile!, FileOutcome!)] {}
+instance PlanOutput[ReadChunk! -> (OpenedFile!, Completion[Buffer!])] {}
 
-instance Plan[ReadChunk!, Scope! -> (OpenedFile!, FileOutcome!)] {
+instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     fn stage(&task: ReadChunk!, &scope: Scope!) -> Option[usize] {
         let { file, offset, limit, id } = task;
         let id = &scope.add_chunk(&file, offset, limit);
@@ -403,7 +393,7 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, FileOutcome!)] {
         id
     }
 
-    fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, FileOutcome!) {
+    fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
         let { file, offset, limit, id } = task;
         (file, collect_file(&scope, id))
     }
@@ -414,7 +404,7 @@ instance PlanOutput[NextFileChunk! -> (FileChunks!, StreamOutcome![Buffer!])] {}
 instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] {
     fn stage(&task: NextFileChunk!, &scope: Scope!) -> Option[usize] {
         let { read, remaining } = task;
-        let id = Plan[ReadChunk!, Scope! -> (OpenedFile!, FileOutcome!)]::stage(&read, &scope);
+        let id = Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])]::stage(&read, &scope);
         task = NextFileChunk!.{ read, remaining };
         id
     }
@@ -422,7 +412,7 @@ instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] 
     fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, StreamOutcome![Buffer!]) {
         let { read: { file, offset, limit, id }, remaining } = task;
         let (outcome, count) = match collect_file(&scope, id) {
-            FileOutcome!::Read(bytes) => {
+            Completion::Ready(bytes) => {
                 let count = &bytes.len() as u64;
                 if count == 0 {
                     bytes.destroy();
@@ -431,16 +421,16 @@ instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] 
                     (StreamOutcome!::Item.(bytes), count)
                 }
             },
-            FileOutcome!::Cancelled => (StreamOutcome!::Cancelled, 0),
-            FileOutcome!::Failed(code) => (StreamOutcome!::Failed.(code), 0),
+            Completion::Cancelled => (StreamOutcome!::Cancelled, 0),
+            Completion::Failed(code) => (StreamOutcome!::Failed.(code), 0),
         };
         (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
     }
 }
 
-instance PlanOutput[OpenFile! -> OpenOutcome!] {}
+instance PlanOutput[OpenFile! -> Completion[OpenedFile!]] {}
 
-instance Plan[OpenFile!, Scope! -> OpenOutcome!] {
+instance Plan[OpenFile!, Scope! -> Completion[OpenedFile!]] {
     fn stage(&task: OpenFile!, &scope: Scope!) -> Option[usize] {
         let { path, beneath, id } = task;
         let id = &scope.add_file(&path, 0, if beneath { 2 } else { 3 });
@@ -448,27 +438,16 @@ instance Plan[OpenFile!, Scope! -> OpenOutcome!] {
         id
     }
 
-    fn collect(task: OpenFile!, &scope: Scope!) -> OpenOutcome! {
+    fn collect(task: OpenFile!, &scope: Scope!) -> Completion[OpenedFile!] {
         let { path, beneath, id } = task;
         path.destroy();
-        match &scope.result(id) {
-            Resolution::Completed => match &scope.take_descriptor(id) {
-                Result::Ok(parts) => {
-                    let (fd, length) = parts;
-                    OpenOutcome!::Opened.(OpenedFile!.{ fd, length })
-                },
-                Result::Err(code) => OpenOutcome!::Failed.(code),
-            },
-            Resolution::Cancelled => OpenOutcome!::Cancelled,
-            Resolution::Failed(code) => OpenOutcome!::Failed.(code),
-            Resolution::First | Resolution::Second => OpenOutcome!::Failed.(-1i32),
-        }
+        &scope.collect_descriptor(id, |fd, length| OpenedFile!.{ fd, length })
     }
 }
 
-instance PlanOutput[CreateFile! -> CreateOutcome!] {}
+instance PlanOutput[CreateFile! -> Completion[OutputFile!]] {}
 
-instance Plan[CreateFile!, Scope! -> CreateOutcome!] {
+instance Plan[CreateFile!, Scope! -> Completion[OutputFile!]] {
     fn stage(&task: CreateFile!, &scope: Scope!) -> Option[usize] {
         let { path, id } = task;
         let id = &scope.add_file(&path, 0, 4);
@@ -476,21 +455,10 @@ instance Plan[CreateFile!, Scope! -> CreateOutcome!] {
         id
     }
 
-    fn collect(task: CreateFile!, &scope: Scope!) -> CreateOutcome! {
+    fn collect(task: CreateFile!, &scope: Scope!) -> Completion[OutputFile!] {
         let { path, id } = task;
         path.destroy();
-        match &scope.result(id) {
-            Resolution::Completed => match &scope.take_descriptor(id) {
-                Result::Ok(parts) => {
-                    let (fd, length) = parts;
-                    CreateOutcome!::Created.(OutputFile!.{ fd })
-                },
-                Result::Err(code) => CreateOutcome!::Failed.(code),
-            },
-            Resolution::Cancelled => CreateOutcome!::Cancelled,
-            Resolution::Failed(code) => CreateOutcome!::Failed.(code),
-            Resolution::First | Resolution::Second => CreateOutcome!::Failed.(-1),
-        }
+        &scope.collect_descriptor(id, |fd, length| OutputFile!.{ fd })
     }
 }
 
