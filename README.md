@@ -49,10 +49,13 @@ The server listens on loopback, accepts `GET` and `HEAD`, and serves
 
 Opening the file and checking its length use the worker pool with a two-second
 deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
-each socket write completes. The Kursal transfer loop hands its owned file
-to `file.read_chunk(offset, limit)` and gets it back once the read joins,
-even after cancellation. It closes the file after the final read or when a
-cancelled read joins. `HEAD` uses the file length without reading its body.
+each socket write completes. `file.chunks(offset, length)` creates an
+owned `FileChunks!` stream. `stream.next()` plans one read and returns
+the stream with a chunk, EOF, cancellation, or an error after the read
+joins. Only a nonempty chunk advances the cursor. The server closes the
+stream after the final read or when a cancelled read joins. An early EOF
+ends the response with fewer bytes than its declared length. `HEAD`
+uses the file length without reading its body.
 Each completed write restarts the five-second idle timer, so a transfer can
 continue while writes make progress.
 

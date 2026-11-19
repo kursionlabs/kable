@@ -252,7 +252,9 @@ def check_static_files(command, directory, check_write_timeout=False):
         finally:
             if process.poll() is None:
                 process.kill()
-    check_stream_shutdown(command, root, build_file_gate(directory))
+    library = build_file_gate(directory)
+    check_stream_shutdown(command, root, library)
+    check_stream_truncation(command, root, library)
     print("Kable static file checks passed")
 
 
@@ -310,6 +312,24 @@ def check_stream_shutdown(command, root, library):
                 assert os.write(permit, b"R") == 1
                 assert stream.read() == b"", "the cancelled read sent a chunk"
                 assert process.wait(timeout=5) == 0, process.stderr.read()
+
+
+def check_stream_truncation(command, root, library):
+    path = root / "large.bin"
+    size = path.stat().st_size
+    with gated_file_server([*command, str(root), "0"], root, library, gates=8) as (process, port, started, permit):
+        with connect(port) as client:
+            client.sendall(b"GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            wait_for_held_read(started, b"D")
+            path.write_bytes(b"")
+            assert os.write(permit, b"R") == 1
+            _, status, headers, body = read_response(client)
+            assert status == 200 and int(headers[b"content-length"]) == size and body == b""
+        wait_for_file_release(process, path, 2)
+        assert_response(exchange(port, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                        200, b"<h1>Kable</h1>\n")
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
 
 
 def holds_file(process, path):

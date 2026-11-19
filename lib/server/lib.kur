@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{FileOutcome!, OpenedFile!, Outcome, Scope!, sleep};
+use async::{ChunkOutcome!, FileChunks!, OpenedFile!, Outcome, Scope!, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, Response!, encode_file_headers};
 use std::alloc::heap::HeapAllocator;
@@ -38,7 +38,6 @@ exposed enum Action! {
 
 struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
 
-const FILE_CHUNK: u64 = 64 * 1024;
 const STREAM_IDLE: u64 = 5000;
 
 // The native HTTP host adds RESPONSE_ACTIVE when it can still send a reply.
@@ -163,13 +162,12 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
         return result;
     }
     let connection = unsafe kable_client_connection(client);
-    unsafe write_then_read(connection, headers, file, start, count)
+    unsafe write_then_next(connection, headers, file.chunks(start, count))
 }
 
-unsafe fn write_then_read(connection: *u8, bytes: Buffer!, file: OpenedFile!, offset: u64, remaining: u64) -> i32 {
-    let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
-    let read = prepare_hosted(file.read_chunk(offset, limit as usize), |result, raw, flags| {
-        unsafe chunk_joined(raw, result, offset, remaining)
+unsafe fn write_then_next(connection: *u8, bytes: Buffer!, stream: FileChunks!) -> i32 {
+    let read = prepare_hosted(stream.next(), |result, raw, flags| {
+        unsafe chunk_joined(raw, result)
     });
 
     // The transport starts the read after this write completes.
@@ -182,25 +180,22 @@ unsafe fn write_then_read(connection: *u8, bytes: Buffer!, file: OpenedFile!, of
     status
 }
 
-unsafe fn chunk_joined(connection: *u8, result: (OpenedFile!, FileOutcome!), offset: u64, remaining: u64) -> i32 {
-    let (file, outcome) = result;
+unsafe fn chunk_joined(connection: *u8, result: (FileChunks!, ChunkOutcome!)) -> i32 {
+    let (stream, outcome) = result;
     let bytes = match outcome {
-        FileOutcome!::Read(bytes) => bytes,
-        FileOutcome!::Cancelled | FileOutcome!::Failed => { file.close(); return -1; },
+        ChunkOutcome!::Chunk(bytes) => bytes,
+        ChunkOutcome!::End | ChunkOutcome!::Cancelled | ChunkOutcome!::Failed => {
+            stream.close();
+            return -1;
+        },
     };
-    let count = &bytes.len() as u64;
-    if count == 0 {
-        file.close();
-        bytes.destroy();
-        return -1;
-    }
-    if count == remaining {
-        file.close();
+    if &stream.remaining() == 0 {
+        stream.close();
         let status = unsafe kable_tcp_stream_finish(connection, unsafe &bytes.as_ptr(), &bytes.len());
         bytes.destroy();
         return status;
     }
-    unsafe write_then_read(connection, bytes, file, offset + count, remaining - count)
+    unsafe write_then_next(connection, bytes, stream)
 }
 
 unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,
