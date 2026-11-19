@@ -1,7 +1,7 @@
 [package]
 name="async"
 source_root="."
-c_sources=["native/timer.c", "native/scope.c"]
+c_sources=["native/timer.c", "native/scope.c", "native/file.c"]
 link_flags=["-luv"]
 
 [dependencies.std]

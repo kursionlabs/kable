@@ -1,10 +1,15 @@
-//! Structured waits, joins, and races backed by libuv timers.
+//! Structured waits, joins, and bounded file reads on libuv.
+use std::bytes::buffer::Buffer!;
+use std::mem::alloca;
 use std::option::Option;
+use std::slice::ReadBytes;
 
 extern "C" fn kable_scope_new() -> *u8;
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
+extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize) -> usize;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> ();
 extern "C" fn kable_scope_next(scope: *u8) -> i32;
+extern "C" fn kable_scope_file_result(scope: *u8, bytes: *(*u8), len: *usize) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
 
 forall T.
@@ -34,6 +39,20 @@ struct Join! { first: First, second: Second }
 /// Starts both plans in the same scope and waits for both to complete.
 forall First, Second.
 fn join(first: First, second: Second) -> Join![First, Second] { Join!.{ first, second } }
+
+struct ReadFile! { path: Buffer!, limit: usize }
+
+/// Plans a read of a regular file. A file larger than limit fails.
+forall C, S where ReadBytes[C, S], Copy[S].
+fn read_file(&cx: C, path: S, limit: usize) -> ReadFile! {
+    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit }
+}
+
+exposed enum FileOutcome! {
+    Read(Buffer!),
+    Cancelled,
+    Failed(i32),
+}
 
 forall T.
 exposed enum Outcome {
@@ -77,6 +96,27 @@ impl Scope! {
         id
     }
 
+    fn add_file(&self, &path: Buffer!, limit: usize) -> usize {
+        let { raw } = self;
+        let bytes = unsafe &path.as_ptr();
+        let len = &path.len();
+        let id = unsafe kable_scope_add_file(raw, bytes, len, limit);
+        self = Scope!.{ raw };
+        id
+    }
+
+    fn file_result(&self) -> FileOutcome! {
+        let { raw } = self;
+        let data = unsafe alloca[*u8]();
+        let size = unsafe alloca[usize]();
+        let code = unsafe kable_scope_file_result(raw, data, size);
+        self = Scope!.{ raw };
+        if code < 0i32 { return FileOutcome!::Failed.(code); }
+        let bytes = unsafe *data;
+        let len = unsafe *size;
+        FileOutcome!::Read.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+    }
+
     fn run(&self, root: usize, deadline: Option[u64]) {
         let { raw } = self;
         match deadline {
@@ -103,6 +143,26 @@ forall Task, Output.
 trait Plan {
     fn stage(&task: Task, &scope: Scope!) -> usize;
     fn collect(task: Task, &scope: Scope!) -> Output;
+}
+
+instance Plan[ReadFile!, FileOutcome!] {
+    fn stage(&task: ReadFile!, &scope: Scope!) -> usize {
+        let { path, limit } = task;
+        let id = &scope.add_file(&path, limit);
+        task = ReadFile!.{ path, limit };
+        id
+    }
+
+    fn collect(task: ReadFile!, &scope: Scope!) -> FileOutcome! {
+        let { path, limit } = task;
+        path.destroy();
+        let code = &scope.next();
+        match code {
+            1i32 => &scope.file_result(),
+            0i32 => FileOutcome!::Cancelled,
+            _ => FileOutcome!::Failed.(code),
+        }
+    }
 }
 
 forall T.
@@ -192,6 +252,10 @@ fn drive_plan(task: Task, deadline: Option[u64]) -> Output {
 forall T.
 instance Runnable[Sleep![T], Outcome[T]] {
     fn drive(task: Sleep![T], deadline: Option[u64]) -> Outcome[T] { drive_plan(task, deadline) }
+}
+
+instance Runnable[ReadFile!, FileOutcome!] {
+    fn drive(task: ReadFile!, deadline: Option[u64]) -> FileOutcome! { drive_plan(task, deadline) }
 }
 
 forall A, B.

@@ -2,6 +2,7 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import os
 from pathlib import Path
 import select
 import socket
@@ -138,6 +139,38 @@ def check_timeout(port):
         assert_response(read_response(stalled), 408, b"Request Timeout\n")
 
 
+def check_async_read(command, directory):
+    first = directory / "first.bin"
+    second = directory / "a second file.bin"
+    empty = directory / "empty"
+    oversized = directory / "oversized"
+    fifo = directory / "fifo"
+    payload = bytes(range(256)) * 256
+    first.write_bytes(payload)
+    second.write_bytes(b"Kable\x00file read\n")
+    empty.touch()
+    oversized.write_bytes(payload + b"!")
+    os.mkfifo(fifo)
+
+    def run(*args):
+        result = subprocess.run([*command, *args], capture_output=True, timeout=10)
+        assert result.returncode in (0, 1), result
+        return result
+
+    result = run(first, second)
+    assert result.returncode == 0 and result.stdout == payload + second.read_bytes(), result.stderr
+    result = run(empty, empty)
+    assert result.returncode == 0 and result.stdout == b"", result.stderr
+    failures = [((oversized, second), b"first file failed"),
+                ((first, directory / "missing"), b"second file failed"),
+                ((fifo, second), b"first file failed"),
+                ((first, second, "0"), b"deadline expired")]
+    for args, expected in failures:
+        result = run(*args)
+        assert result.returncode == 1 and result.stdout == b"" and expected in result.stderr, result
+    print("Kable async file checks passed")
+
+
 def assert_received(client, data):
     received = bytearray()
     while len(received) < len(data):
@@ -249,12 +282,18 @@ def run_checks(command, check_request_timeout):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-timeout", action="store_true", help="also wait for the request deadline")
-    tcp_checks = parser.add_mutually_exclusive_group()
-    tcp_checks.add_argument("--tcp-echo", action="store_true", help="run echo checks against the given command")
-    tcp_checks.add_argument("--tcp-session", action="store_true", help="run stateful TCP checks against the given command")
+    example_checks = parser.add_mutually_exclusive_group()
+    example_checks.add_argument("--tcp-echo", action="store_true", help="run echo checks against the given command")
+    example_checks.add_argument("--tcp-session", action="store_true", help="run stateful TCP checks against the given command")
+    example_checks.add_argument("--async-read", action="store_true", help="run file checks against the given command")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="use a prebuilt server with an optional runner")
     args = parser.parse_args()
-    if args.tcp_echo or args.tcp_session:
+    if args.async_read:
+        if not args.command:
+            parser.error("--async-read requires an example command")
+        with tempfile.TemporaryDirectory() as directory:
+            check_async_read(args.command, Path(directory))
+    elif args.tcp_echo or args.tcp_session:
         if not args.command:
             parser.error("TCP checks require a server command")
         check = check_tcp_echo if args.tcp_echo else check_tcp_session
@@ -265,11 +304,13 @@ def main():
         with tempfile.TemporaryDirectory() as directory:
             binary = build("kable", Path(directory) / "kable")
             example = build("examples/timer-race", Path(directory) / "timer-race")
+            async_read = build("examples/async-read", Path(directory) / "async-read")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
             assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
             assert b"Join waited" in result.stdout and b"cancelled the nested waits" in result.stdout
+            check_async_read([str(async_read)], Path(directory))
             check_tcp_echo([str(tcp_echo)])
             check_tcp_session([str(tcp_session)])
             run_checks([str(binary)], args.check_timeout)

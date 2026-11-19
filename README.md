@@ -60,7 +60,7 @@ connection owns the wait until the response is sent or the wait is cancelled.
 `lib/async/` lets any Kursal program build a wait with `sleep(ms, value)` and
 drive it with `run`. `race` runs two waits in one scope and cancels the
 loser when the first timer fires. `join` starts two plans together and waits for
-both. A join can contain waits, races, or other joins.
+both. A join can contain waits, timer races, file reads, or other joins.
 
 `timeout` adds a parent deadline that cancels every pending child, including
 children of nested joins. The scope closes all timer handles before returning.
@@ -76,6 +76,23 @@ bin/timer-race
 The example reclaims an owned `Buffer!` from the losing timer, then joins
 a timer race with another wait. It also demonstrates a parent deadline that
 preserves a completed child and cancels nested waits.
+
+### Bounded file reads
+
+`read_file(&access, path, limit)` plans a regular-file read. `run` or `timeout`
+returns an owned `Buffer!`, cancellation, or a libuv error. The work runs
+on libuv's worker pool. Cancellation skips queued work when possible and
+asks a running worker to stop between reads. The scope waits for the worker
+to return and close its descriptor before handing back the result.
+When reads are joined, each child reports its own result.
+
+```sh
+../kursal/bin/kursal build examples/async-read -o bin/async-read
+bin/async-read kur.toml README.md
+```
+
+The example joins two reads under a common deadline and writes their contents
+in argument order. Each file is limited to 64 KiB.
 
 ## Scoped TCP reads
 
@@ -121,11 +138,12 @@ buffer.
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
-- `lib/async/` — scoped waits, joins, races, and cancellation
+- `lib/async/` — scoped waits, joins, races, and file reads
 - `lib/http/` — owned request and response types and response encoding
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — standalone server with a custom handler
+- `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
 - `examples/tcp-session/` — owned connection state across a read retry
@@ -138,9 +156,9 @@ python3 tests/integration.py --check-timeout
 ```
 
 The integration suite builds Kable and the examples with the adjacent Kursal
-compiler. It checks timer races, HTTP framing, request limits, and TCP state
-across read deadlines and shutdown. Omit `--check-timeout` to skip the
-ten-second HTTP request deadline check.
+compiler. It checks timer races, file reads, HTTP framing and request limits,
+and TCP state across read deadlines and shutdown. Omit `--check-timeout` to
+skip the ten-second HTTP request deadline check.
 
 ## License
 
