@@ -361,11 +361,23 @@ def check_http_sequence(command, directory, library, payload, check_request_time
     document = directory / "example.txt"
     footer = directory / "footer.txt"
     footer.write_bytes(suffix)
+    detailed = b"\x00detailed footer\n"
+    detailed_payload = b"footer: detailed\n" + payload
+    (directory / "footer-detailed.txt").write_bytes(detailed)
     request = b"GET /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
     first_cancelled = b"Sequence cancelled before the second read."
     second_cancelled = f"Sequence cancelled with {len(payload)} bytes from the first read.".encode()
 
-    with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+    with gated_file_server(command, directory, library, gates=7) as (process, port, started, permit):
+        document.unlink()
+        with connect(port) as client:
+            client.sendall(request)
+            ready, _, _ = select.select([client, started], [], [], 5)
+            assert ready == [client], "failed first read started a footer"
+            assert_response(read_response(client), 500, b"Internal Server Error\n")
+            assert not select.select([started], [], [], 0)[0], "failed first read started a footer"
+        document.write_bytes(payload)
+
         with connect(port) as client:
             start_held_read(client, request, started)
             client.shutdown(socket.SHUT_WR)
@@ -377,17 +389,22 @@ def check_http_sequence(command, directory, library, payload, check_request_time
             assert_response(read_response(client), 200, payload + suffix)
         head = b"HEAD /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
         assert_response(exchange(port, head), 200, payload + suffix, head=True)
+        document.write_bytes(detailed_payload)
+        with connect(port) as client:
+            client.sendall(request)
+            wait_for_held_read(started, b"C")
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 200, detailed_payload + detailed)
+        document.write_bytes(payload)
         footer.unlink()
         assert_response(exchange(port, request), 500, b"Internal Server Error\n")
         footer.write_bytes(suffix)
-        document.unlink()
-        assert_response(exchange(port, request), 500, b"Internal Server Error\n")
-        document.write_bytes(payload)
         process.terminate()
         assert process.wait(timeout=5) == 0, process.stderr.read()
 
     for second, expected in ((False, first_cancelled), (True, second_cancelled)):
-        with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+        document.write_bytes(payload if second else detailed_payload)
+        with gated_file_server(command, directory, library, gates=7) as (process, port, started, permit):
             with connect(port) as client:
                 start_held_read(client, request, started)
                 if second:

@@ -133,10 +133,11 @@ any buffer it received. [Parallel file handler](examples/http-file/file_join.kur
 
 An HTTP handler can use `sequence.defer(state, resume, cancel)` to drive a
 portable sequence under the original request deadline. The listener delivers
-request cancellation after the active plan joins. The example’s
-`/file-sequence` handler in `file_sequence.kur` reads `example.txt`, then
-uses `.map` on the second read to capture the first file’s owned buffer
-and return both files together.
+request cancellation after the active plan joins. The `/file-sequence`
+handler reads `example.txt` first. If its first line is `footer: detailed`,
+`.then_owned` starts a read of `footer-detailed.txt`. Otherwise it reads
+`footer.txt`. The second plan uses `.map` to keep the first file’s owned
+buffer and append the selected footer to it. [Dependent file handler](examples/http-file/file_sequence.kur)
 
 ## Scoped task plans
 

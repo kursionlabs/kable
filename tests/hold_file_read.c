@@ -23,7 +23,7 @@ ssize_t read(int fd, void *buffer, size_t size) {
     const char *enabled = getenv("KABLE_TEST_FILE_GATES");
     struct stat input;
     if (started && release && enabled && fstat(fd, &input) == 0 && S_ISREG(input.st_mode)) {
-        const char *paths[] = {"example.txt", "footer.txt"};
+        const char *paths[] = {"example.txt", "footer.txt", "footer-detailed.txt"};
         unsigned gates = (unsigned)atoi(enabled);
         for (unsigned slot = 0; slot < sizeof paths / sizeof paths[0]; slot++) {
             unsigned bit = 1u << slot;

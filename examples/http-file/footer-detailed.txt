@@ -1,0 +1,2 @@
+This detailed footer was selected by the first file.
+The request kept the first file's bytes while reading this footer.
