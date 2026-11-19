@@ -50,8 +50,9 @@ The server listens on loopback, accepts `GET` and `HEAD`, and serves
 Opening the file and checking its length use the worker pool with a two-second
 deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
 each socket write completes. `HEAD` uses the file length without reading
-its body. The transfer has a five-second write deadline and closes the file
-when it finishes or cancels.
+its body. Each completed write restarts the five-second idle timer, so a
+transfer can continue while writes make progress. The server closes the file
+when the transfer finishes or cancels.
 
 The server sets the content type for common web files. Path resolution uses
 Linux’s `openat2` to stay below the document root and reject symlinks.
@@ -327,7 +328,7 @@ and TCP state across read deadlines and shutdown. The hosted file check holds
 a worker inside a read so it can verify that `/health` stays responsive,
 sequential plans join in order, and shutdown waits for the active stage.
 It also checks cancellation after a TCP reset and delivery after a half-close.
-Omit `--check-timeout` to skip the ten-second HTTP request deadline checks.
+Omit `--check-timeout` to skip the longer request and streaming deadline checks.
 
 ## License
 

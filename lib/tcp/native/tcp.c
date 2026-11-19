@@ -37,6 +37,7 @@ typedef struct {
     void (*cancel_parked)(void *);
     void *parked_context;
     void (*stream_written)(void *);
+    uint64_t stream_idle_ms;
     uint8_t *scope;
     size_t scope_root;
     uint8_t *plan;
@@ -309,8 +310,12 @@ static void write_done(uv_write_t *write, int status) {
         if (status < 0) close_connection(connection);
         else shutdown_write(connection);
     } else if (connection->phase == STREAMING) {
-        if (status < 0) close_connection(connection);
-        else if (!connection->cancelled) connection->stream_written(connection->parked_context);
+        if (connection->cancelled) return;
+        if (status < 0 || kable_timer_restart(connection->timer, connection->stream_idle_ms) < 0) {
+            close_connection(connection);
+        } else {
+            connection->stream_written(connection->parked_context);
+        }
     } else if (connection->phase == WRITING) {
         if (connection->plan) {
             start_scope(connection, status < 0 || connection->listener->stopping);
@@ -459,6 +464,7 @@ int32_t kable_tcp_start_stream(uint8_t *raw, uint8_t *bytes, size_t len, uint64_
     }
     connection->phase = STREAMING;
     connection->stream_written = written;
+    connection->stream_idle_ms = ms;
     return 0;
 }
 

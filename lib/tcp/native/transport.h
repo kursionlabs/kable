@@ -43,8 +43,9 @@ int kable_tcp_unpark(uint8_t *connection);
 /* Copies the final response, then writes, half-closes, and drains until the
    deadline. A read-side EOF still permits this final write. */
 int32_t kable_tcp_finish(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms);
-/* One write at a time. Written runs after each write. Cancel runs once and
-   retains the connection until the caller ends the stream. */
+/* One write at a time, with ms between completed writes. Written runs after
+   each write. Cancel runs once and retains the connection until the caller
+   ends the stream. */
 int32_t kable_tcp_start_stream(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms,
     void (*written)(void *), void (*cancel)(void *), void *context);
 int32_t kable_tcp_stream_write(uint8_t *connection, uint8_t *bytes, size_t len);

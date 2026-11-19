@@ -22,18 +22,22 @@ def connect(port):
     return socket.create_connection(("127.0.0.1", port), timeout=15)
 
 
+def read_headers(stream):
+    version, status, _ = stream.readline().split(b" ", 2)
+    headers = {}
+    for line in stream:
+        if line == b"\r\n":
+            break
+        key, value = line.split(b":", 1)
+        headers[key.lower()] = value.strip()
+    assert headers[b"connection"] == b"close", headers
+    return version, int(status), headers
+
+
 def read_response(client):
     with client.makefile("rb") as stream:
-        version, status, _ = stream.readline().split(b" ", 2)
-        headers = {}
-        for line in stream:
-            if line == b"\r\n":
-                break
-            key, value = line.split(b":", 1)
-            headers[key.lower()] = value.strip()
-        body = stream.read()
-    assert headers[b"connection"] == b"close", headers
-    return version, int(status), headers, body
+        version, status, headers = read_headers(stream)
+        return version, status, headers, stream.read()
 
 
 def exchange(port, *parts, eof=False):
@@ -151,7 +155,7 @@ def check_hello_server(binary):
     print("Kable hello server checks passed")
 
 
-def check_static_files(command, directory):
+def check_static_files(command, directory, check_write_timeout=False):
     root = directory / "public"
     root.mkdir()
     pages = root / "pages"
@@ -198,21 +202,14 @@ def check_static_files(command, directory):
                 assert_response(request(path), 404, b"Not Found\n")
             for path in (b"/%xz", b"/%00", b"/short%"):
                 assert_response(request(path), 400, b"Bad Request\n")
-            with socket.socket() as stalled:
-                stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
-                stalled.settimeout(5)
-                stalled.connect(("127.0.0.1", port))
-                stalled.sendall(b"GET /stalled.bin HTTP/1.1\r\nHost: localhost\r\n\r\n")
-                with stalled.makefile("rb") as stream:
-                    assert stream.readline() == b"HTTP/1.1 200 OK\r\n"
+            with slow_download(port, stalled_path) as (stalled, _):
                 assert holds_file(process, stalled_path), "slow transfer finished before backpressure"
                 assert_response(request(b"/"), 200, b"<h1>Kable</h1>\n")
                 assert holds_file(process, stalled_path), "slow transfer finished while serving another request"
                 stalled.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-            deadline = time.monotonic() + 2
-            while holds_file(process, stalled_path):
-                assert time.monotonic() < deadline, "disconnected client kept the file open"
-                time.sleep(0.01)
+            wait_for_file_release(process, stalled_path, 2)
+            if check_write_timeout:
+                check_stream_idle_timeout(port, process, stalled_path)
             assert_response(request(b"/"), 200, b"<h1>Kable</h1>\n")
             process.terminate()
             assert process.wait(timeout=5) == 0
@@ -220,6 +217,37 @@ def check_static_files(command, directory):
             if process.poll() is None:
                 process.kill()
     print("Kable static file checks passed")
+
+
+@contextmanager
+def slow_download(port, path):
+    with socket.socket() as client:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65_536)
+        client.settimeout(8)
+        client.connect(("127.0.0.1", port))
+        client.sendall(b"GET /" + os.fsencode(path.name) + b" HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        with client.makefile("rb") as stream:
+            version, status, headers = read_headers(stream)
+            assert version == b"HTTP/1.1" and status == 200, (version, status)
+            assert int(headers[b"content-length"]) == path.stat().st_size, headers
+            yield client, stream
+
+
+def check_stream_idle_timeout(port, process, path):
+    chunk = bytes(512 * 1024)
+    with slow_download(port, path) as (_, stream):
+        for _ in range(6):
+            time.sleep(1)
+            assert stream.read(len(chunk)) == chunk, "paced download ended early"
+        assert holds_file(process, path), "stream closed despite continued write progress"
+        remaining = path.stat().st_size - 6 * len(chunk)
+        assert stream.read() == bytes(remaining), "paced download lost bytes past the original deadline"
+
+    start = time.monotonic()
+    with slow_download(port, path):
+        assert holds_file(process, path), "stalled stream never held the file"
+        wait_for_file_release(process, path, 8)
+        assert time.monotonic() - start >= 4.75, "stalled stream expired too early"
 
 
 def holds_file(process, path):
@@ -230,6 +258,13 @@ def holds_file(process, path):
         except FileNotFoundError:
             pass
     return False
+
+
+def wait_for_file_release(process, path, timeout):
+    deadline = time.monotonic() + timeout
+    while holds_file(process, path):
+        assert time.monotonic() < deadline, "stream kept the file open"
+        time.sleep(0.01)
 
 
 def check_timeout(port):
@@ -657,7 +692,7 @@ def run_checks(command, check_request_timeout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check-timeout", action="store_true", help="also wait for the request deadline")
+    parser.add_argument("--check-timeout", action="store_true", help="also run the longer deadline checks")
     example_checks = parser.add_mutually_exclusive_group()
     example_checks.add_argument("--tcp-echo", action="store_true", help="run echo checks against the given command")
     example_checks.add_argument("--tcp-session", action="store_true", help="run stateful TCP checks against the given command")
@@ -694,7 +729,7 @@ def main():
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
-            check_static_files([str(static_files)], Path(directory))
+            check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])

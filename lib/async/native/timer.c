@@ -30,6 +30,12 @@ static void timer_ready(uv_timer_t *handle) {
     if (timer->ready) timer->ready(timer->context);
 }
 
+int kable_timer_restart(KableTimer *timer, uint64_t ms) {
+    if (!timer || uv_is_closing((uv_handle_t *)&timer->handle)) return UV_EINVAL;
+    uv_update_time(timer->handle.loop);
+    return uv_timer_start(&timer->handle, timer_ready, ms, 0);
+}
+
 int kable_timer_start(uv_loop_t *loop, uint64_t ms, void (*ready)(void *),
     void (*closed)(void *, int), void *context, KableTimer **out) {
     KableTimer *timer = calloc(1, sizeof *timer);
