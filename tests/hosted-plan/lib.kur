@@ -1,21 +1,22 @@
-use async::{Outcome, sleep};
+use async::{Completion, join, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::bytes::buffer::Buffer!;
 use std::mem::alloca;
 
+fn failed(status: Completion[()]) -> bool {
+    match status { Completion::Failed => true, _ => false }
+}
+
 fn pending() -> HostedPlan! {
     let bytes = Buffer!::new().push_static("owned");
-    prepare_hosted(sleep(0, bytes), |outcome, host, state| {
-        let (bytes, failed) = match outcome {
-            Outcome::Failed(bytes, code) => (bytes, true),
-            Outcome::Cancelled(bytes) => (bytes, false),
-            Outcome::Ready(bytes) => (bytes, false),
-        };
+    let plan = join(sleep(0, bytes), sleep(0, 7u8));
+    prepare_hosted(plan, |outcome, host, state| {
+        let ((bytes, first), (value, second), status) = outcome;
         let length = &bytes.len();
         bytes.destroy();
         let count = unsafe (host as *usize);
         unsafe *count = (unsafe *count) + 1;
-        if failed && length == 5 && state == 0 {
+        if failed(status) && failed(first) && failed(second) && length == 5 && value == 7 && state == 0 {
             17
         } else {
             -1

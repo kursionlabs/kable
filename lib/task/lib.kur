@@ -36,6 +36,7 @@ exposed enum StreamOutcome! {
 forall T.
 struct Sleep! { ms: u64, value: T, id: Option[usize] }
 
+/// Returns the original value alongside the timer status after the scope joins.
 forall T.
 fn sleep(ms: u64, value: T) -> Sleep![T] { Sleep!.{ ms, value, id: Option::None } }
 
@@ -50,16 +51,10 @@ fn select(first: First, second: Second) -> Select![First, Second] { Select!.{ fi
 forall First, Second.
 struct Join! { first: First, second: Second, id: Option[usize] }
 
-/// Starts both plans in the same scope and waits for both to complete.
+/// Returns both child outputs in input order alongside the join status,
+/// including when the scope is cancelled or fails.
 forall First, Second.
 fn join(first: First, second: Second) -> Join![First, Second] { Join!.{ first, second, id: Option::None } }
-
-forall T.
-exposed enum Outcome {
-    Ready(T),
-    Cancelled(T),
-    Failed(T, i32),
-}
 
 /// Each branch returns both values in input order after the scope closes.
 forall A, B.
@@ -70,26 +65,26 @@ exposed enum RaceOutcome {
     Failed(A, B, i32),
 }
 
-/// Each branch carries both child outcomes, including children that completed
-/// before a cancellation.
-forall A, B.
-exposed enum JoinOutcome {
-    Ready(A, B),
-    Cancelled(A, B),
-    Failed(A, B, i32),
-}
-
 forall T.
-instance PlanOutput[Sleep![T] -> Outcome[T]] {}
+instance PlanOutput[Sleep![T] -> (T, Completion[()])] {}
 
 forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
 instance PlanOutput[Select![First, Second] -> RaceOutcome[A, B]] {}
 
 forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
-instance PlanOutput[Join![First, Second] -> JoinOutcome[A, B]] {}
+instance PlanOutput[Join![First, Second] -> (A, B, Completion[()])] {}
+
+fn completion(result: Resolution) -> Completion[()] {
+    match result {
+        Resolution::Completed => Completion::Ready.(()),
+        Resolution::Cancelled => Completion::Cancelled,
+        Resolution::Failed(code) => Completion::Failed.(code),
+        Resolution::First | Resolution::Second => Completion::Failed.(-1),
+    }
+}
 
 forall T, Driver where PlanDriver[Driver].
-instance Plan[Sleep![T], Driver -> Outcome[T]] {
+instance Plan[Sleep![T], Driver -> (T, Completion[()])] {
     fn stage(&task: Sleep![T], &scope: Driver) -> Option[usize] {
         let { ms, value, id } = task;
         let id = PlanDriver[Driver]::timer(&scope, ms);
@@ -97,14 +92,9 @@ instance Plan[Sleep![T], Driver -> Outcome[T]] {
         id
     }
 
-    fn collect(task: Sleep![T], &scope: Driver) -> Outcome[T] {
+    fn collect(task: Sleep![T], &scope: Driver) -> (T, Completion[()]) {
         let { ms, value, id } = task;
-        match PlanDriver[Driver]::result(&scope, id) {
-            Resolution::Completed => Outcome::Ready.(value),
-            Resolution::Cancelled => Outcome::Cancelled.(value),
-            Resolution::Failed(code) => Outcome::Failed.(value, code),
-            Resolution::First | Resolution::Second => Outcome::Failed.(value, -1i32),
-        }
+        (value, completion(PlanDriver[Driver]::result(&scope, id)))
     }
 }
 
@@ -146,7 +136,7 @@ instance Plan[Select![First, Second], Driver -> RaceOutcome[A, B]] {
 }
 
 forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
+instance Plan[Join![First, Second], Driver -> (A, B, Completion[()])] {
     fn stage(&task: Join![First, Second], &scope: Driver) -> Option[usize] {
         let { first, second, id } = task;
         let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, PairKind::Join);
@@ -154,15 +144,10 @@ instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
         id
     }
 
-    fn collect(task: Join![First, Second], &scope: Driver) -> JoinOutcome[A, B] {
+    fn collect(task: Join![First, Second], &scope: Driver) -> (A, B, Completion[()]) {
         let { first, second, id } = task;
         let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope, id);
-        match result {
-            Resolution::Completed => JoinOutcome::Ready.(a, b),
-            Resolution::Cancelled => JoinOutcome::Cancelled.(a, b),
-            Resolution::Failed(code) => JoinOutcome::Failed.(a, b, code),
-            Resolution::First | Resolution::Second => JoinOutcome::Failed.(a, b, -1i32),
-        }
+        (a, b, completion(result))
     }
 }
 
@@ -183,7 +168,7 @@ impl Task {
 
     /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, ms: u64)
-        -> Map![Select![Sleep![()], Task], RaceOutcome[Outcome[()], Input], WithinOutcome[Input], ()] {
+        -> Map![Select![Sleep![()], Task], RaceOutcome[((), Completion[()]), Input], WithinOutcome[Input], ()] {
         select(sleep(ms, ()), self).map(|result| match result {
             RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
             RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),

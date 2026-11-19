@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{FileChunks!, OpenedFile!, Outcome, Scope!, sleep};
+use async::{Completion, FileChunks!, OpenedFile!, Scope!, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, Response!, encode_file_headers};
 use std::alloc::heap::HeapAllocator;
@@ -57,14 +57,17 @@ impl Response! {
     /// Sends this response after a request-scoped timer.
     fn after(self, ms: u64) -> Action! {
         sleep(ms, self).defer(|outcome, state| {
-            let response = match outcome {
-                Outcome::Ready(response) => response,
-                Outcome::Cancelled(response) => { response.destroy(); Response!::rejected(408) },
-                Outcome::Failed(response, code) => { response.destroy(); Response!::rejected(500) },
-            };
+            let (response, status) = outcome;
             match state {
-                RequestState::Active => Option::Some.(response.reply()),
                 RequestState::Cancelled => { response.destroy(); Option::None },
+                RequestState::Active => {
+                    let response = match status {
+                        Completion::Ready => response,
+                        Completion::Cancelled => { response.destroy(); Response!::rejected(408) },
+                        Completion::Failed => { response.destroy(); Response!::rejected(500) },
+                    };
+                    Option::Some.(response.reply())
+                },
             }
         })
     }

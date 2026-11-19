@@ -1,40 +1,35 @@
 use task::sequence::sequence;
-use async::{Outcome, PlanOutput, Sleep!, run_sequence, sleep};
+use async::{Completion, PlanOutput, Sleep!, run_sequence, sleep};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
 use std::option::Option;
 use std::process::trap;
 
-fn unpack(outcome: Outcome[Buffer!]) -> (Buffer!, bool) {
-    match outcome {
-        Outcome::Ready(bytes) => (bytes, true),
-        Outcome::Cancelled(bytes) => (bytes, false),
-        Outcome::Failed(bytes, code) => { bytes.destroy(); trap() },
+fn append(suffix: Buffer!, prior: (Buffer!, Completion[()])) -> Option[Sleep![Buffer!]] {
+    let (bytes, status) = prior;
+    match status {
+        Completion::Ready => (),
+        _ => { bytes.destroy(); suffix.destroy(); trap(); },
     }
-}
-
-fn append(suffix: Buffer!, prior: Outcome[Buffer!]) -> Option[Sleep![Buffer!]] {
-    let (bytes, ready) = unpack(prior);
-    if !ready { bytes.destroy(); suffix.destroy(); trap(); }
     Option::Some.(sleep(150u64, bytes.push_buffer(suffix)))
 }
 
-fn stop(state: Buffer!, prior: Outcome[Buffer!]) -> Option[Sleep![Buffer!]] {
-    let (bytes, ready) = unpack(prior);
+fn stop(state: Buffer!, prior: (Buffer!, Completion[()])) -> Option[Sleep![Buffer!]] {
+    let (bytes, status) = prior;
     bytes.destroy();
     state.destroy();
-    if !ready { trap(); }
+    match status { Completion::Ready => (), _ => trap() };
     print_buffer(f"Stopped after the first result and reclaimed both buffers.\n");
     Option::None
 }
 
-fn discard(state: Buffer!, prior: Option[Outcome[Buffer!]]) {
+fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
     state.destroy();
     match prior {
         Option::Some(outcome) => {
-            let (bytes, ready) = unpack(outcome);
+            let (bytes, status) = outcome;
             bytes.destroy();
-            if ready { trap(); }
+            match status { Completion::Cancelled => (), _ => trap() };
             print_buffer(f"Deadline reclaimed the first result and the pending state.\n");
         },
         Option::None => {
@@ -43,10 +38,10 @@ fn discard(state: Buffer!, prior: Option[Outcome[Buffer!]]) {
     }
 }
 
-fn expect_stop(result: Option[Outcome[Buffer!]]) {
+fn expect_stop(result: Option[(Buffer!, Completion[()])]) {
     match result {
         Option::None => (),
-        Option::Some(outcome) => { let (bytes, ready) = unpack(outcome); bytes.destroy(); trap(); },
+        Option::Some(outcome) => { let (bytes, status) = outcome; bytes.destroy(); trap(); },
     }
 }
 
@@ -57,9 +52,14 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
     let result = run_sequence(plan, budget);
     match result {
         Option::Some(outcome) => {
-            let (bytes, ready) = unpack(outcome);
+            let (bytes, status) = outcome;
             let length = &bytes.len();
             bytes.destroy();
+            let ready = match status {
+                Completion::Ready => true,
+                Completion::Cancelled => false,
+                Completion::Failed => trap(),
+            };
             if length != 11usize || ready != should_finish { trap(); }
         },
         Option::None => trap(),
@@ -71,12 +71,11 @@ fn main() -> i32 {
         .then(|outcome| Option::Some.(sleep(0u64, outcome)));
     let result = run_sequence(plan, Option::None);
     match result {
-        Option::Some(outcome) => match outcome {
-            Outcome::Ready(previous) => match previous {
-                Outcome::Ready(value) => { if value != 7u32 { trap(); } },
-                _ => trap(),
-            },
-            _ => trap(),
+        Option::Some(outcome) => {
+            let ((value, first), second) = outcome;
+            match first { Completion::Ready => (), _ => trap() };
+            match second { Completion::Ready => (), _ => trap() };
+            if value != 7 { trap(); }
         },
         Option::None => trap(),
     }

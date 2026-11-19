@@ -1,5 +1,5 @@
 //! Reads two independent files under one local deadline.
-use async::{Completion, JoinOutcome, join, read_file};
+use async::{Completion, join, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file, timed_reply};
 use server::{Action!, PlanOutput};
@@ -16,11 +16,12 @@ fn serve() -> Action! {
     })
 }
 
-fn joined_response(files: JoinOutcome[Completion[Buffer!], Completion[Buffer!]]) -> Response! {
-    match files {
-        JoinOutcome::Ready(first, second) => file_response(first, second),
-        JoinOutcome::Cancelled(first, second) => reject_files(first, second, 408),
-        JoinOutcome::Failed(first, second, code) => reject_files(first, second, 500),
+fn joined_response(files: (Completion[Buffer!], Completion[Buffer!], Completion[()])) -> Response! {
+    let (first, second, status) = files;
+    match status {
+        Completion::Ready => file_response(first, second),
+        Completion::Cancelled => reject_files(first, second, 408),
+        Completion::Failed => reject_files(first, second, 500),
     }
 }
 
@@ -32,12 +33,8 @@ fn file_response(first: Completion[Buffer!], second: Completion[Buffer!]) -> Res
     }
 }
 
-fn discard_join(files: JoinOutcome[Completion[Buffer!], Completion[Buffer!]]) {
-    let (first, second) = match files {
-        JoinOutcome::Ready(first, second) => (first, second),
-        JoinOutcome::Cancelled(first, second) => (first, second),
-        JoinOutcome::Failed(first, second, code) => (first, second),
-    };
+fn discard_join(files: (Completion[Buffer!], Completion[Buffer!], Completion[()])) {
+    let (first, second, status) = files;
     discard_file(first);
     discard_file(second);
 }

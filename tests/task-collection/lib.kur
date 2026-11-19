@@ -1,6 +1,6 @@
 use async::{run, sleep};
 use std::option::Option;
-use task::{Outcome, PlanOutput, Sleep!};
+use task::{Completion, PlanOutput, Sleep!};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
@@ -11,8 +11,8 @@ forall Driver where PlanDriver[Driver].
 instance Plan[ReverseSelect!, Driver -> bool] {
     fn stage(&task: ReverseSelect!, &scope: Driver) -> Option[usize] {
         let { first, second, id: old } = task;
-        let a = Plan[Sleep![u8], Driver -> Outcome[u8]]::stage(&first, &scope);
-        let b = Plan[Sleep![u8], Driver -> Outcome[u8]]::stage(&second, &scope);
+        let a = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::stage(&first, &scope);
+        let b = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::stage(&second, &scope);
         let id = match a {
             Option::Some(a) => match b {
                 Option::Some(b) => PlanDriver[Driver]::pair(&scope, Pair.{ kind: PairKind::Select, first: a, second: b }),
@@ -30,12 +30,14 @@ instance Plan[ReverseSelect!, Driver -> bool] {
             Resolution::First => true,
             _ => false,
         };
-        let cancelled = match Plan[Sleep![u8], Driver -> Outcome[u8]]::collect(second, &scope) {
-            Outcome::Cancelled(value) => value == 2u8,
+        let (value, status) = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::collect(second, &scope);
+        let cancelled = match status {
+            Completion::Cancelled => value == 2u8,
             _ => false,
         };
-        let completed = match Plan[Sleep![u8], Driver -> Outcome[u8]]::collect(first, &scope) {
-            Outcome::Ready(value) => value == 1u8,
+        let (value, status) = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::collect(first, &scope);
+        let completed = match status {
+            Completion::Ready => value == 1u8,
             _ => false,
         };
         selected && cancelled && completed

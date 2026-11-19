@@ -1,4 +1,4 @@
-use async::{Completion, JoinOutcome, join, read_file, run_with_deadline};
+use async::{Completion, join, read_file, run_with_deadline};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Option;
@@ -60,16 +60,16 @@ fn main(args: Args) -> i32 {
         Option::None => 5000u64,
     };
     let plan = join(read_file(&access, left, 65_536usize), read_file(&access, right, 65_536usize));
-    let result = run_with_deadline(plan, deadline);
-    match result {
-        JoinOutcome::Ready(left, right) => print_pair(left, right),
-        JoinOutcome::Cancelled(left, right) => {
+    let (left, right, status) = run_with_deadline(plan, deadline);
+    match status {
+        Completion::Ready => print_pair(left, right),
+        Completion::Cancelled => {
             discard(left);
             discard(right);
             eprint_buffer(f"async-read: deadline expired\n");
             1i32
         },
-        JoinOutcome::Failed(left, right, code) => {
+        Completion::Failed(code) => {
             discard(left);
             discard(right);
             eprint_buffer(f"async-read: scope failed (libuv error {code})\n");
