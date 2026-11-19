@@ -96,6 +96,24 @@ Connect to the printed address with a TCP client such as `nc 127.0.0.1 PORT`.
 The example echoes binary data and closes connections after one second of
 read inactivity. Other connections can continue sending data during that wait.
 
+### Connection-local state
+
+`Listener!::bind_stateful(port, start, handle, finish)` lets each connection
+own a state value, including a linear `Buffer!`. The listener calls `start`
+once for each accepted connection. Each event moves the state into `handle`,
+which returns the next state and action. After the connection and any pending
+operation have closed, `finish` consumes the last state exactly once.
+
+```sh
+../kursal/bin/kursal build examples/tcp-session -o bin/tcp-session
+bin/tcp-session
+```
+
+The session example echoes complete lines and keeps partial lines in a
+connection-local buffer. It retries an idle read once, preserving the partial
+line across the timeout. Connecting with a second client gives it an independent
+buffer.
+
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
@@ -106,6 +124,7 @@ read inactivity. Other connections can continue sending data during that wait.
 - `examples/hello-server/` — standalone server with a custom handler
 - `examples/timer-race/` — race and parent cancellation with linear payloads
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
+- `examples/tcp-session/` — owned connection state across a read retry
 
 Build the example with `../kursal/bin/kursal build examples/hello-server -o bin/hello-server`.
 Run `bin/hello-server` and request the address it prints.
@@ -114,10 +133,10 @@ Run `bin/hello-server` and request the address it prints.
 python3 tests/integration.py --check-timeout
 ```
 
-The integration suite builds Kable and the timer and TCP echo examples with
-the adjacent Kursal compiler. It checks the timer race, HTTP framing, request
-limits, concurrent clients, idle read deadlines, and shutdown cancellation. Omit
-`--check-timeout` to skip the ten-second request deadline check.
+The integration suite builds Kable and the examples with the adjacent Kursal
+compiler. It checks timer races, HTTP framing, request limits, and TCP state
+across read deadlines and shutdown. Omit `--check-timeout` to skip the
+ten-second HTTP request deadline check.
 
 ## License
 

@@ -20,8 +20,8 @@ int32_t kable_tcp_run(uint8_t *listener);
 void kable_tcp_stop(uint8_t *listener);
 
 /* The connection owns one attachment through its socket and timer cleanup. */
-void kable_tcp_attach(uint8_t *connection, void *attachment, void (*destroy)(void *));
-void *kable_tcp_attachment(uint8_t *connection);
+void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(uint8_t *));
+uint8_t *kable_tcp_attachment(uint8_t *connection);
 uint64_t kable_tcp_now(uint8_t *connection);
 int32_t kable_tcp_read(uint8_t *connection, uint64_t ms, uint8_t timed);
 int32_t kable_tcp_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed);

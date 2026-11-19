@@ -13,6 +13,8 @@ extern "C" fn kable_tcp_stop(listener: *u8) -> ();
 extern "C" fn kable_tcp_read(connection: *u8, ms: u64, timed: u8) -> i32;
 extern "C" fn kable_tcp_write(connection: *u8, bytes: *u8, len: usize, ms: u64, timed: u8) -> i32;
 extern "C" fn kable_tcp_close(connection: *u8) -> ();
+extern "C" fn kable_tcp_attach(connection: *u8, state: *u8, dispose: unsafe fn(*u8) -> ()) -> ();
+extern "C" fn kable_tcp_attachment(connection: *u8) -> *u8;
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
@@ -52,18 +54,66 @@ fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
 
 struct Handler { handle: fn(Event!) -> Action! }
 
-unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> i32 {
-    let { handle } = unsafe *(unsafe (context as *Handler));
+forall State.
+struct StatefulHandler {
+    start: fn() -> State,
+    handle: fn(State, Event!) -> (State, Action!),
+    finish: fn(State) -> (),
+}
+
+forall State.
+struct Session! { state: State, finish: fn(State) -> () }
+
+unsafe fn make_event(raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> Event! {
     let connection = Connection!.{ raw };
-    let event = match kind {
+    match kind {
         0u8 => Event!::Connected.(connection),
         1u8 => Event!::Bytes.(connection, unsafe Buffer!::new_with_cap(len).push_n(bytes, len)),
         2u8 => Event!::TimedOut.(connection),
         3u8 => Event!::End.(connection),
         4u8 => Event!::Cancelled.(connection),
         _ => Event!::Failed.(connection, code),
+    }
+}
+
+unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> i32 {
+    let { handle } = unsafe *(unsafe (context as *Handler));
+    let event = unsafe make_event(raw, kind, bytes, len, code);
+    unsafe apply(handle(event))
+}
+
+forall State.
+unsafe fn finish_session(raw: *u8) {
+    let { state, finish } = unsafe *(unsafe (raw as *Session![State]));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
+    finish(state);
+}
+
+forall State.
+unsafe fn dispatch_stateful(context: *u8, connection: *u8, kind: u8,
+    bytes: *u8, len: usize, code: i32) -> i32 {
+    let { start, handle, finish } = unsafe *(unsafe (context as *StatefulHandler[State]));
+    let event = unsafe make_event(connection, kind, bytes, len, code);
+    let raw = if kind == 0u8 {
+        let raw = HeapAllocator::alloc(sizeof[Session![State]]()).into_raw();
+        unsafe *(unsafe (raw as *Session![State])) = Session!.{ state: start(), finish };
+        unsafe kable_tcp_attach(connection, raw, finish_session[State]);
+        raw
+    } else {
+        // Connected installs the attachment before any later event can run.
+        unsafe kable_tcp_attachment(connection)
     };
-    match handle(event) {
+    let session = unsafe (raw as *Session![State]);
+    let { state, finish } = unsafe *session;
+    let (state, action) = handle(state, event);
+    // Native callbacks are serialized. Restore ownership before starting the
+    // action, including actions whose scheduling can fail synchronously.
+    unsafe *session = Session!.{ state, finish };
+    unsafe apply(action)
+}
+
+unsafe fn apply(action: Action!) -> i32 {
+    match action {
         Action!::Wait(next) => unsafe submit(next, Option::None),
         Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
         Action!::Close(connection) => {
@@ -99,9 +149,27 @@ impl Listener! {
     fn bind_local(port: u16, handle: fn(Event!) -> Action!) -> Result[Listener!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
         unsafe *(unsafe (context as *Handler)) = Handler.{ handle };
+        unsafe Listener!::bind(port, context, dispatch)
+    }
+
+    /// Starts one state value per connection. Each event transfers it to the
+    /// handler and takes it back with the next action. The finalizer consumes
+    /// the last returned state after the socket and pending operations close.
+    forall State.
+    fn bind_stateful(port: u16, start: fn() -> State,
+        handle: fn(State, Event!) -> (State, Action!),
+        finish: fn(State) -> ()) -> Result[Listener!, i32] {
+        let context = HeapAllocator::alloc(sizeof[StatefulHandler[State]]()).into_raw();
+        unsafe *(unsafe (context as *StatefulHandler[State])) =
+            StatefulHandler.{ start, handle, finish };
+        unsafe Listener!::bind(port, context, dispatch_stateful[State])
+    }
+
+    unsafe fn bind(port: u16, context: *u8,
+        callback: unsafe fn(*u8, *u8, u8, *u8, usize, i32) -> i32) -> Result[Listener!, i32] {
         let scratch = Buffer!::new_zeroed(sizeof[i32]());
         let error = unsafe ((unsafe &scratch.as_ptr()) as *i32);
-        let raw = unsafe kable_tcp_bind(port, context, dispatch, error);
+        let raw = unsafe kable_tcp_bind(port, context, callback, error);
         let status = unsafe *error;
         scratch.destroy();
         if is_null(raw) {

@@ -1,0 +1,86 @@
+use std::bytes::buffer::Buffer!;
+use std::io::{eprint_buffer, print_buffer};
+use std::option::{Option, Result};
+use std::raw::Span;
+use tcp::{Action!, Connection!, Event!, Listener!, Read!, close, read, timeout, wait, write};
+
+struct Session! { pending: Buffer!, retried: bool }
+
+fn start() -> Session! {
+    Session!.{ pending: Buffer!::new(), retried: false }
+}
+
+fn finish(session: Session!) {
+    let { pending, retried } = session;
+    let length = &pending.len();
+    pending.destroy();
+    eprint_buffer(f"Closed session with {length} buffered bytes.\n");
+}
+
+fn read_line(connection: Connection!) -> Read! { timeout(1000u64, read(connection)) }
+
+fn receive(connection: Connection!, pending: Buffer!) -> (Session!, Action!) {
+    let exists 'k. (access, bytes, restore) = pending.open();
+    let span = Span::from_slice(bytes);
+    match span.rfind_byte(&access, b'\n') {
+        Option::None => {
+            let pending = restore.restore(access);
+            let oversized = &pending.len() > 16384usize;
+            let action = if oversized { close(connection) } else { wait(read_line(connection)) };
+            (Session!.{ pending, retried: false }, action)
+        },
+        Option::Some(index) => {
+            let end = index + 1usize;
+            let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
+            let tail = span.skip(end);
+            let pending = Buffer!::new_with_cap(tail.len()).push_bytes(&access, tail);
+            restore.restore(access).destroy();
+            (Session!.{ pending, retried: false }, write(complete, read_line(connection)))
+        },
+    }
+}
+
+fn handle(session: Session!, event: Event!) -> (Session!, Action!) {
+    match event {
+        Event!::Connected(connection) => (session, wait(read_line(connection))),
+        Event!::Bytes(connection, bytes) => {
+            let { pending, retried } = session;
+            receive(connection, pending.push_buffer(bytes))
+        },
+        Event!::TimedOut(connection) => {
+            let { pending, retried } = session;
+            let session = Session!.{ pending, retried: true };
+            if retried {
+                (session, close(connection))
+            } else {
+                eprint_buffer(f"Retrying idle read.\n");
+                (session, wait(read_line(connection)))
+            }
+        },
+        Event!::End(connection) => (session, close(connection)),
+        Event!::Cancelled(connection) => (session, close(connection)),
+        Event!::Failed(connection, code) => (session, close(connection)),
+    }
+}
+
+fn main() -> i32 {
+    let listener = match Listener!::bind_stateful(0u16, start, handle, finish) {
+        Result::Ok(listener) => listener,
+        Result::Err(code) => {
+            eprint_buffer(f"tcp-session: cannot listen (libuv error {code})\n");
+            return 1i32;
+        },
+    };
+    let port = &listener.port();
+    if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {
+        listener.stop();
+        return 1i32;
+    }
+    match listener.run() {
+        Result::Ok(unit) => 0i32,
+        Result::Err(code) => {
+            eprint_buffer(f"tcp-session: listener stopped (libuv error {code})\n");
+            1i32
+        },
+    }
+}

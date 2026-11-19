@@ -1,0 +1,11 @@
+[package]
+name="tcp_session"
+source_root="."
+kind="executable"
+entry="main"
+
+[dependencies.std]
+path="../../../kursal/lib/std"
+
+[dependencies.tcp]
+path="../../lib/tcp"

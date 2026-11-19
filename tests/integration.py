@@ -138,8 +138,7 @@ def check_timeout(port):
         assert_response(read_response(stalled), 408, b"Request Timeout\n")
 
 
-def assert_echo(client, data):
-    client.sendall(data)
+def assert_received(client, data):
     received = bytearray()
     while len(received) < len(data):
         chunk = client.recv(len(data) - len(received))
@@ -148,14 +147,23 @@ def assert_echo(client, data):
     assert received == data
 
 
+def assert_echo(client, data):
+    client.sendall(data)
+    assert_received(client, data)
+
+
+def listening_port(process, prefix):
+    ready, _, _ = select.select([process.stdout], [], [], 15)
+    assert ready, "server did not announce its port"
+    address = process.stdout.readline()
+    assert address.startswith(prefix), address
+    return int(address.rsplit(b":", 1)[1])
+
+
 def check_tcp_echo(command):
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
         try:
-            ready, _, _ = select.select([process.stdout], [], [], 15)
-            assert ready, "TCP echo did not announce its port"
-            address = process.stdout.readline()
-            assert address.startswith(b"Listening on 127.0.0.1:"), address
-            port = int(address.rsplit(b":", 1)[1])
+            port = listening_port(process, b"Listening on 127.0.0.1:")
 
             with connect(port) as stalled, connect(port) as active:
                 assert not select.select([stalled], [], [], 0.05)[0], "idle read closed immediately"
@@ -182,14 +190,49 @@ def check_tcp_echo(command):
     print("Kable TCP echo checks passed")
 
 
+def read_log_until(stream, message):
+    logs = bytearray()
+    while message not in logs:
+        assert select.select([stream], [], [], 5)[0], logs
+        line = stream.readline()
+        assert line, logs
+        logs.extend(line)
+    return logs
+
+
+def check_tcp_session(command):
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          bufsize=0) as process:
+        try:
+            port = listening_port(process, b"Listening on 127.0.0.1:")
+            with connect(port) as first, connect(port) as second:
+                first.sendall(b"first fragment ")
+                assert not select.select([first], [], [], 0.05)[0]
+                assert_echo(second, b"independent\n")
+                second.shutdown(socket.SHUT_WR)
+                assert second.recv(1) == b""
+
+                logs = read_log_until(process.stderr, b"Retrying idle read.")
+                first.sendall(b"continued\n")
+                assert_received(first, b"first fragment continued\n")
+                first.sendall(b"left")
+                logs.extend(read_log_until(process.stderr, b"Retrying idle read."))
+                process.terminate()
+                assert first.recv(1) == b""
+                assert process.wait(timeout=5) == 0
+                logs.extend(process.stderr.read())
+                assert logs.count(b"Closed session with 0 buffered bytes.") == 1, logs
+                assert logs.count(b"Closed session with 4 buffered bytes.") == 1, logs
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable stateful TCP checks passed")
+
+
 def run_checks(command, check_request_timeout):
     with subprocess.Popen([*command, "0"], stdout=subprocess.PIPE) as process:
         try:
-            ready, _, _ = select.select([process.stdout], [], [], 15)
-            assert ready, "server did not announce its port"
-            address = process.stdout.readline()
-            assert address.startswith(b"Listening on http://127.0.0.1:"), address
-            port = int(address.rsplit(b":", 1)[1])
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
             conflict = subprocess.run([*command, str(port)], capture_output=True, timeout=15)
             assert conflict.returncode == 1 and b"cannot listen" in conflict.stderr, conflict
             check_http(port)
@@ -206,13 +249,16 @@ def run_checks(command, check_request_timeout):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-timeout", action="store_true", help="also wait for the request deadline")
-    parser.add_argument("--tcp-echo", action="store_true", help="run TCP checks against the given command")
+    tcp_checks = parser.add_mutually_exclusive_group()
+    tcp_checks.add_argument("--tcp-echo", action="store_true", help="run echo checks against the given command")
+    tcp_checks.add_argument("--tcp-session", action="store_true", help="run stateful TCP checks against the given command")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="use a prebuilt server with an optional runner")
     args = parser.parse_args()
-    if args.tcp_echo:
+    if args.tcp_echo or args.tcp_session:
         if not args.command:
-            parser.error("--tcp-echo requires a server command")
-        check_tcp_echo(args.command)
+            parser.error("TCP checks require a server command")
+        check = check_tcp_echo if args.tcp_echo else check_tcp_session
+        check(args.command)
     elif args.command:
         run_checks(args.command, args.check_timeout)
     else:
@@ -220,9 +266,11 @@ def main():
             binary = build("kable", Path(directory) / "kable")
             example = build("examples/timer-race", Path(directory) / "timer-race")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
+            tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
             assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
             check_tcp_echo([str(tcp_echo)])
+            check_tcp_session([str(tcp_session)])
             run_checks([str(binary)], args.check_timeout)
 
 

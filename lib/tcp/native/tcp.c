@@ -31,8 +31,8 @@ typedef struct {
     uv_buf_t output;
     Listener *listener;
     KableTimer *timer;
-    void *attachment;
-    void (*destroy_attachment)(void *);
+    uint8_t *attachment;
+    void (*destroy_attachment)(uint8_t *);
     uint64_t next_ms;
     uint8_t next_timed;
     int phase;
@@ -81,13 +81,13 @@ void kable_tcp_close(uint8_t *raw) {
     close_connection((Connection *)raw);
 }
 
-void kable_tcp_attach(uint8_t *raw, void *attachment, void (*destroy)(void *)) {
+void kable_tcp_attach(uint8_t *raw, uint8_t *attachment, void (*destroy)(uint8_t *)) {
     Connection *connection = (Connection *)raw;
     connection->attachment = attachment;
     connection->destroy_attachment = destroy;
 }
 
-void *kable_tcp_attachment(uint8_t *raw) {
+uint8_t *kable_tcp_attachment(uint8_t *raw) {
     return ((Connection *)raw)->attachment;
 }
 

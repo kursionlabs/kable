@@ -183,8 +183,8 @@ static int resume_response(Client *client, uint8_t ready) {
     return result;
 }
 
-static void destroy_client(void *attachment) {
-    Client *client = attachment;
+static void destroy_client(uint8_t *attachment) {
+    Client *client = (Client *)attachment;
     resume_response(client, 0);
     release_request(client);
     free(client);
@@ -270,7 +270,7 @@ static int start_request(Server *server, uint8_t *connection) {
     llhttp_init(&client->parser, HTTP_REQUEST, &settings);
     client->parser.data = client;
     client->deadline = kable_tcp_now(connection) + READ_TIMEOUT;
-    kable_tcp_attach(connection, client, destroy_client);
+    kable_tcp_attach(connection, (uint8_t *)client, destroy_client);
     return read_request(client);
 }
 
@@ -279,7 +279,7 @@ static int32_t on_event(uint8_t *context, uint8_t *connection, uint8_t event,
     (void)error;
     if (event == KABLE_TCP_CONNECTED) return start_request((Server *)context, connection);
 
-    Client *client = kable_tcp_attachment(connection);
+    Client *client = (Client *)kable_tcp_attachment(connection);
     switch (event) {
     case KABLE_TCP_BYTES:
         return consume_request(client, (const char *)bytes, len);
