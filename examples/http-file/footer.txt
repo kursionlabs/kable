@@ -1,0 +1,1 @@
+This footer was read after the first file joined.

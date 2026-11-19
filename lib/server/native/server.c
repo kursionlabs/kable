@@ -41,6 +41,8 @@ typedef struct {
     int32_t (*finish)(uint8_t *, uint8_t *, uint8_t, uint8_t, uint8_t);
     uint8_t head;
     uint8_t http10;
+    int plan_ready;
+    int completing_plan;
     Server *server;
     llhttp_t parser;
     Bytes target;
@@ -203,12 +205,22 @@ static void cancel_plan(void *context) {
 
 static void finish_plan(void *context) {
     Client *client = context;
-    uint8_t ready = kable_tcp_unpark(client->connection) && time_left(client) != 0;
-    uint8_t *plan = client->plan;
-    client->plan = NULL;
-    client->scope = NULL;
-    int status = client->finish(plan, (uint8_t *)client, ready, client->head, client->http10);
-    if (!ready || status < 0) kable_tcp_close(client->connection);
+    client->plan_ready = 1;
+    if (client->completing_plan) return;
+
+    /* A continuation may schedule a plan that fails to start immediately.
+       Finish it in this loop so chained failures do not recurse. */
+    client->completing_plan = 1;
+    while (client->plan_ready) {
+        client->plan_ready = 0;
+        uint8_t ready = kable_tcp_unpark(client->connection) && time_left(client) != 0;
+        uint8_t *plan = client->plan;
+        client->plan = NULL;
+        client->scope = NULL;
+        int status = client->finish(plan, (uint8_t *)client, ready, client->head, client->http10);
+        if (!ready || status < 0) kable_tcp_close(client->connection);
+    }
+    client->completing_plan = 0;
 }
 
 /* The request owns the plan and its continuation once the socket is parked. */

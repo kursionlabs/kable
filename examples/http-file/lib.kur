@@ -1,6 +1,7 @@
 use async::{FileOutcome!, Outcome, RaceOutcome, read_file, select, sleep};
 use http::{Method, Request!, Response!};
-use server::{Action!, Server!, defer};
+use server::{Action!, Server!, defer, defer_next};
+use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::raw::Span;
@@ -40,6 +41,40 @@ fn timed_response(outcome: RaceOutcome[FileOutcome!, Outcome[()]]) -> Response! 
     }
 }
 
+fn cancel_first(target: Buffer!, outcome: FileOutcome!) {
+    target.destroy();
+    discard_file(outcome);
+    eprint_buffer(f"Sequence cancelled before the second read.\n");
+}
+
+fn cancel_second(first: Buffer!, outcome: FileOutcome!) {
+    let length = &first.len();
+    first.destroy();
+    discard_file(outcome);
+    eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+}
+
+fn finish_second(first: Buffer!, outcome: FileOutcome!) -> Action! {
+    let response = match outcome {
+        FileOutcome!::Read(second) => Response!::ok(first.push_buffer(second)),
+        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
+        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500u16) },
+    };
+    Action!::Reply.(response)
+}
+
+fn finish_first(target: Buffer!, outcome: FileOutcome!) -> Action! {
+    target.destroy();
+    match outcome {
+        FileOutcome!::Read(first) => {
+            let access = StaticRead::new();
+            defer_next(read_file(&access, "footer.txt", 65_536usize), first, finish_second, cancel_second)
+        },
+        FileOutcome!::Cancelled => Action!::Reply.(Response!::rejected(408u16)),
+        FileOutcome!::Failed(code) => Action!::Reply.(Response!::rejected(500u16)),
+    }
+}
+
 fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
     body.destroy();
@@ -48,6 +83,7 @@ fn handle(request: Request!) -> Action! {
     let health = path.is(&access, "/health");
     let file = path.is(&access, "/file");
     let timed = path.is(&access, "/file-with-timeout");
+    let sequence = path.is(&access, "/file-sequence");
     let target = restore.restore(access);
     match method {
         Method::Get | Method::Head => (),
@@ -56,9 +92,10 @@ fn handle(request: Request!) -> Action! {
             return Action!::Reply.(Response!::method_not_allowed("GET, HEAD"));
         },
     }
-    if file || timed {
+    if file || timed || sequence {
         let access = StaticRead::new();
         let task = read_file(&access, "example.txt", 65_536usize);
+        if sequence { return defer_next(task, target, finish_first, cancel_first); }
         if timed {
             return defer(select(task, sleep(1000u64, ())),
                 |outcome: RaceOutcome[FileOutcome!, Outcome[()]]| {

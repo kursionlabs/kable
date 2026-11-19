@@ -67,6 +67,15 @@ Request `/file` on the printed address to read the bundled `example.txt`.
 `/file-with-timeout` races the same read against a one-second timer. If the
 timer wins, the handler returns 504 after the worker closes the file and returns.
 
+`defer_next(plan, state, resume, cancel)` lets a continuation return another
+HTTP action. On an active request, `resume` receives the owned state and
+the completed plan's outcome. When the request is cancelled, `cancel`
+consumes both after the active plan joins. Every stage shares the original
+request deadline.
+
+The example's `/file-sequence` reads `example.txt`, then carries its owned
+buffer into a second read of `footer.txt`. It returns their contents together.
+
 ## Scoped task plans
 
 `lib/async/` lets any Kursal program build a wait with `sleep(ms, value)` and
@@ -173,9 +182,9 @@ python3 tests/integration.py --check-timeout
 The integration suite builds Kable and the examples with the adjacent Kursal
 compiler. It checks timer races, file reads, HTTP framing and request limits,
 and TCP state across read deadlines and shutdown. The hosted file check holds
-a worker inside a read so it can verify that `/health` stays responsive and
-shutdown waits for the worker to return. Omit `--check-timeout` to skip the
-ten-second HTTP request deadline check.
+a worker inside a read so it can verify that `/health` stays responsive,
+sequential plans join in order, and shutdown waits for the active stage.
+Omit `--check-timeout` to skip the ten-second HTTP request deadline checks.
 
 ## License
 

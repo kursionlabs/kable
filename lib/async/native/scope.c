@@ -190,6 +190,11 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
     }
 
     scope->root = root;
+    if (timed && ms == 0) {
+        cancel(&scope->nodes[root]);
+        return 0;
+    }
+
     scope->done = done;
     scope->context = context;
 

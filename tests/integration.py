@@ -174,13 +174,14 @@ def check_async_read(command, directory):
 
 
 @contextmanager
-def gated_file_server(command, directory, library):
+def gated_file_server(command, directory, library, gates=1):
     started, notify = os.pipe()
     release, permit = os.pipe()
     env = os.environ | {
         "LD_PRELOAD": str(library),
         "KABLE_TEST_FILE_STARTED": str(notify),
         "KABLE_TEST_FILE_RELEASE": str(release),
+        "KABLE_TEST_FILE_GATES": str(gates),
     }
     try:
         with subprocess.Popen(command, cwd=directory, env=env, pass_fds=(notify, release),
@@ -196,10 +197,26 @@ def gated_file_server(command, directory, library):
             os.close(fd)
 
 
+def wait_for_held_read(started, expected=b"A"):
+    assert select.select([started], [], [], 5)[0], "file worker did not start"
+    assert os.read(started, 1) == expected
+
+
 def start_held_read(client, request, started):
     client.sendall(request)
-    assert select.select([started], [], [], 5)[0], "file worker did not start"
-    assert os.read(started, 1) == b"R"
+    wait_for_held_read(started)
+
+
+def wait_for_listener_shutdown(port):
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                pass
+        except ConnectionRefusedError:
+            return
+        assert time.monotonic() < deadline, "shutdown kept accepting connections"
+        time.sleep(0.01)
 
 
 def check_http_file(command, directory, check_request_timeout=False):
@@ -242,15 +259,7 @@ def check_http_file(command, directory, check_request_timeout=False):
         with connect(port) as client:
             start_held_read(client, request, started)
             process.terminate()
-            deadline = time.monotonic() + 5
-            while True:
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
-                        pass
-                except ConnectionRefusedError:
-                    break
-                assert time.monotonic() < deadline, "shutdown kept accepting connections"
-                time.sleep(0.01)
+            wait_for_listener_shutdown(port)
             assert process.poll() is None, "shutdown returned before the worker joined"
             assert not select.select([client], [], [], 0)[0], "request finished before the worker"
             assert os.write(permit, b"R") == 1
@@ -269,7 +278,65 @@ def check_http_file(command, directory, check_request_timeout=False):
                 read_log_until(process.stderr, b"File request cancelled.")
             process.terminate()
             assert process.wait(timeout=5) == 0, process.stderr.read()
+    check_http_sequence(command, directory, library, payload, check_request_timeout)
     print("Kable HTTP file checks passed")
+
+
+def check_http_sequence(command, directory, library, payload, check_request_timeout):
+    suffix = b"\x00second read\n"
+    footer = directory / "footer.txt"
+    footer.write_bytes(suffix)
+    request = b"GET /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    first_cancelled = b"Sequence cancelled before the second read."
+    second_cancelled = f"Sequence cancelled with {len(payload)} bytes from the first read.".encode()
+
+    with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+        with connect(port) as client:
+            start_held_read(client, request, started)
+            assert not select.select([started], [], [], 0.05)[0], "second read started before the first joined"
+            assert os.write(permit, b"R") == 1
+            wait_for_held_read(started, b"B")
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 200, payload + suffix)
+        head = b"HEAD /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        assert_response(exchange(port, head), 200, payload + suffix, head=True)
+        footer.unlink()
+        assert_response(exchange(port, request), 500, b"Internal Server Error\n")
+        footer.write_bytes(suffix)
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
+
+    for second, expected in ((False, first_cancelled), (True, second_cancelled)):
+        with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+            with connect(port) as client:
+                start_held_read(client, request, started)
+                if second:
+                    assert os.write(permit, b"R") == 1
+                    wait_for_held_read(started, b"B")
+                process.terminate()
+                wait_for_listener_shutdown(port)
+                assert process.poll() is None, "shutdown returned before the active stage joined"
+                assert not select.select([client], [], [], 0)[0], "request finished before the active stage"
+                assert os.write(permit, b"R") == 1
+                assert client.recv(1) == b"", "shutdown sent a cancelled sequence response"
+                assert process.wait(timeout=5) == 0, process.stderr.read()
+                assert process.stderr.read().count(expected) == 1
+                assert not select.select([started], [], [], 0)[0], "shutdown started another stage"
+
+    if check_request_timeout:
+        with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+            with connect(port) as client:
+                start_held_read(client, request, started)
+                assert not select.select([client], [], [], 5.25)[0]
+                assert os.write(permit, b"R") == 1
+                wait_for_held_read(started, b"B")
+                assert not select.select([client], [], [], 5.25)[0], "deadline returned before the second read joined"
+                assert os.write(permit, b"R") == 1
+                assert client.recv(1) == b"", "the second read reset the request deadline"
+                read_log_until(process.stderr, second_cancelled)
+            process.terminate()
+            assert process.wait(timeout=5) == 0, process.stderr.read()
 
 
 def assert_received(client, data):
