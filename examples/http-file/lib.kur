@@ -1,11 +1,12 @@
-use async::{FileOutcome!, Outcome, RaceOutcome, read_file, select, sleep};
+use async::{FileOutcome!, Outcome, RaceOutcome, ReadFile!, read_file, select, sleep};
 use http::{Method, Request!, Response!};
-use server::{Action!, Server!, defer, defer_next};
+use server::{Action!, Server!, defer, defer_sequence};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
-use std::option::Result;
+use std::option::{Option, Result};
 use std::raw::Span;
 use std::slice::StaticRead;
+use task::{Carry!, carry, sequence};
 
 fn file_response(outcome: FileOutcome!) -> Response! {
     match outcome {
@@ -41,20 +42,33 @@ fn timed_response(outcome: RaceOutcome[FileOutcome!, Outcome[()]]) -> Response! 
     }
 }
 
-fn cancel_first(target: Buffer!, outcome: FileOutcome!) {
+fn cancel_first(target: Buffer!, outcome: Option[FileOutcome!]) {
     target.destroy();
-    discard_file(outcome);
+    match outcome {
+        Option::Some(file) => discard_file(file),
+        Option::None => (),
+    }
     eprint_buffer(f"Sequence cancelled before the second read.\n");
 }
 
-fn cancel_second(first: Buffer!, outcome: FileOutcome!) {
-    let length = &first.len();
-    first.destroy();
-    discard_file(outcome);
-    eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+fn cancel_sequence(unit: (), outcome: Option[(Buffer!, FileOutcome!)]) {
+    match outcome {
+        Option::Some(result) => {
+            let (first, file) = result;
+            let length = &first.len();
+            first.destroy();
+            discard_file(file);
+            eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+        },
+        Option::None => (),
+    }
 }
 
-fn finish_second(first: Buffer!, outcome: FileOutcome!) -> Action! {
+fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action! {
+    let (first, outcome) = match result {
+        Option::Some(files) => files,
+        Option::None => return Action!::Reply.(Response!::rejected(500u16)),
+    };
     let response = match outcome {
         FileOutcome!::Read(second) => Response!::ok(first.push_buffer(second)),
         FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
@@ -63,15 +77,15 @@ fn finish_second(first: Buffer!, outcome: FileOutcome!) -> Action! {
     Action!::Reply.(response)
 }
 
-fn finish_first(target: Buffer!, outcome: FileOutcome!) -> Action! {
+fn next_file(target: Buffer!, outcome: FileOutcome!) -> Option[Carry![ReadFile!, Buffer!]] {
     target.destroy();
     match outcome {
         FileOutcome!::Read(first) => {
             let access = StaticRead::new();
-            defer_next(read_file(&access, "footer.txt", 65_536usize), first, finish_second, cancel_second)
+            Option::Some.(carry(read_file(&access, "footer.txt", 65_536usize), first))
         },
-        FileOutcome!::Cancelled => Action!::Reply.(Response!::rejected(408u16)),
-        FileOutcome!::Failed(code) => Action!::Reply.(Response!::rejected(500u16)),
+        FileOutcome!::Cancelled => Option::None,
+        FileOutcome!::Failed(code) => Option::None,
     }
 }
 
@@ -83,7 +97,7 @@ fn handle(request: Request!) -> Action! {
     let health = path.is(&access, "/health");
     let file = path.is(&access, "/file");
     let timed = path.is(&access, "/file-with-timeout");
-    let sequence = path.is(&access, "/file-sequence");
+    let sequence_path = path.is(&access, "/file-sequence");
     let target = restore.restore(access);
     match method {
         Method::Get | Method::Head => (),
@@ -92,10 +106,13 @@ fn handle(request: Request!) -> Action! {
             return Action!::Reply.(Response!::method_not_allowed("GET, HEAD"));
         },
     }
-    if file || timed || sequence {
+    if file || timed || sequence_path {
         let access = StaticRead::new();
         let task = read_file(&access, "example.txt", 65_536usize);
-        if sequence { return defer_next(task, target, finish_first, cancel_first); }
+        if sequence_path {
+            let plan = sequence(task).then(target, next_file, cancel_first);
+            return defer_sequence(plan, (), finish_sequence, cancel_sequence);
+        }
         if timed {
             return defer(select(task, sleep(1000u64, ())),
                 |outcome: RaceOutcome[FileOutcome!, Outcome[()]]| {

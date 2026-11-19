@@ -187,12 +187,42 @@ instance Plan[Join![First, Second], JoinOutcome[A, B], Driver] {
     }
 }
 
-use package::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
+use package::sequence::{Chain, Clock, Continuation!, HostedChain, Sequence!, StageDriver, StageHost,
+    continuation, drive_sequence, host_sequence, remaining_budget, sequence};
 
 export Chain;
 export Clock;
+export Continuation!;
+export HostedChain;
 export Sequence!;
 export StageDriver;
+export StageHost;
+export continuation;
 export drive_sequence;
+export host_sequence;
 export remaining_budget;
 export sequence;
+
+forall Task, State.
+struct Carry! { task: Task, state: State }
+
+/// Moves owned state alongside a plan. Its outcome returns the state on
+/// every exit path, including cancellation of the inner plan.
+forall Task, State.
+fn carry(task: Task, state: State) -> Carry![Task, State] { Carry!.{ task, state } }
+
+forall Task, State, Output, Driver where Plan[Task, Output, Driver].
+instance Plan[Carry![Task, State], (State, Output), Driver] {
+    fn stage(&task: Carry![Task, State], &scope: Driver) -> usize {
+        let { task: inner, state } = task;
+        let id = Plan[Task, Output, Driver]::stage(&inner, &scope);
+        task = Carry!.{ task: inner, state };
+        id
+    }
+
+    fn collect(task: Carry![Task, State], &scope: Driver) -> (State, Output) {
+        let { task, state } = task;
+        let result = Plan[Task, Output, Driver]::collect(task, &scope);
+        (state, result)
+    }
+}

@@ -1,4 +1,6 @@
 //! Explicit sequential adapters. Engines drive one fully scoped stage at a time.
+use std::alloc::heap::HeapAllocator;
+use std::mem::sizeof;
 use std::option::Option;
 
 forall Engine.
@@ -16,13 +18,31 @@ trait StageDriver {
 forall Task.
 struct First! { task: Task }
 
-forall Previous, State, Input, Task.
-struct Then! {
-    previous: Previous,
+forall State, Input, Task.
+struct Handoff! {
     state: State,
     resume: fn(State, Input) -> Option[Task],
     cancel: fn(State, Option[Input]) -> (),
 }
+
+forall State, Input, Task.
+impl Handoff![State, Input, Task] {
+    fn resume(self, prior: Option[Input]) -> Option[Task] {
+        let { state, resume, cancel } = self;
+        match prior {
+            Option::Some(input) => resume(state, input),
+            Option::None => { cancel(state, Option::None); Option::None },
+        }
+    }
+
+    fn cancel(self, prior: Option[Input]) {
+        let { state, resume, cancel } = self;
+        cancel(state, prior);
+    }
+}
+
+forall Previous, State, Input, Task.
+struct Then! { previous: Previous, handoff: Handoff![State, Input, Task] }
 
 forall Stages.
 struct Sequence! { stages: Stages }
@@ -41,7 +61,7 @@ impl Sequence![Stages] {
     fn then(self, state: State, resume: fn(State, Input) -> Option[Task],
         cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task]] {
         let { stages } = self;
-        Sequence!.{ stages: Then!.{ previous: stages, state, resume, cancel } }
+        Sequence!.{ stages: Then!.{ previous: stages, handoff: Handoff!.{ state, resume, cancel } } }
     }
 }
 
@@ -73,30 +93,133 @@ forall Previous, State, Input, Task, Output, Engine
     where Clock[Engine], Chain[Previous, Input, Engine], StageDriver[Task, Output, Engine].
 instance Chain[Then![Previous, State, Input, Task], Output, Engine] {
     fn drive(stages: Then![Previous, State, Input, Task], &engine: Engine, deadline: Option[u64]) -> Option[Output] {
-        let { previous, state, resume, cancel } = stages;
+        let { previous, handoff } = stages;
         let result = Chain[Previous, Input, Engine]::drive(previous, &engine, deadline);
-        match result {
-            Option::None => {
-                cancel(state, Option::None);
-                Option::None
-            },
-            Option::Some(input) => {
-                let budget = remaining_budget(&engine, deadline);
-                let expired = match budget { Option::Some(ms) => ms == 0u64, Option::None => false, };
-                if expired {
-                    cancel(state, Option::Some.(input));
-                    Option::None
-                } else {
-                    match resume(state, input) {
-                        Option::None => Option::None,
-                        Option::Some(next) => {
-                            Option::Some.(StageDriver[Task, Output, Engine]::drive(next, &engine, deadline))
-                        },
-                    }
-                }
-            },
+        let budget = remaining_budget(&engine, deadline);
+        let expired = match budget { Option::Some(ms) => ms == 0u64, Option::None => false, };
+        if expired {
+            handoff.cancel(result);
+            return Option::None;
+        }
+        match handoff.resume(result) {
+            Option::Some(next) => Option::Some.(StageDriver[Task, Output, Engine]::drive(next, &engine, deadline)),
+            Option::None => Option::None,
         }
     }
+}
+
+/// Owns one continuation for a hosted stage. The host consumes it by
+/// resuming or cancelling after that stage has joined.
+forall Input, Action.
+struct Continuation! {
+    raw: *u8,
+    resume: unsafe fn(*u8, Option[Input]) -> Action,
+    cancel: unsafe fn(*u8, Option[Input]) -> (),
+}
+
+forall State, Input, Action.
+struct ContinuationState! {
+    state: State,
+    resume: fn(State, Option[Input]) -> Action,
+    cancel: fn(State, Option[Input]) -> (),
+}
+
+forall State, Input, Action.
+fn continuation(state: State, resume: fn(State, Option[Input]) -> Action,
+    cancel: fn(State, Option[Input]) -> ()) -> Continuation![Input, Action] {
+    let raw = HeapAllocator::alloc(sizeof[ContinuationState![State, Input, Action]]()).into_raw();
+    unsafe *(unsafe (raw as *ContinuationState![State, Input, Action])) =
+        ContinuationState!.{ state, resume, cancel };
+    Continuation!.{ raw, resume: resume_continuation[State, Input, Action],
+        cancel: cancel_continuation[State, Input, Action] }
+}
+
+forall State, Input, Action.
+unsafe fn reclaim(raw: *u8) -> ContinuationState![State, Input, Action] {
+    let boxed = unsafe *(unsafe (raw as *ContinuationState![State, Input, Action]));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
+    boxed
+}
+
+forall State, Input, Action.
+unsafe fn resume_continuation(raw: *u8, prior: Option[Input]) -> Action {
+    let { state, resume, cancel } = unsafe reclaim[State, Input, Action](raw);
+    resume(state, prior)
+}
+
+forall State, Input, Action.
+unsafe fn cancel_continuation(raw: *u8, prior: Option[Input]) {
+    let { state, resume, cancel } = unsafe reclaim[State, Input, Action](raw);
+    cancel(state, prior);
+}
+
+forall Input, Action.
+impl Continuation![Input, Action] {
+    fn resume(self, prior: Option[Input]) -> Action {
+        let { raw, resume, cancel } = self;
+        unsafe resume(raw, prior)
+    }
+
+    fn cancel(self, prior: Option[Input]) {
+        let { raw, resume, cancel } = self;
+        unsafe cancel(raw, prior);
+    }
+}
+
+/// Hosts schedule one plan at a time under the same enclosing lifetime.
+forall Task, Output, Host, Action.
+trait StageHost {
+    fn schedule(task: Task, next: Continuation![Output, Action]) -> Action;
+}
+
+forall Stages, Output, Host, Action.
+trait HostedChain {
+    fn schedule(stages: Stages, next: Continuation![Output, Action]) -> Action;
+}
+
+forall Task, Output, Host, Action where StageHost[Task, Output, Host, Action].
+instance HostedChain[First![Task], Output, Host, Action] {
+    fn schedule(stages: First![Task], next: Continuation![Output, Action]) -> Action {
+        let { task } = stages;
+        StageHost[Task, Output, Host, Action]::schedule(task, next)
+    }
+}
+
+forall State, Input, Task, Output, Action.
+struct Next! { handoff: Handoff![State, Input, Task], tail: Continuation![Output, Action] }
+
+forall State, Input, Task, Output, Host, Action where StageHost[Task, Output, Host, Action].
+fn resume_next(next: Next![State, Input, Task, Output, Action], prior: Option[Input]) -> Action {
+    let { handoff, tail } = next;
+    match handoff.resume(prior) {
+        Option::Some(task) => StageHost[Task, Output, Host, Action]::schedule(task, tail),
+        Option::None => tail.resume(Option::None),
+    }
+}
+
+forall State, Input, Task, Output, Action.
+fn cancel_next(next: Next![State, Input, Task, Output, Action], prior: Option[Input]) {
+    let { handoff, tail } = next;
+    handoff.cancel(prior);
+    tail.cancel(Option::None);
+}
+
+forall Previous, State, Input, Task, Output, Host, Action
+    where HostedChain[Previous, Input, Host, Action], StageHost[Task, Output, Host, Action].
+instance HostedChain[Then![Previous, State, Input, Task], Output, Host, Action] {
+    fn schedule(stages: Then![Previous, State, Input, Task], next: Continuation![Output, Action]) -> Action {
+        let { previous, handoff } = stages;
+        let link = Next!.{ handoff, tail: next };
+        let next = continuation(link, resume_next[State, Input, Task, Output, Host, Action],
+            cancel_next[State, Input, Task, Output, Action]);
+        HostedChain[Previous, Input, Host, Action]::schedule(previous, next)
+    }
+}
+
+forall Stages, Output, Host, Action where HostedChain[Stages, Output, Host, Action].
+fn host_sequence(plan: Sequence![Stages], next: Continuation![Output, Action]) -> Action {
+    let { stages } = plan;
+    HostedChain[Stages, Output, Host, Action]::schedule(stages, next)
 }
 
 /// Uses one absolute deadline for the whole chain. None means the final

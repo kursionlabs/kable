@@ -7,7 +7,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, Plan as TaskPlan, PlanDriver, Race!, RaceOutcome, Select!, Sleep!,
     join, race, select, sleep};
-use task::{Branch, ScopeState!};
+use task::{Branch, Carry!, ScopeState!};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export Join!;
@@ -258,6 +258,13 @@ instance Runnable[Sleep![T], Outcome[T]] {
 
 instance Runnable[ReadFile!, FileOutcome!] {
     fn drive(task: ReadFile!, deadline: Option[u64]) -> FileOutcome! { drive_plan(task, deadline) }
+}
+
+forall Task, State, Output where TaskPlan[Task, Output, Scope!].
+instance Runnable[Carry![Task, State], (State, Output)] {
+    fn drive(task: Carry![Task, State], deadline: Option[u64]) -> (State, Output) {
+        drive_plan(task, deadline)
+    }
 }
 
 forall A, B.

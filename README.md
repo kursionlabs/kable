@@ -75,8 +75,11 @@ the completed plan's outcome. When the request is cancelled, `cancel`
 consumes both after the active plan joins. Every stage shares the original
 request deadline.
 
-The example's `/file-sequence` reads `example.txt`, then carries its owned
-buffer into a second read of `footer.txt`. It returns their contents together.
+An HTTP handler can also pass a portable `sequence(...).then(...)` chain to
+`defer_sequence`. The listener drives each stage and delivers request
+cancellation to the chain. The example's `/file-sequence` uses this API to read
+`example.txt`, then carry its owned buffer into a second read of `footer.txt`.
+It returns their contents together.
 
 ## Scoped task plans
 
@@ -125,6 +128,8 @@ state back through `cancel` if an earlier adapter stopped.
 Its optional millisecond budget applies to the whole chain. It returns
 `None` when the last stage was never constructed and `Some(outcome)` when
 that stage produced an outcome, including cancellation during the stage.
+`carry(plan, state)` moves an owned value alongside a stage and returns it
+with that stage's outcome.
 
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain

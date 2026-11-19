@@ -15,3 +15,6 @@ path="../async"
 
 [dependencies.tcp]
 path="../tcp"
+
+[dependencies.task]
+path="../task"

@@ -5,8 +5,9 @@ use http::{Method, Request!, Response!};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::sizeof;
-use std::option::Result;
+use std::option::{Option, Result};
 use std::ptr::is_null;
+use task::{Continuation!, HostedChain, Sequence!, StageHost, continuation, host_sequence};
 
 extern "C" fn kable_bind(port: u16,
     callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,
@@ -65,6 +66,33 @@ fn defer_next(task: Task, state: State, resume: fn(State, Output) -> Action!,
     unsafe *(unsafe (plan as *NextPlan![Task, Output, State])) =
         NextPlan!.{ prepared, state, resume, cancel };
     Action!::Deferred.(Deferred!.{ plan, scope, root, finish: finish_next[Task, Output, State] })
+}
+
+struct RequestHost {}
+
+forall Output.
+fn resume_stage(next: Continuation![Output, Action!], outcome: Output) -> Action! {
+    next.resume(Option::Some.(outcome))
+}
+
+forall Output.
+fn cancel_stage(next: Continuation![Output, Action!], outcome: Output) {
+    next.cancel(Option::Some.(outcome));
+}
+
+forall Task, Output where Plan[Task, Output].
+instance StageHost[Task, Output, RequestHost, Action!] {
+    fn schedule(task: Task, next: Continuation![Output, Action!]) -> Action! {
+        defer_next(task, next, resume_stage[Output], cancel_stage[Output])
+    }
+}
+
+/// Drives a portable sequence under the current request's deadline.
+forall Stages, Output, State where HostedChain[Stages, Output, RequestHost, Action!].
+fn defer_sequence(plan: Sequence![Stages], state: State, resume: fn(State, Option[Output]) -> Action!,
+    cancel: fn(State, Option[Output]) -> ()) -> Action! {
+    let next = continuation(state, resume, cancel);
+    host_sequence[Stages, Output, RequestHost, Action!](plan, next)
 }
 
 forall Task, Output, Env where Plan[Task, Output].

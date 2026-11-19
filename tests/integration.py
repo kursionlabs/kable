@@ -290,6 +290,7 @@ def check_http_file(command, directory, check_request_timeout=False):
 
 def check_http_sequence(command, directory, library, payload, check_request_timeout):
     suffix = b"\x00second read\n"
+    document = directory / "example.txt"
     footer = directory / "footer.txt"
     footer.write_bytes(suffix)
     request = b"GET /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
@@ -311,6 +312,9 @@ def check_http_sequence(command, directory, library, payload, check_request_time
         footer.unlink()
         assert_response(exchange(port, request), 500, b"Internal Server Error\n")
         footer.write_bytes(suffix)
+        document.unlink()
+        assert_response(exchange(port, request), 500, b"Internal Server Error\n")
+        document.write_bytes(payload)
         process.terminate()
         assert process.wait(timeout=5) == 0, process.stderr.read()
 
