@@ -16,6 +16,7 @@ typedef struct {
     uv_tcp_t socket;
     uv_signal_t interrupt;
     uv_signal_t terminate;
+    uv_signal_t broken_pipe;
     KableTcpHandler handler;
     uint8_t *context;
     unsigned connections;
@@ -617,8 +618,8 @@ static void stop_listener(Listener *listener, int status) {
 }
 
 static void on_signal(uv_signal_t *signal, int signum) {
-    (void)signum;
-    stop_listener(signal->data, 0);
+    // A disconnected peer is reported through the write callback.
+    if (signum != SIGPIPE) stop_listener(signal->data, 0);
 }
 
 static void accept_connection(uv_stream_t *stream, int status) {
@@ -696,6 +697,7 @@ uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpHandler handler
     status = listen_local(listener, port);
     if (status == 0) status = watch_signal(listener, &listener->interrupt, SIGINT);
     if (status == 0) status = watch_signal(listener, &listener->terminate, SIGTERM);
+    if (status == 0) status = watch_signal(listener, &listener->broken_pipe, SIGPIPE);
     *error = status;
     if (status < 0) {
         uv_walk(&listener->loop, close_handle, NULL);

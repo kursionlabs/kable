@@ -9,6 +9,22 @@ use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 forall Task -> Output.
 trait PlanOutput {}
 
+/// A source that builds a one-shot plan for its next item.
+/// The plan returns (Source, StreamOutcome![Item]) after joining.
+forall Source -> Next.
+trait Stream {
+    fn next(source: Source) -> Next;
+}
+
+/// The result of one pull. The plan returns the owned source alongside it.
+forall Item.
+exposed enum StreamOutcome! {
+    Item(Item),
+    End,
+    Cancelled,
+    Failed(i32),
+}
+
 forall T.
 struct Sleep! { ms: u64, value: T, id: Option[usize] }
 

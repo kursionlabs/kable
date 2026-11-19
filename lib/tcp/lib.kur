@@ -6,7 +6,7 @@ use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::PlanOutput;
+use task::{PlanOutput, Stream, StreamOutcome!};
 use task::driver::{Plan, Resolution};
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -33,7 +33,8 @@ extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan:
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
-struct ReadPlan! { connection: Connection!, id: Option[usize] }
+struct ReadPlan! { next: NextRead! }
+struct NextRead! { connection: Connection!, id: Option[usize] }
 struct WritePlan! { connection: Connection!, bytes: Buffer!, request: *u8, id: Option[usize] }
 
 exposed enum ReadOutcome! {
@@ -49,23 +50,46 @@ exposed enum WriteOutcome! {
     Failed(Connection!, Buffer!, i32),
 }
 
+instance PlanOutput[NextRead! -> (Connection!, StreamOutcome![Buffer!])] {}
+
+instance Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])] {
+    fn stage(&task: NextRead!, &scope: Scope!) -> Option[usize] {
+        let { connection: { raw }, id } = task;
+        let id = unsafe &scope.add_operation(raw, kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read);
+        task = NextRead!.{ connection: Connection!.{ raw }, id };
+        id
+    }
+
+    fn collect(task: NextRead!, &scope: Scope!) -> (Connection!, StreamOutcome![Buffer!]) {
+        let { connection: { raw }, id } = task;
+        let outcome = match &scope.result(id) {
+            Resolution::Completed => unsafe read_result(raw),
+            Resolution::Cancelled => StreamOutcome!::Cancelled,
+            Resolution::Failed(status) => StreamOutcome!::Failed.(status),
+            Resolution::First | Resolution::Second => StreamOutcome!::Failed.(-1),
+        };
+        (Connection!.{ raw }, outcome)
+    }
+}
+
 instance PlanOutput[ReadPlan! -> ReadOutcome!] {}
 
 instance Plan[ReadPlan!, Scope! -> ReadOutcome!] {
     fn stage(&task: ReadPlan!, &scope: Scope!) -> Option[usize] {
-        let { connection: { raw }, id } = task;
-        let id = unsafe &scope.add_operation(raw, kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read);
-        task = ReadPlan!.{ connection: Connection!.{ raw }, id };
+        let { next } = task;
+        let id = Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])]::stage(&next, &scope);
+        task = ReadPlan!.{ next };
         id
     }
 
     fn collect(task: ReadPlan!, &scope: Scope!) -> ReadOutcome! {
-        let { connection, id } = task;
-        match &scope.result(id) {
-            Resolution::Completed => unsafe read_result(connection),
-            Resolution::Cancelled => ReadOutcome!::Cancelled.(connection),
-            Resolution::Failed(status) => ReadOutcome!::Failed.(connection, status),
-            Resolution::First | Resolution::Second => ReadOutcome!::Failed.(connection, -1i32),
+        let { next } = task;
+        let (connection, outcome) = Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])]::collect(next, &scope);
+        match outcome {
+            StreamOutcome!::Item(bytes) => ReadOutcome!::Bytes.(connection, bytes),
+            StreamOutcome!::End => ReadOutcome!::End.(connection),
+            StreamOutcome!::Cancelled => ReadOutcome!::Cancelled.(connection),
+            StreamOutcome!::Failed(status) => ReadOutcome!::Failed.(connection, status),
         }
     }
 }
@@ -96,21 +120,19 @@ instance Plan[WritePlan!, Scope! -> WriteOutcome!] {
     }
 }
 
-unsafe fn read_result(connection: Connection!) -> ReadOutcome! {
-    let { raw } = connection;
+unsafe fn read_result(raw: *u8) -> StreamOutcome![Buffer!] {
     let data = unsafe alloca[*u8]();
     let len = unsafe alloca[usize]();
     let status = unsafe alloca[i32]();
     let event = unsafe kable_tcp_read_result(raw, data, len, status);
-    let connection = Connection!.{ raw };
     match event {
         1u8 => {
             let bytes = unsafe *data;
             let length = unsafe *len;
-            ReadOutcome!::Bytes.(connection, unsafe Buffer!::new_with_cap(length).push_n(bytes, length))
+            StreamOutcome!::Item.(unsafe Buffer!::new_with_cap(length).push_n(bytes, length))
         },
-        3u8 => ReadOutcome!::End.(connection),
-        _ => ReadOutcome!::Failed.(connection, unsafe *status),
+        3u8 => StreamOutcome!::End,
+        _ => StreamOutcome!::Failed.(unsafe *status),
     }
 }
 
@@ -173,7 +195,7 @@ impl Connection! {
     fn read(self) -> Read! { read(self) }
 
     /// Plans a read that composes with other tasks on the listener's loop.
-    fn read_plan(self) -> ReadPlan! { ReadPlan!.{ connection: self, id: Option::None } }
+    fn read_plan(self) -> ReadPlan! { ReadPlan!.{ next: self.next() } }
 
     /// Writes the buffer on this connection's listener loop.
     /// Every outcome returns the connection and buffer after the write joins.
@@ -185,6 +207,11 @@ impl Connection! {
 
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { close(self) }
+}
+
+instance Stream[Connection! -> NextRead!] {
+    /// Plans one read. EOF hands back the connection with its write side available.
+    fn next(source: Connection!) -> NextRead! { NextRead!.{ connection: source, id: Option::None } }
 }
 
 impl Read! {

@@ -1,39 +1,34 @@
-use async::{PlanOutput, WithinOutcome};
+use async::{PlanOutput, Stream, StreamOutcome!, WithinOutcome};
+use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Connection!, Event!, Listener!, ReadOutcome!, WriteOutcome!, defer};
+use tcp::{Action!, Connection!, Event!, Listener!, WriteOutcome!, defer};
 
 fn read_next(connection: Connection!) -> Action! {
-    defer(connection.read_plan().within(1000), |result| read_finished(result))
+    defer(connection.next().within(1000), |result| read_finished(result))
 }
 
-fn reclaim(outcome: ReadOutcome!) -> Connection! {
-    match outcome {
-        ReadOutcome!::Bytes(connection, bytes) => { bytes.destroy(); connection },
-        ReadOutcome!::End(connection) => connection,
-        ReadOutcome!::Cancelled(connection) => connection,
-        ReadOutcome!::Failed(connection, code) => connection,
-    }
-}
-
-fn read_finished(result: WithinOutcome[ReadOutcome!]) -> Action! {
-    match result {
-        WithinOutcome::Completed(outcome) => match outcome {
-            ReadOutcome!::Bytes(connection, bytes) =>
-                defer(connection.write_plan(bytes).within(1000), |result| write_finished(result)),
-            ReadOutcome!::End(connection) => connection.close(),
-            ReadOutcome!::Cancelled(connection) => connection.close(),
-            ReadOutcome!::Failed(connection, code) => connection.close(),
-        },
-        WithinOutcome::TimedOut(outcome) => {
+fn read_finished(result: WithinOutcome[(Connection!, StreamOutcome![Buffer!])]) -> Action! {
+    let (joined, active) = match result {
+        WithinOutcome::Completed(joined) => (joined, true),
+        WithinOutcome::TimedOut(joined) => {
             eprint_buffer(f"Read deadline expired.\n");
-            reclaim(outcome).close()
+            (joined, false)
         },
-        WithinOutcome::Cancelled(outcome) => {
+        WithinOutcome::Cancelled(joined) => {
             eprint_buffer(f"Cancelled connection on shutdown.\n");
-            reclaim(outcome).close()
+            (joined, false)
         },
-        WithinOutcome::Failed(outcome, code) => reclaim(outcome).close(),
+        WithinOutcome::Failed(joined, code) => (joined, false),
+    };
+    let (connection, outcome) = joined;
+    match outcome {
+        StreamOutcome!::Item(bytes) => {
+            if active { return defer(connection.write_plan(bytes).within(1000), |result| write_finished(result)); }
+            bytes.destroy();
+            connection.close()
+        },
+        StreamOutcome!::End | StreamOutcome!::Cancelled | StreamOutcome!::Failed => connection.close(),
     }
 }
 

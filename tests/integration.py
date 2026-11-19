@@ -740,7 +740,8 @@ def check_tcp_write(command):
             client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
             client.settimeout(5)
             client.connect(("127.0.0.1", port))
-            assert client.recv(1) == b"\0", "scoped write did not start"
+            client.shutdown(socket.SHUT_WR)
+            assert client.recv(1) == b"\0", "scoped write did not start after read EOF"
             yield client
 
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:

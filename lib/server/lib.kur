@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{ChunkOutcome!, FileChunks!, OpenedFile!, Outcome, Scope!, sleep};
+use async::{FileChunks!, OpenedFile!, Outcome, Scope!, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, Response!, encode_file_headers};
 use std::alloc::heap::HeapAllocator;
@@ -9,7 +9,7 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
-use task::PlanOutput;
+use task::{PlanOutput, Stream, StreamOutcome!};
 use task::driver::Plan;
 
 // Callers import this trait to bring the plan extension methods into scope.
@@ -180,11 +180,11 @@ unsafe fn write_then_next(connection: *u8, bytes: Buffer!, stream: FileChunks!) 
     status
 }
 
-unsafe fn chunk_joined(connection: *u8, result: (FileChunks!, ChunkOutcome!)) -> i32 {
+unsafe fn chunk_joined(connection: *u8, result: (FileChunks!, StreamOutcome![Buffer!])) -> i32 {
     let (stream, outcome) = result;
     let bytes = match outcome {
-        ChunkOutcome!::Chunk(bytes) => bytes,
-        ChunkOutcome!::End | ChunkOutcome!::Cancelled | ChunkOutcome!::Failed => {
+        StreamOutcome!::Item(bytes) => bytes,
+        StreamOutcome!::End | StreamOutcome!::Cancelled | StreamOutcome!::Failed => {
             stream.close();
             return -1;
         },

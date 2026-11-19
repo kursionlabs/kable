@@ -6,7 +6,7 @@ use std::mem::{alloca, sizeof};
 use std::option::Option;
 use std::ptr::is_null;
 use std::slice::ReadBytes;
-use task::{Join!, JoinOutcome, Outcome, PlanOutput, RaceOutcome, Select!, Sleep!, WithinOutcome,
+use task::{Join!, JoinOutcome, Outcome, PlanOutput, RaceOutcome, Select!, Sleep!, Stream, StreamOutcome!, WithinOutcome,
     join, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
@@ -19,6 +19,8 @@ export PlanOutput;
 export RaceOutcome;
 export Select!;
 export Sleep!;
+export Stream;
+export StreamOutcome!;
 export join;
 export select;
 export sleep;
@@ -67,13 +69,6 @@ struct OpenedFile! { fd: i32, length: u64 }
 struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
 struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
 struct NextFileChunk! { read: ReadChunk!, remaining: u64 }
-
-exposed enum ChunkOutcome! {
-    Chunk(Buffer!),
-    End,
-    Cancelled,
-    Failed(i32),
-}
 
 const FILE_CHUNK: u64 = 64 * 1024;
 
@@ -131,17 +126,18 @@ impl FileChunks! {
         remaining
     }
 
-    /// Plans a read of at most 64 KiB and returns this stream after it joins.
-    /// Only a nonempty chunk advances the cursor.
-    fn next(self) -> NextFileChunk! {
-        let { file, offset, remaining } = self;
-        let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
-        NextFileChunk!.{ read: file.read_chunk(offset, limit as usize), remaining }
-    }
-
     fn close(self) {
         let { file, offset, remaining } = self;
         file.close();
+    }
+}
+
+instance Stream[FileChunks! -> NextFileChunk!] {
+    /// Plans a read of at most 64 KiB and advances only by the bytes read.
+    fn next(source: FileChunks!) -> NextFileChunk! {
+        let { file, offset, remaining } = source;
+        let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
+        NextFileChunk!.{ read: file.read_chunk(offset, limit as usize), remaining }
     }
 }
 
@@ -343,9 +339,9 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, FileOutcome!)] {
     }
 }
 
-instance PlanOutput[NextFileChunk! -> (FileChunks!, ChunkOutcome!)] {}
+instance PlanOutput[NextFileChunk! -> (FileChunks!, StreamOutcome![Buffer!])] {}
 
-instance Plan[NextFileChunk!, Scope! -> (FileChunks!, ChunkOutcome!)] {
+instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] {
     fn stage(&task: NextFileChunk!, &scope: Scope!) -> Option[usize] {
         let { read, remaining } = task;
         let id = Plan[ReadChunk!, Scope! -> (OpenedFile!, FileOutcome!)]::stage(&read, &scope);
@@ -353,20 +349,20 @@ instance Plan[NextFileChunk!, Scope! -> (FileChunks!, ChunkOutcome!)] {
         id
     }
 
-    fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, ChunkOutcome!) {
+    fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, StreamOutcome![Buffer!]) {
         let { read: { file, offset, limit, id }, remaining } = task;
         let (outcome, count) = match collect_file(&scope, id) {
             FileOutcome!::Read(bytes) => {
                 let count = &bytes.len() as u64;
                 if count == 0 {
                     bytes.destroy();
-                    (ChunkOutcome!::End, count)
+                    (StreamOutcome!::End, count)
                 } else {
-                    (ChunkOutcome!::Chunk.(bytes), count)
+                    (StreamOutcome!::Item.(bytes), count)
                 }
             },
-            FileOutcome!::Cancelled => (ChunkOutcome!::Cancelled, 0),
-            FileOutcome!::Failed(code) => (ChunkOutcome!::Failed.(code), 0),
+            FileOutcome!::Cancelled => (StreamOutcome!::Cancelled, 0),
+            FileOutcome!::Failed(code) => (StreamOutcome!::Failed.(code), 0),
         };
         (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
     }

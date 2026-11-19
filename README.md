@@ -50,7 +50,7 @@ The server listens on loopback, accepts `GET` and `HEAD`, and serves
 Opening the file and checking its length use the worker pool with a two-second
 deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
 each socket write completes. `file.chunks(offset, length)` creates an
-owned `FileChunks!` stream. `stream.next()` plans one read and returns
+owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
 joins. Only a nonempty chunk advances the cursor. The server closes the
 stream after the final read or when a cancelled read joins. An early EOF
@@ -217,6 +217,15 @@ reclaim owned values. A local timeout leaves unrelated sibling plans running.
 Import `PlanOutput` to use both methods. Driver implementations use
 `task::driver` for staging, collection, and scope policy.
 
+### Pull-based streams
+
+Import `Stream` to call `source.next()`. It moves the source into a
+one-shot plan. After the plan joins it returns the source alongside
+`StreamOutcome![Item]`, which carries an item, EOF, cancellation, or an
+error code. The caller decides when to request another item. File chunks
+and TCP connections both use this interface. TCP EOF ends the read side
+and the returned connection can still write.
+
 ### Standalone sequencing
 
 Import `sequence` from `task::sequence`. `sequence(first).then(resume)` builds a chain of adapters in the style
@@ -263,7 +272,7 @@ in argument order. Each file is limited to 64 KiB.
 ## Scoped TCP reads and writes
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per
-connection. The echo handler runs `connection.read_plan().within(1000)`
+connection. The echo handler runs `connection.next().within(1000)`
 with `tcp::defer` on the listener loop. When it receives bytes, it defers
 `connection.write_plan(bytes).within(1000)`. The next read starts after
 the write joins.

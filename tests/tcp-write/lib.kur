@@ -1,8 +1,8 @@
-use async::{PlanOutput, WithinOutcome};
+use async::{PlanOutput, Stream, StreamOutcome!, WithinOutcome};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Event!, Listener!, WriteOutcome!, defer};
+use tcp::{Action!, Connection!, Event!, Listener!, WriteOutcome!, defer};
 
 fn finish_write(result: WithinOutcome[WriteOutcome!]) -> Action! {
     let (outcome, reason) = match result {
@@ -22,17 +22,28 @@ fn finish_write(result: WithinOutcome[WriteOutcome!]) -> Action! {
     connection.close()
 }
 
+fn send_after_eof(connection: Connection!) -> Action! {
+    defer(connection.write_plan(Buffer!::new_with_cap(0)), |outcome| {
+        let (connection, bytes) = match outcome {
+            WriteOutcome!::Written(connection, bytes) => (connection, bytes),
+            WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); return connection.close(); },
+            WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); return connection.close(); },
+        };
+        bytes.destroy();
+        let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
+        defer(connection.write_plan(bytes).within(1500), |result| finish_write(result))
+    })
+}
+
 fn serve(event: Event!) -> Action! {
     match event {
-        Event!::Connected(connection) => defer(connection.write_plan(Buffer!::new_with_cap(0)), |outcome| {
-            let (connection, bytes) = match outcome {
-                WriteOutcome!::Written(connection, bytes) => (connection, bytes),
-                WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); return connection.close(); },
-                WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); return connection.close(); },
-            };
-            bytes.destroy();
-            let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
-            defer(connection.write_plan(bytes).within(1500), |result| finish_write(result))
+        Event!::Connected(connection) => defer(connection.next(), |result| {
+            let (connection, outcome) = result;
+            match outcome {
+                StreamOutcome!::End => send_after_eof(connection),
+                StreamOutcome!::Item(bytes) => { bytes.destroy(); connection.close() },
+                StreamOutcome!::Cancelled | StreamOutcome!::Failed => connection.close(),
+            }
         }),
         Event!::Bytes(connection, bytes) => { bytes.destroy(); connection.close() },
         Event!::TimedOut(connection) => connection.close(),
