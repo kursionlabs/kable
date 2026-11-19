@@ -1,0 +1,33 @@
+use http::{Request!, Response!};
+use server::Server!;
+use std::io::{eprint_buffer, print_buffer};
+use std::option::Result;
+
+fn hello(request: Request!) -> Response! {
+    let { method, target, body } = request;
+    target.destroy();
+    body.destroy();
+    Response!::text(200u16, "Hello from Kable!\n")
+}
+
+fn main() -> i32 {
+    let server = match Server!::bind_local(0u16, hello) {
+        Result::Ok(server) => server,
+        Result::Err(code) => {
+            eprint_buffer(f"hello-server: cannot listen (libuv error {code})\n");
+            return 1i32;
+        },
+    };
+    let port = &server.port();
+    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+        server.stop();
+        return 1i32;
+    }
+    match server.run() {
+        Result::Ok(unit) => 0i32,
+        Result::Err(code) => {
+            eprint_buffer(f"hello-server: server stopped (libuv error {code})\n");
+            1i32
+        },
+    }
+}

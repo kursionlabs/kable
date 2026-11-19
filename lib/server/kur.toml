@@ -1,0 +1,11 @@
+[package]
+name="server"
+source_root="."
+c_sources=["native/server.c"]
+link_flags=["-luv", "-lllhttp"]
+
+[dependencies.std]
+path="../../../kursal/lib/std"
+
+[dependencies.http]
+path="../http"

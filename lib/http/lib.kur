@@ -1,0 +1,80 @@
+//! Request ownership and HTTP response serialization.
+use std::bytes::buffer::Buffer!;
+use std::slice::Slice;
+
+exposed enum Method { Other, Get, Head, Post }
+
+exposed struct Request! {
+    method: Method,
+    target: Buffer!,
+    body: Buffer!,
+}
+
+struct Response! {
+    status: u16,
+    content_type: Slice[u8, 'static],
+    allow: Slice[u8, 'static],
+    body: Buffer!,
+}
+
+fn reason(status: u16) -> Slice[u8, 'static] {
+    match status {
+        200u16 => "OK",
+        400u16 => "Bad Request",
+        404u16 => "Not Found",
+        405u16 => "Method Not Allowed",
+        408u16 => "Request Timeout",
+        413u16 => "Content Too Large",
+        417u16 => "Expectation Failed",
+        431u16 => "Request Header Fields Too Large",
+        501u16 => "Not Implemented",
+        505u16 => "HTTP Version Not Supported",
+        _ => "Internal Server Error",
+    }
+}
+
+impl Response! {
+    fn ok(body: Buffer!) -> Response! {
+        Response!.{ status: 200u16, content_type: "application/octet-stream", allow: "", body }
+    }
+
+    fn text(status: u16, text: Slice[u8, 'static]) -> Response! {
+        Response!.{
+            status, content_type: "text/plain; charset=utf-8", allow: "",
+            body: Buffer!::new().push_static(text),
+        }
+    }
+
+    fn method_not_allowed(allow: Slice[u8, 'static]) -> Response! {
+        let { status, content_type, allow: empty, body } =
+            Response!::text(405u16, "Method Not Allowed\n");
+        Response!.{ status, content_type, allow, body }
+    }
+
+    fn rejected(status: u16) -> Response! {
+        Response!.{
+            status, content_type: "text/plain; charset=utf-8", allow: "",
+            body: Buffer!::new().push_static(reason(status)).push_static("\n"),
+        }
+    }
+
+    fn encode(self, head: bool, http10: bool) -> Buffer! {
+        let { status, content_type, allow, body } = self;
+        let len = &body.len();
+        let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
+        let wire = Buffer!::new().push_static(version)
+            .push_usize(status as usize).push_static(" ").push_static(reason(status))
+            .push_static("\r\nContent-Type: ").push_static(content_type)
+            .push_static("\r\nContent-Length: ").push_usize(len)
+            .push_static("\r\nConnection: close\r\n");
+        let wire = if allow.is_empty() { wire }
+            else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
+        let wire = wire.push_static("\r\n");
+        if head {
+            body.destroy();
+            wire
+        } else {
+            wire.push_buffer(body)
+        }
+    }
+}

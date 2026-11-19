@@ -1,0 +1,6 @@
+[package]
+name="http"
+source_root="."
+
+[dependencies.std]
+path="../../../kursal/lib/std"
