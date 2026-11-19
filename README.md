@@ -140,7 +140,7 @@ read_file(&access, "example.txt", FILE_LIMIT)
 ```
 
 `.within(1000)` adds the local deadline. If the timer wins, the continuation
-gets `WithinOutcome::TimedOut` after the worker joins, releases any buffer,
+gets `DeadlineStatus::TimedOut` after the worker joins, releases any buffer,
 and replies 504 while the request is active. If the request ends first, the
 continuation releases the outcome and closes the connection. `/file` uses
 the request deadline alone, and `/health` remains available while a read is
@@ -215,11 +215,13 @@ nested waits.
 `plan.map(transform)` converts the plan's joined outcome. Its closure can
 capture owned state and runs once, including on cancellation or failure.
 
-`plan.within(ms)` races the plan against a local timer. `TimedOut` means the
-timer won, `Cancelled` means the enclosing scope cancelled the plan, and
-`Completed` carries the plan's own outcome, including any operation error.
-Every branch returns the inner outcome after cleanup so the caller can
-reclaim owned values. A local timeout leaves unrelated sibling plans running.
+`plan.within(ms)` races the plan against a local timer and returns
+`(output, deadline)` after both join. `DeadlineStatus::Completed` means the
+plan finished first, including when the operation reported an error.
+`TimedOut` means the local timer won, `Cancelled` means the enclosing scope
+cancelled the race, and `Failed(code)` reports a scope error. Every case gives
+the caller the inner output to reclaim. A local timeout leaves unrelated
+sibling plans running.
 
 Import `PlanOutput` to use both methods. Driver implementations use
 `task::driver` for staging, collection, and scope policy.

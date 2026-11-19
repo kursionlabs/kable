@@ -1,4 +1,4 @@
-use async::{Completion, WithinOutcome, read_file};
+use async::{Completion, DeadlineStatus, read_file};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
 use server::{Action!, PlanOutput, RequestState, Server!};
@@ -27,22 +27,21 @@ fn serve_file(timed: bool) -> Action! {
 }
 
 forall Output.
-fn timed_reply(result: WithinOutcome[Output], state: RequestState,
+fn timed_reply(result: (Output, DeadlineStatus), state: RequestState,
     reply: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Option[Action!] {
-    let (outcome, status) = match result {
-        WithinOutcome::Completed(outcome) => (outcome, 0u16),
-        WithinOutcome::TimedOut(outcome) => (outcome, 504),
-        WithinOutcome::Cancelled(outcome) => (outcome, 408),
-        WithinOutcome::Failed(outcome, code) => (outcome, 500),
-    };
+    let (outcome, deadline) = result;
     match state {
-        RequestState::Cancelled => { discard(outcome); Option::None },
-        RequestState::Active => {
-            if status == 0 { return Option::Some.(reply(outcome).reply()); }
-            discard(outcome);
-            Option::Some.(Response!::rejected(status).reply())
-        },
+        RequestState::Cancelled => { discard(outcome); return Option::None; },
+        RequestState::Active => (),
     }
+    let status = match deadline {
+        DeadlineStatus::Completed => return Option::Some.(reply(outcome).reply()),
+        DeadlineStatus::TimedOut => 504,
+        DeadlineStatus::Cancelled => 408,
+        DeadlineStatus::Failed => 500,
+    };
+    discard(outcome);
+    Option::Some.(Response!::rejected(status).reply())
 }
 
 fn file_response(outcome: Completion[Buffer!]) -> Response! {

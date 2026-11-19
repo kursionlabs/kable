@@ -1,4 +1,4 @@
-use async::{Completion, join, sleep};
+use async::{Completion, DeadlineStatus, PlanOutput, join, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::bytes::buffer::Buffer!;
 use std::mem::alloca;
@@ -10,13 +10,14 @@ fn failed(status: Completion[()]) -> bool {
 fn pending() -> HostedPlan! {
     let bytes = Buffer!::new().push_static("owned");
     let plan = join(sleep(0, bytes), sleep(0, 7u8));
-    prepare_hosted(plan, |outcome, host, state| {
-        let ((bytes, first), (value, second), status) = outcome;
+    prepare_hosted(plan.within(1000), |outcome, host, state| {
+        let (((bytes, first), (value, second), status), deadline) = outcome;
         let length = &bytes.len();
         bytes.destroy();
         let count = unsafe (host as *usize);
         unsafe *count = (unsafe *count) + 1;
-        if failed(status) && failed(first) && failed(second) && length == 5 && value == 7 && state == 0 {
+        let deadline_failed = match deadline { DeadlineStatus::Failed => true, _ => false };
+        if deadline_failed && failed(status) && failed(first) && failed(second) && length == 5 && value == 7 && state == 0 {
             17
         } else {
             -1

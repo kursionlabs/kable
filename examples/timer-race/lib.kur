@@ -1,4 +1,4 @@
-use async::{Completion, PlanOutput, Side, WithinOutcome, join, run, run_with_deadline,
+use async::{Completion, DeadlineStatus, PlanOutput, Side, join, run, run_with_deadline,
     select, sleep};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
@@ -38,9 +38,9 @@ fn check_within() -> bool {
     let result = run_with_deadline(sleep(30_000, owned).within(20_000), 10);
     if !reclaim_limited_buffer(result, false) { return false; }
 
-    let result = run(sleep(0, 8u8).within(30_000));
-    match result {
-        WithinOutcome::Completed(outcome) => {
+    let (outcome, deadline) = run(sleep(0, 8u8).within(30_000));
+    match deadline {
+        DeadlineStatus::Completed => {
             if !is_ready(outcome, 8u8) { return false; }
             print_buffer(f"Local deadline left its sibling running; parent cancellation stayed distinct.\n");
             true
@@ -49,14 +49,13 @@ fn check_within() -> bool {
     }
 }
 
-fn reclaim_limited_buffer(result: WithinOutcome[(Buffer!, Completion[()])], local: bool) -> bool {
-    let (outcome, expected) = match result {
-        WithinOutcome::TimedOut(outcome) => (outcome, local),
-        WithinOutcome::Cancelled(outcome) => (outcome, !local),
-        WithinOutcome::Completed(outcome) => (outcome, false),
-        WithinOutcome::Failed(outcome, code) => (outcome, false),
+fn reclaim_limited_buffer(result: ((Buffer!, Completion[()]), DeadlineStatus), local: bool) -> bool {
+    let ((bytes, status), deadline) = result;
+    let expected = match deadline {
+        DeadlineStatus::TimedOut => local,
+        DeadlineStatus::Cancelled => !local,
+        DeadlineStatus::Completed | DeadlineStatus::Failed => false,
     };
-    let (bytes, status) = outcome;
     let length = &bytes.len();
     bytes.destroy();
     expected && cancelled(status) && length == 5usize

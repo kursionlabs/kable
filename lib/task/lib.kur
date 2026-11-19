@@ -163,17 +163,18 @@ impl Task {
 
     /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, ms: u64)
-        -> Map![Select![Sleep![()], Task], (((), Completion[()]), Input, Completion[Side]), WithinOutcome[Input], ()] {
+        -> Map![Select![Sleep![()], Task], (((), Completion[()]), Input, Completion[Side]), (Input, DeadlineStatus), ()] {
         select(sleep(ms, ()), self).map(|result| {
             let (timer, outcome, status) = result;
-            match status {
+            let deadline = match status {
                 Completion::Ready(side) => match side {
-                    Side::First => WithinOutcome::TimedOut.(outcome),
-                    Side::Second => WithinOutcome::Completed.(outcome),
+                    Side::First => DeadlineStatus::TimedOut,
+                    Side::Second => DeadlineStatus::Completed,
                 },
-                Completion::Cancelled => WithinOutcome::Cancelled.(outcome),
-                Completion::Failed(code) => WithinOutcome::Failed.(outcome, code),
-            }
+                Completion::Cancelled => DeadlineStatus::Cancelled,
+                Completion::Failed(code) => DeadlineStatus::Failed.(code),
+            };
+            (outcome, deadline)
         })
     }
 }
@@ -193,10 +194,10 @@ instance Plan[Map![Task, Input, Output, Env], Driver -> Output] {
     }
 }
 
-forall Output.
-exposed enum WithinOutcome {
-    Completed(Output),
-    TimedOut(Output),
-    Cancelled(Output),
-    Failed(Output, i32),
+/// Reports how the local deadline race ended after the inner plan joined.
+exposed enum DeadlineStatus {
+    Completed,
+    TimedOut,
+    Cancelled,
+    Failed(i32),
 }

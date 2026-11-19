@@ -1,15 +1,16 @@
-use async::{PlanOutput, Stream, StreamOutcome!, WithinOutcome};
+use async::{DeadlineStatus, PlanOutput, Stream, StreamOutcome!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use tcp::{Action!, Connection!, Event!, Listener!, WriteOutcome!, defer};
 
-fn finish_write(result: WithinOutcome[WriteOutcome!]) -> Action! {
-    let (outcome, reason) = match result {
-        WithinOutcome::Completed(outcome) => (outcome, "completed"),
-        WithinOutcome::TimedOut(outcome) => (outcome, "timeout"),
-        WithinOutcome::Cancelled(outcome) => (outcome, "shutdown"),
-        WithinOutcome::Failed(outcome, code) => (outcome, "scope failure"),
+fn finish_write(result: (WriteOutcome!, DeadlineStatus)) -> Action! {
+    let (outcome, deadline) = result;
+    let reason = match deadline {
+        DeadlineStatus::Completed => "completed",
+        DeadlineStatus::TimedOut => "timeout",
+        DeadlineStatus::Cancelled => "shutdown",
+        DeadlineStatus::Failed => "scope failure",
     };
     let (connection, bytes, status) = match outcome {
         WriteOutcome!::Written(connection, bytes) => (connection, bytes, "written"),

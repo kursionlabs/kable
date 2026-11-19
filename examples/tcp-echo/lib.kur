@@ -1,4 +1,4 @@
-use async::{PlanOutput, Stream, StreamOutcome!, WithinOutcome};
+use async::{DeadlineStatus, PlanOutput, Stream, StreamOutcome!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
@@ -8,20 +8,20 @@ fn read_next(connection: Connection!) -> Action! {
     defer(connection.next().within(1000), |result| read_finished(result))
 }
 
-fn read_finished(result: WithinOutcome[(Connection!, StreamOutcome![Buffer!])]) -> Action! {
-    let (joined, active) = match result {
-        WithinOutcome::Completed(joined) => (joined, true),
-        WithinOutcome::TimedOut(joined) => {
+fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus)) -> Action! {
+    let ((connection, outcome), deadline) = result;
+    let active = match deadline {
+        DeadlineStatus::Completed => true,
+        DeadlineStatus::TimedOut => {
             eprint_buffer(f"Read deadline expired.\n");
-            (joined, false)
+            false
         },
-        WithinOutcome::Cancelled(joined) => {
+        DeadlineStatus::Cancelled => {
             eprint_buffer(f"Cancelled connection on shutdown.\n");
-            (joined, false)
+            false
         },
-        WithinOutcome::Failed(joined, code) => (joined, false),
+        DeadlineStatus::Failed => false,
     };
-    let (connection, outcome) = joined;
     match outcome {
         StreamOutcome!::Item(bytes) => {
             if active { return defer(connection.write_plan(bytes).within(1000), |result| write_finished(result)); }
@@ -32,17 +32,15 @@ fn read_finished(result: WithinOutcome[(Connection!, StreamOutcome![Buffer!])]) 
     }
 }
 
-fn write_finished(result: WithinOutcome[WriteOutcome!]) -> Action! {
-    let (outcome, active) = match result {
-        WithinOutcome::Completed(outcome) => (outcome, true),
-        WithinOutcome::TimedOut(outcome) => (outcome, false),
-        WithinOutcome::Cancelled(outcome) => (outcome, false),
-        WithinOutcome::Failed(outcome, code) => (outcome, false),
-    };
+fn write_finished(result: (WriteOutcome!, DeadlineStatus)) -> Action! {
+    let (outcome, deadline) = result;
     match outcome {
         WriteOutcome!::Written(connection, bytes) => {
             bytes.destroy();
-            if active { read_next(connection) } else { connection.close() }
+            match deadline {
+                DeadlineStatus::Completed => read_next(connection),
+                _ => connection.close(),
+            }
         },
         WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); connection.close() },
         WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); connection.close() },
