@@ -181,8 +181,8 @@ def check_static_files(command, directory, check_write_timeout=False):
         try:
             port = listening_port(process, b"Listening on http://127.0.0.1:")
 
-            def request(path, method=b"GET"):
-                return exchange(port, method + b" " + path + b" HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            def request(path, method=b"GET", headers=b""):
+                return exchange(port, method + b" " + path + b" HTTP/1.1\r\nHost: localhost\r\n" + headers + b"\r\n")
 
             headers = assert_response(request(b"/"), 200, b"<h1>Kable</h1>\n")
             assert headers[b"content-type"] == b"text/html; charset=utf-8"
@@ -193,8 +193,44 @@ def check_static_files(command, directory, check_write_timeout=False):
             assert headers[b"content-type"] == b"application/octet-stream"
             assert_response(request(b"/payload.bin", b"HEAD"), 200, b"\x00\x01\xff", head=True)
             assert_response(request(b"/empty"), 200, b"")
-            assert_response(request(b"/large.bin"), 200, large)
+            headers = assert_response(request(b"/large.bin"), 200, large)
+            assert headers[b"accept-ranges"] == b"bytes" and b"content-range" not in headers
             assert_response(request(b"/large.bin", b"HEAD"), 200, large, head=True)
+            for value, start, end in (
+                (b"bytes=65000-140000", 65000, 140000),
+                (f"bytes={len(large) - 19}-".encode(), len(large) - 19, len(large) - 1),
+                (f"bytes={len(large) - 19}-999999999999999999999".encode(), len(large) - 19, len(large) - 1),
+                (b"bytes=-19", len(large) - 19, len(large) - 1),
+                (b"bytes=-999999999999999999999", 0, len(large) - 1),
+            ):
+                headers = assert_response(request(b"/large.bin", headers=b"rAnGe: " + value + b"\r\n"),
+                                          206, large[start:end + 1])
+                assert headers[b"content-range"] == f"bytes {start}-{end}/{len(large)}".encode(), headers
+                assert headers[b"accept-ranges"] == b"bytes", headers
+                assert headers[b"content-type"] == b"application/octet-stream", headers
+            for path, size, value in (
+                (b"/large.bin", len(large), f"bytes={len(large)}-".encode()),
+                (b"/large.bin", len(large), b"bytes=999999999999999999999-"),
+                (b"/large.bin", len(large), b"bytes=-0"),
+                (b"/empty", 0, b"bytes=0-"),
+            ):
+                headers = assert_response(request(path, headers=b"Range: " + value + b"\r\n"), 416, b"")
+                assert headers[b"content-range"] == f"bytes */{size}".encode(), headers
+            assert_response(request(b"/empty", headers=b"Range: bytes=-1\r\n"), 200, b"")
+            for extra in (
+                b"Range: records=0-1\r\n",
+                b"Range: bytes=2-1\r\n",
+                b"Range: bytes=1-2junk\r\n",
+                b"Range: bytes=0-0,2-2\r\n",
+                b"Range: bytes=0-0\r\nRange: bytes=2-2\r\n",
+                b"Range: bytes=0-0\r\nIf-Range: \"unavailable\"\r\n",
+                b"Range: bytes=" + b"9" * 256 + b"-\r\n",
+            ):
+                headers = assert_response(request(b"/payload.bin", headers=extra), 200, b"\x00\x01\xff")
+                assert b"content-range" not in headers, headers
+            headers = assert_response(request(b"/payload.bin", b"HEAD", b"Range: bytes=1-1\r\n"),
+                                      200, b"\x00\x01\xff", head=True)
+            assert b"content-range" not in headers, headers
             headers = assert_response(request(b"/", b"POST"), 405, b"Method Not Allowed\n")
             assert headers[b"allow"] == b"GET, HEAD"
             for path in (b"/missing", b"/pages", b"/pipe", b"/external.txt",
@@ -220,27 +256,32 @@ def check_static_files(command, directory, check_write_timeout=False):
 
 
 @contextmanager
-def slow_download(port, path):
+def slow_download(port, path, offset=None):
     with socket.socket() as client:
         client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65_536)
         client.settimeout(8)
         client.connect(("127.0.0.1", port))
-        client.sendall(b"GET /" + os.fsencode(path.name) + b" HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        range_header = b"" if offset is None else f"Range: bytes={offset}-\r\n".encode()
+        client.sendall(b"GET /" + os.fsencode(path.name) + b" HTTP/1.1\r\nHost: localhost\r\n" + range_header + b"\r\n")
         with client.makefile("rb") as stream:
             version, status, headers = read_headers(stream)
-            assert version == b"HTTP/1.1" and status == 200, (version, status)
-            assert int(headers[b"content-length"]) == path.stat().st_size, headers
+            size = path.stat().st_size
+            assert version == b"HTTP/1.1" and status == (200 if offset is None else 206), (version, status)
+            if offset is not None:
+                assert headers[b"content-range"] == f"bytes {offset}-{size - 1}/{size}".encode(), headers
+            assert int(headers[b"content-length"]) == size - (offset or 0), headers
             yield client, stream
 
 
 def check_stream_idle_timeout(port, process, path):
     chunk = bytes(512 * 1024)
-    with slow_download(port, path) as (_, stream):
+    offset = 64 * 1024
+    with slow_download(port, path, offset) as (_, stream):
         for _ in range(6):
             time.sleep(1)
             assert stream.read(len(chunk)) == chunk, "paced download ended early"
         assert holds_file(process, path), "stream closed despite continued write progress"
-        remaining = path.stat().st_size - 6 * len(chunk)
+        remaining = path.stat().st_size - offset - 6 * len(chunk)
         assert stream.read() == bytes(remaining), "paced download lost bytes past the original deadline"
 
     start = time.monotonic()

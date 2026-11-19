@@ -44,12 +44,14 @@ struct Response! {
 fn reason(status: u16) -> Slice[u8, 'static] {
     match status {
         200u16 => "OK",
+        206 => "Partial Content",
         400u16 => "Bad Request",
         403 => "Forbidden",
         404u16 => "Not Found",
         405u16 => "Method Not Allowed",
         408u16 => "Request Timeout",
         413u16 => "Content Too Large",
+        416 => "Range Not Satisfiable",
         417u16 => "Expectation Failed",
         431u16 => "Request Header Fields Too Large",
         501u16 => "Not Implemented",
@@ -108,13 +110,32 @@ impl Response! {
 
 fn encode_headers(status: u16, content_type: Slice[u8, 'static], allow: Slice[u8, 'static],
     length: u64, http10: bool) -> Buffer! {
-    let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
-    let wire = Buffer!::new().push_static(version)
-        .push_usize(status as usize).push_static(" ").push_static(reason(status))
-        .push_static("\r\nContent-Type: ").push_static(content_type)
-        .push_static("\r\nContent-Length: ").push_u64(length)
-        .push_static("\r\nConnection: close\r\n");
+    let wire = header_fields(status, content_type, length, http10);
     let wire = if allow.is_empty() { wire }
         else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
     wire.push_static("\r\n")
+}
+
+fn encode_file_headers(status: u16, content_type: Slice[u8, 'static], offset: u64,
+    length: u64, total: u64, http10: bool) -> Buffer! {
+    let content_type = if status == 416 { "text/plain; charset=utf-8" } else { content_type };
+    let wire = header_fields(status, content_type, length, http10)
+        .push_static("Accept-Ranges: bytes\r\n");
+    let wire = match status {
+        206 => wire.push_static("Content-Range: bytes ")
+            .push_u64(offset).push_static("-").push_u64(offset + length - 1)
+            .push_static("/").push_u64(total).push_static("\r\n"),
+        416 => wire.push_static("Content-Range: bytes */").push_u64(total).push_static("\r\n"),
+        _ => wire,
+    };
+    wire.push_static("\r\n")
+}
+
+fn header_fields(status: u16, content_type: Slice[u8, 'static], length: u64, http10: bool) -> Buffer! {
+    let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
+    Buffer!::new().push_static(version)
+        .push_usize(status as usize).push_static(" ").push_static(reason(status))
+        .push_static("\r\nContent-Type: ").push_static(content_type)
+        .push_static("\r\nContent-Length: ").push_u64(length)
+        .push_static("\r\nConnection: close\r\n")
 }

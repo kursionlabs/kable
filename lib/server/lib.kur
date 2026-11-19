@@ -1,10 +1,10 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
 use async::{OpenedFile!, Outcome, Prepared!, Scope!, WithinOutcome, collect, prepare, sleep, within};
-use http::{Method, Request!, Response!, encode_headers};
+use http::{Method, Request!, Response!, encode_file_headers};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
-use std::mem::sizeof;
+use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
@@ -19,7 +19,8 @@ extern "C" fn kable_bind(port: u16,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
-extern "C" fn kable_send_file(client: *u8, headers: *u8, len: usize, fd: i32, length: u64) -> i32;
+extern "C" fn kable_file_range(client: *u8, total: u64, offset: *u64, length: *u64) -> u16;
+extern "C" fn kable_send_file(client: *u8, headers: *u8, len: usize, fd: i32, offset: u64, length: u64) -> i32;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8, u8, u8) -> i32, head: u8, http10: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
@@ -210,11 +211,16 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
 
 unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -> i32 {
     let { file, content_type } = reply;
-    let (fd, length) = unsafe file.into_parts();
-    let headers = encode_headers(200, content_type, "", length, http10);
+    let (fd, total) = unsafe file.into_parts();
+    let offset = unsafe alloca[u64]();
+    let length = unsafe alloca[u64]();
+    let status = unsafe kable_file_range(client, total, offset, length);
+    let start = unsafe *offset;
+    let count = unsafe *length;
+    let headers = encode_file_headers(status, content_type, start, count, total, http10);
     let ptr = unsafe &headers.as_ptr();
     let len = &headers.len();
-    let result = unsafe kable_send_file(client, ptr, len, fd, if head { 0 } else { length });
+    let result = unsafe kable_send_file(client, ptr, len, fd, start, if head { 0 } else { count });
     headers.destroy();
     result
 }

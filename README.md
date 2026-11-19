@@ -54,6 +54,12 @@ its body. Each completed write restarts the five-second idle timer, so a
 transfer can continue while writes make progress. The server closes the file
 when the transfer finishes or cancels.
 
+`GET` accepts a single byte range such as `Range: bytes=0-31`,
+`bytes=32-`, or `bytes=-32`. A satisfiable range returns `206 Partial
+Content` with `Content-Range`, and an unsatisfiable range returns `416`
+with the file size in `Content-Range`. The server ignores multipart ranges
+and requests with `If-Range`. `HEAD` reports the full file length.
+
 The server sets the content type for common web files. Path resolution uses
 Linux’s `openat2` to stay below the document root and reject symlinks.
 This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://man7.org/linux/man-pages/man2/openat2.2.html)

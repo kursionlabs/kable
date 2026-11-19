@@ -11,6 +11,7 @@
 
 enum {
     MAX_HEAD = 16 * 1024,
+    MAX_RANGE = 256,
     MAX_BODY = 1024 * 1024,
     MAX_WIRE = MAX_BODY + 4 * MAX_HEAD,
     READ_TIMEOUT = 10000,
@@ -53,9 +54,13 @@ typedef struct {
     uint16_t rejection;
     int headers_done;
     int complete;
-    char field[6];
+    char field[8];
     size_t field_len;
     unsigned hosts;
+    char range[MAX_RANGE];
+    size_t range_len;
+    unsigned ranges;
+    int if_range;
     enum { HOST_EMPTY, HOST_VALUE, HOST_TRAILING_SPACE, HOST_INVALID } host;
     int expect;
 } Client;
@@ -103,7 +108,8 @@ static int field_is(const Client *client, const char *name, size_t len) {
 
 static int on_value(llhttp_t *parser, const char *at, size_t len) {
     Client *client = parser->data;
-    if (!client->headers_done && field_is(client, "host", 4)) {
+    if (client->headers_done) return 0;
+    if (field_is(client, "host", 4)) {
         for (size_t i = 0; i < len; i++) {
             unsigned char byte = (unsigned char)at[i];
             if (byte == ' ' || byte == '\t') {
@@ -115,6 +121,13 @@ static int on_value(llhttp_t *parser, const char *at, size_t len) {
                 client->host = HOST_VALUE;
             }
         }
+    } else if (field_is(client, "range", 5) && !client->ranges && client->range_len <= MAX_RANGE) {
+        if (len > MAX_RANGE - client->range_len) {
+            client->range_len = MAX_RANGE + 1;
+        } else if (len) {
+            memcpy(client->range + client->range_len, at, len);
+            client->range_len += len;
+        }
     }
     return 0;
 }
@@ -124,6 +137,8 @@ static int on_value_complete(llhttp_t *parser) {
     if (client->headers_done) return 0;
     if (field_is(client, "host", 4)) client->hosts++;
     if (field_is(client, "expect", 6)) client->expect = 1;
+    if (field_is(client, "range", 5)) client->ranges++;
+    if (field_is(client, "if-range", 8)) client->if_range = 1;
     client->field_len = 0;
     return 0;
 }
@@ -194,6 +209,61 @@ int32_t kable_write(uint8_t *raw, uint8_t *bytes, size_t len) {
     return kable_tcp_finish(client->connection, bytes, len, WRITE_TIMEOUT);
 }
 
+static int space(char byte) { return byte == ' ' || byte == '\t'; }
+
+/* Saturation keeps large decimal positions above any servable file size. */
+static int decimal(const char **at, const char *end, uint64_t *value) {
+    const char *start = *at;
+    *value = 0;
+    while (*at < end && **at >= '0' && **at <= '9') {
+        unsigned digit = (unsigned)(**at - '0');
+        *value = *value > (UINT64_MAX - digit) / 10 ? UINT64_MAX : *value * 10 + digit;
+        (*at)++;
+    }
+    return *at != start;
+}
+
+/* Selects a response for one file. Unsupported ranges fall back to the whole file. */
+uint16_t kable_file_range(uint8_t *raw, uint64_t total, uint64_t *offset, uint64_t *length) {
+    Client *client = (Client *)raw;
+    *offset = 0;
+    *length = total;
+    if (llhttp_get_method(&client->parser) != HTTP_GET || client->if_range ||
+        client->ranges != 1 || client->range_len > MAX_RANGE) return 200;
+
+    const char *at = client->range;
+    const char *end = at + client->range_len;
+    while (at < end && space(*at)) at++;
+    while (end > at && space(end[-1])) end--;
+    if (end - at < 6 || strncasecmp(at, "bytes=", 6) != 0) return 200;
+    at += 6;
+    while (at < end && space(*at)) at++;
+
+    uint64_t first, last;
+    int suffix = !decimal(&at, end, &first);
+    if (at == end || *at++ != '-') return 200;
+    if (suffix || at < end) {
+        if (!decimal(&at, end, &last) || at != end || (!suffix && last < first)) return 200;
+    } else {
+        last = UINT64_MAX;
+    }
+
+    if (suffix && last && !total) return 200;
+    if ((suffix && !last) || first >= total) {
+        *length = 0;
+        return 416;
+    }
+    if (suffix) {
+        *length = last < total ? last : total;
+        *offset = total - *length;
+    } else {
+        *offset = first;
+        if (last >= total) last = total - 1;
+        *length = last - first + 1;
+    }
+    return 206;
+}
+
 enum { FILE_CHUNK = 64 * 1024 };
 
 typedef struct {
@@ -203,6 +273,7 @@ typedef struct {
     int fd;
     int reading;
     int cancelled;
+    uint64_t offset;
     uint64_t remaining;
     uint8_t bytes[FILE_CHUNK];
 } FileStream;
@@ -223,6 +294,7 @@ static void file_chunk_ready(uv_fs_t *request) {
         return;
     }
     stream->remaining -= (uint64_t)count;
+    stream->offset += (uint64_t)count;
     if (kable_tcp_stream_write(stream->connection, stream->bytes, (size_t)count) < 0) {
         finish_file_stream(stream, 0);
     }
@@ -238,7 +310,7 @@ static void file_chunk_written(void *context) {
     stream->chunk = uv_buf_init((char *)stream->bytes, (unsigned int)len);
     stream->request.data = stream;
     int status = uv_fs_read(kable_tcp_loop(stream->connection), &stream->request,
-        stream->fd, &stream->chunk, 1, -1, file_chunk_ready);
+        stream->fd, &stream->chunk, 1, (int64_t)stream->offset, file_chunk_ready);
     if (status < 0) {
         uv_fs_req_cleanup(&stream->request);
         finish_file_stream(stream, 0);
@@ -258,7 +330,8 @@ static void cancel_file_stream(void *context) {
 }
 
 /* Consumes fd even when the stream cannot start. */
-int32_t kable_send_file(uint8_t *raw, uint8_t *headers, size_t len, int32_t fd, uint64_t length) {
+int32_t kable_send_file(uint8_t *raw, uint8_t *headers, size_t len, int32_t fd,
+    uint64_t offset, uint64_t length) {
     if (!length) {
         close(fd);
         return kable_write(raw, headers, len);
@@ -271,6 +344,7 @@ int32_t kable_send_file(uint8_t *raw, uint8_t *headers, size_t len, int32_t fd, 
     }
     stream->connection = client->connection;
     stream->fd = fd;
+    stream->offset = offset;
     stream->remaining = length;
     int status = kable_tcp_start_stream(client->connection, headers, len, WRITE_TIMEOUT,
         file_chunk_written, cancel_file_stream, stream);
