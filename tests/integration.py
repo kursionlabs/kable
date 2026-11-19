@@ -165,7 +165,12 @@ def check_static_files(command, directory):
     (pages / "index.html").write_bytes(b"<p>Nested index</p>\n")
     (pages / "a b.txt").write_bytes(b"A file with spaces\n")
     (root / "payload.bin").write_bytes(b"\x00\x01\xff")
-    (root / "large.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+    large = bytes(range(256)) * 5000 + b"last chunk"
+    (root / "large.bin").write_bytes(large)
+    (root / "empty").touch()
+    stalled_path = root / "stalled.bin"
+    with stalled_path.open("wb") as file:
+        file.truncate(16 * 1024 * 1024)
     os.mkfifo(root / "pipe")
 
     with subprocess.Popen([*command, str(root), "0"], stdout=subprocess.PIPE) as process:
@@ -183,6 +188,9 @@ def check_static_files(command, directory):
             headers = assert_response(request(b"/payload.bin"), 200, b"\x00\x01\xff")
             assert headers[b"content-type"] == b"application/octet-stream"
             assert_response(request(b"/payload.bin", b"HEAD"), 200, b"\x00\x01\xff", head=True)
+            assert_response(request(b"/empty"), 200, b"")
+            assert_response(request(b"/large.bin"), 200, large)
+            assert_response(request(b"/large.bin", b"HEAD"), 200, large, head=True)
             headers = assert_response(request(b"/", b"POST"), 405, b"Method Not Allowed\n")
             assert headers[b"allow"] == b"GET, HEAD"
             for path in (b"/missing", b"/pages", b"/pipe", b"/external.txt",
@@ -190,13 +198,38 @@ def check_static_files(command, directory):
                 assert_response(request(path), 404, b"Not Found\n")
             for path in (b"/%xz", b"/%00", b"/short%"):
                 assert_response(request(path), 400, b"Bad Request\n")
-            assert_response(request(b"/large.bin"), 403, b"Forbidden\n")
+            with socket.socket() as stalled:
+                stalled.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+                stalled.settimeout(5)
+                stalled.connect(("127.0.0.1", port))
+                stalled.sendall(b"GET /stalled.bin HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                with stalled.makefile("rb") as stream:
+                    assert stream.readline() == b"HTTP/1.1 200 OK\r\n"
+                assert holds_file(process, stalled_path), "slow transfer finished before backpressure"
+                assert_response(request(b"/"), 200, b"<h1>Kable</h1>\n")
+                assert holds_file(process, stalled_path), "slow transfer finished while serving another request"
+                stalled.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            deadline = time.monotonic() + 2
+            while holds_file(process, stalled_path):
+                assert time.monotonic() < deadline, "disconnected client kept the file open"
+                time.sleep(0.01)
+            assert_response(request(b"/"), 200, b"<h1>Kable</h1>\n")
             process.terminate()
             assert process.wait(timeout=5) == 0
         finally:
             if process.poll() is None:
                 process.kill()
     print("Kable static file checks passed")
+
+
+def holds_file(process, path):
+    for descriptor in Path(f"/proc/{process.pid}/fd").iterdir():
+        try:
+            if descriptor.readlink() == path:
+                return True
+        except FileNotFoundError:
+            pass
+    return False
 
 
 def check_timeout(port):
@@ -737,7 +770,8 @@ fn main() {
         capture_output=True,
         text=True,
     )
-    assert result.returncode != 0 and "no instance of task::Plan[ReadFile!, Virtual!, FileOutcome!]" in result.stderr, result
+    assert result.returncode != 0, result
+    assert "no instance of" in result.stderr and "Plan[ReadFile!, Virtual!, FileOutcome!]" in result.stderr, result
 
 
 def check_timer_engines(directory):

@@ -1,12 +1,13 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{Outcome, Prepared!, Scope!, WithinOutcome, collect, prepare, sleep, within};
-use http::{Method, Request!, Response!};
+use async::{OpenedFile!, Outcome, Prepared!, Scope!, WithinOutcome, collect, prepare, sleep, within};
+use http::{Method, Request!, Response!, encode_headers};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::{Option, Result};
 use std::ptr::is_null;
+use std::slice::Slice;
 use task::{Continuation!, HostedChain, Plan, PlanOutput, Sequence!, StageHost, StageResult, continuation, host_sequence};
 
 // Callers import these traits to bring the plan extension methods into scope.
@@ -18,6 +19,7 @@ extern "C" fn kable_bind(port: u16,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
+extern "C" fn kable_send_file(client: *u8, headers: *u8, len: usize, fd: i32, length: u64) -> i32;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8, u8, u8) -> i32, head: u8, http10: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
@@ -26,6 +28,14 @@ extern "C" fn kable_stop(server: *u8) -> ();
 exposed enum Action! {
     Reply(Response!),
     Deferred(Deferred!),
+    File(FileReply!),
+}
+
+struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
+
+/// Sends a measured file using one write at a time.
+fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
+    Action!::File.(FileReply!.{ file, content_type })
 }
 
 impl Response! {
@@ -86,25 +96,36 @@ impl Task {
     /// Replies with 504 if the local deadline wins. After the plan joins,
     /// discard consumes every outcome that will not be passed to reply.
     fn defer_within(self, ms: u64, reply: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Action! {
-        defer_plan(within(ms, self), |result: WithinOutcome[Output], active: bool| {
-            let (outcome, status) = match result {
-                WithinOutcome::Completed(outcome) => (outcome, Option::None),
-                WithinOutcome::TimedOut(outcome) => (outcome, Option::Some.(504)),
-                WithinOutcome::Cancelled(outcome) => (outcome, Option::Some.(408)),
-                WithinOutcome::Failed(outcome, code) => (outcome, Option::Some.(500)),
-            };
-            if active {
-                let response = match status {
-                    Option::None => reply(outcome),
-                    Option::Some(code) => { discard(outcome); Response!::rejected(code) },
-                };
-                Option::Some.(response.reply())
-            } else {
-                discard(outcome);
-                Option::None
-            }
-        })
+        defer_timed(self, ms, |outcome| reply(outcome).reply(), discard)
     }
+
+    /// Like defer_within, with a continuation that can return a file reply.
+    fn defer_action_within(self, ms: u64, reply: fn(Output) -> Action!, discard: fn(Output) -> ()) -> Action! {
+        defer_timed(self, ms, |outcome| reply(outcome), discard)
+    }
+}
+
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output], Copy[Env].
+fn defer_timed(task: Task, ms: u64, reply: closure[Env](Output) -> Action!,
+    discard: fn(Output) -> ()) -> Action! {
+    defer_plan(within(ms, task), |result: WithinOutcome[Output], active: bool| {
+        let (outcome, status) = match result {
+            WithinOutcome::Completed(outcome) => (outcome, Option::None),
+            WithinOutcome::TimedOut(outcome) => (outcome, Option::Some.(504)),
+            WithinOutcome::Cancelled(outcome) => (outcome, Option::Some.(408)),
+            WithinOutcome::Failed(outcome, code) => (outcome, Option::Some.(500)),
+        };
+        if active {
+            let action = match status {
+                Option::None => reply(outcome),
+                Option::Some(code) => { discard(outcome); Response!::rejected(code).reply() },
+            };
+            Option::Some.(action)
+        } else {
+            discard(outcome);
+            Option::None
+        }
+    })
 }
 
 struct RequestHost {}
@@ -183,7 +204,19 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
     match action {
         Action!::Reply(response) => unsafe write_response(client, Pending!.{ response, head, http10 }),
         Action!::Deferred(plan) => unsafe schedule(client, plan, head, http10),
+        Action!::File(reply) => unsafe write_file(client, reply, head, http10),
     }
+}
+
+unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -> i32 {
+    let { file, content_type } = reply;
+    let (fd, length) = unsafe file.into_parts();
+    let headers = encode_headers(200, content_type, "", length, http10);
+    let ptr = unsafe &headers.as_ptr();
+    let len = &headers.len();
+    let result = unsafe kable_send_file(client, ptr, len, fd, if head { 0 } else { length });
+    headers.destroy();
+    result
 }
 
 unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,

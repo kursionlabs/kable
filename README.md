@@ -47,7 +47,12 @@ directory you want to serve as the first argument. The port defaults to 8080.
 The server listens on loopback, accepts `GET` and `HEAD`, and serves
 `index.html` for paths ending in a slash.
 
-File reads use the worker pool with a 1 MiB limit and a two-second deadline.
+Opening the file and checking its length use the worker pool with a two-second
+deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
+each socket write completes. `HEAD` uses the file length without reading
+its body. The transfer has a five-second write deadline and closes the file
+when it finishes or cancels.
+
 The server sets the content type for common web files. Path resolution uses
 Linux’s `openat2` to stay below the document root and reject symlinks.
 This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://man7.org/linux/man-pages/man2/openat2.2.html)
@@ -304,7 +309,7 @@ buffer.
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — immediate and delayed replies in one handler
-- `examples/static-files/` — serves a document root with bounded async reads
+- `examples/static-files/` — streams files from a document root
 - `examples/http-file/` — bounded file replies, parallel reads, and an owned continuation
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads

@@ -22,18 +22,21 @@ struct KableFile {
     size_t len;
     size_t capacity;
     size_t limit;
-    uint8_t beneath;
+    uint8_t mode;
+    int fd;
+    uint64_t size;
     atomic_bool cancelled;
     int queued;
     int status;
 };
 
-KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t beneath) {
+KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t mode) {
     KableFile *file = calloc(1, sizeof *file);
     if (!file) return NULL;
     atomic_init(&file->cancelled, 0);
     file->limit = limit;
-    file->beneath = beneath;
+    file->mode = mode;
+    file->fd = -1;
     if (len == SIZE_MAX || (len && memchr(path, 0, len))) {
         file->status = UV_EINVAL;
         return file;
@@ -67,10 +70,7 @@ static int append(KableFile *file, uint8_t *bytes, size_t count) {
 }
 
 static int read_contents(KableFile *file, int fd) {
-    struct stat info;
-    if (fstat(fd, &info) != 0) return uv_translate_sys_error(errno);
-    if (!S_ISREG(info.st_mode)) return UV_EINVAL;
-    if (info.st_size > 0 && (uintmax_t)info.st_size > file->limit) return UV_EFBIG;
+    if (file->size > file->limit) return UV_EFBIG;
 
     uint8_t bytes[16384];
     while (!atomic_load_explicit(&file->cancelled, memory_order_relaxed)) {
@@ -88,7 +88,7 @@ static int read_contents(KableFile *file, int fd) {
 
 static int open_file(KableFile *file) {
     int flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK;
-    if (!file->beneath) return open(file->path, flags);
+    if (file->mode == KABLE_READ_FILE) return open(file->path, flags);
 
 #ifdef SYS_openat2
     struct open_how how = {
@@ -114,7 +114,19 @@ static void read_file(uv_work_t *request) {
         file->status = uv_translate_sys_error(errno);
         return;
     }
-    file->status = read_contents(file, fd);
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+        file->status = uv_translate_sys_error(errno);
+    } else if (!S_ISREG(info.st_mode) || info.st_size < 0) {
+        file->status = UV_EINVAL;
+    } else {
+        file->size = (uint64_t)info.st_size;
+        if (file->mode == KABLE_OPEN_BENEATH) {
+            file->fd = fd;
+            return;
+        }
+        file->status = read_contents(file, fd);
+    }
     if (close(fd) != 0 && file->status == 0) file->status = uv_translate_sys_error(errno);
 }
 
@@ -147,8 +159,20 @@ int kable_file_result(KableFile *file, uint8_t **data, size_t *len) {
     return file->status;
 }
 
+int kable_file_take_descriptor(KableFile *file, uint64_t *len) {
+    if (file->status < 0) return file->status;
+    if (file->fd < 0) return UV_EINVAL;
+    int fd = file->fd;
+    file->fd = -1;
+    *len = file->size;
+    return fd;
+}
+
+void kable_file_close_descriptor(int32_t fd) { close(fd); }
+
 void kable_file_free(KableFile *file) {
     if (!file) return;
+    if (file->fd >= 0) close(file->fd);
     free(file->path);
     free(file->data);
     free(file);

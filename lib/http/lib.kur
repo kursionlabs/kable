@@ -95,16 +95,8 @@ impl Response! {
 
     fn encode(self, head: bool, http10: bool) -> Buffer! {
         let { status, content_type, allow, body } = self;
-        let len = &body.len();
-        let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
-        let wire = Buffer!::new().push_static(version)
-            .push_usize(status as usize).push_static(" ").push_static(reason(status))
-            .push_static("\r\nContent-Type: ").push_static(content_type)
-            .push_static("\r\nContent-Length: ").push_usize(len)
-            .push_static("\r\nConnection: close\r\n");
-        let wire = if allow.is_empty() { wire }
-            else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
-        let wire = wire.push_static("\r\n");
+        let length = &body.len();
+        let wire = encode_headers(status, content_type, allow, length as u64, http10);
         if head {
             body.destroy();
             wire
@@ -112,4 +104,17 @@ impl Response! {
             wire.push_buffer(body)
         }
     }
+}
+
+fn encode_headers(status: u16, content_type: Slice[u8, 'static], allow: Slice[u8, 'static],
+    length: u64, http10: bool) -> Buffer! {
+    let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
+    let wire = Buffer!::new().push_static(version)
+        .push_usize(status as usize).push_static(" ").push_static(reason(status))
+        .push_static("\r\nContent-Type: ").push_static(content_type)
+        .push_static("\r\nContent-Length: ").push_u64(length)
+        .push_static("\r\nConnection: close\r\n");
+    let wire = if allow.is_empty() { wire }
+        else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
+    wire.push_static("\r\n")
 }

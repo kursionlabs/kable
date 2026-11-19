@@ -85,11 +85,11 @@ size_t kable_scope_add(uint8_t *raw, uint8_t kind, uint64_t ms, size_t first, si
     return index;
 }
 
-size_t kable_scope_add_file(uint8_t *raw, uint8_t *path, size_t len, size_t limit, uint8_t beneath) {
+size_t kable_scope_add_file(uint8_t *raw, uint8_t *path, size_t len, size_t limit, uint8_t mode) {
     size_t index = kable_scope_add(raw, SLEEP, 0, 0, 0);
     if (index == SIZE_MAX) return index;
     Scope *scope = (Scope *)raw;
-    KableFile *file = kable_file_new(path, len, limit, beneath);
+    KableFile *file = kable_file_new(path, len, limit, mode);
     if (!file) {
         scope->status = UV_ENOMEM;
         return SIZE_MAX;
@@ -253,6 +253,13 @@ int32_t kable_scope_file_result(uint8_t *raw, size_t id, uint8_t **data, size_t 
     Node *node = &scope->nodes[id];
     if (node->kind != READ_FILE) return UV_EINVAL;
     return kable_file_result(node->file, data, len);
+}
+
+int32_t kable_scope_take_file(uint8_t *raw, size_t id, uint64_t *len) {
+    if (kable_scope_result(raw, id) != SCOPE_COMPLETED) return UV_EINVAL;
+    Node *node = &((Scope *)raw)->nodes[id];
+    if (node->kind != READ_FILE) return UV_EINVAL;
+    return kable_file_take_descriptor(node->file, len);
 }
 
 void kable_scope_free(uint8_t *raw) {

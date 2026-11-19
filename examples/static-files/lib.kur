@@ -1,6 +1,6 @@
-use async::{FileOutcome!, read_file_beneath_cwd};
+use async::{OpenOutcome!, open_file_beneath_cwd};
 use http::{Method, Request!, Response!};
-use server::{Action!, Plan, PlanOutput, Server!};
+use server::{Action!, Plan, PlanOutput, Server!, file_reply};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -12,8 +12,7 @@ use std::slice::{Slice, StaticRead};
 extern "C" fn uv_chdir(path: *u8) -> i32;
 extern "C" fn kable_static_file_status(error: i32) -> u16;
 
-const FILE_LIMIT: usize = 1_048_576;
-const READ_DEADLINE: u64 = 2000;
+const OPEN_DEADLINE: u64 = 2000;
 
 fn serve(request: Request!) -> Action! {
     let { method, target, body } = request;
@@ -31,27 +30,27 @@ fn serve(request: Request!) -> Action! {
     };
     let content_type = path_type(&path);
     let exists 'k. (access, bytes, restore) = path.open();
-    let file = read_file_beneath_cwd(&access, bytes, FILE_LIMIT);
+    let file = open_file_beneath_cwd(&access, bytes);
     restore.restore(access).destroy();
 
     file.map(|outcome| (content_type, outcome))
-        .defer_within(READ_DEADLINE, file_response, discard_file)
+        .defer_action_within(OPEN_DEADLINE, file_response, discard_file)
 }
 
-fn file_response(result: (Slice[u8, 'static], FileOutcome!)) -> Response! {
+fn file_response(result: (Slice[u8, 'static], OpenOutcome!)) -> Action! {
     let (content_type, outcome) = result;
     match outcome {
-        FileOutcome!::Read(bytes) => Response!::bytes(bytes, content_type),
-        FileOutcome!::Cancelled => Response!::rejected(408),
-        FileOutcome!::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)),
+        OpenOutcome!::Opened(file) => file_reply(file, content_type),
+        OpenOutcome!::Cancelled => Response!::rejected(408).reply(),
+        OpenOutcome!::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)).reply(),
     }
 }
 
-fn discard_file(result: (Slice[u8, 'static], FileOutcome!)) {
+fn discard_file(result: (Slice[u8, 'static], OpenOutcome!)) {
     let (content_type, outcome) = result;
     match outcome {
-        FileOutcome!::Read(bytes) => bytes.destroy(),
-        FileOutcome!::Cancelled | FileOutcome!::Failed => (),
+        OpenOutcome!::Opened(file) => file.close(),
+        OpenOutcome!::Cancelled | OpenOutcome!::Failed => (),
     }
 }
 
