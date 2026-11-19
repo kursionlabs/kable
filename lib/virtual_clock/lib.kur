@@ -1,13 +1,13 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
-use task::{Completion, PlanOutput, RaceOutcome, Sleep!, WithinOutcome, join, select, sleep};
+use task::{Completion, PlanOutput, Side, Sleep!, WithinOutcome, join, select, sleep};
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
 
 export Completion;
 export PlanOutput;
-export RaceOutcome;
+export Side;
 export Sleep!;
 export join;
 export select;

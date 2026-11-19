@@ -189,8 +189,10 @@ after both children join. The outputs are in input order and each carries
 its own result. In both tuples, `status` is a `Completion[()]`.
 
 `select` takes the first child to complete, which may report an error, then
-cancels and joins the loser. Both combinators accept nested plans and
-operations supported by the driver.
+cancels and joins the loser. It returns `(first_output, second_output, status)`
+in input order. On selection, `Completion::Ready(side)` identifies the winner
+as `Side::First` or `Side::Second`. Cancellation and failure also return both
+outputs. Both combinators accept nested plans and operations supported by the driver.
 
 `run_with_deadline(plan, ms)` adds a parent deadline that cancels every
 pending child, including children of nested joins. The scope closes all timer handles before returning.

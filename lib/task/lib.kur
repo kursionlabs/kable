@@ -56,20 +56,14 @@ struct Join! { first: First, second: Second, id: Option[usize] }
 forall First, Second.
 fn join(first: First, second: Second) -> Join![First, Second] { Join!.{ first, second, id: Option::None } }
 
-/// Each branch returns both values in input order after the scope closes.
-forall A, B.
-exposed enum RaceOutcome {
-    First(A, B),
-    Second(A, B),
-    Cancelled(A, B),
-    Failed(A, B, i32),
-}
+/// The input that finished first in a selection.
+exposed enum Side { First, Second }
 
 forall T.
 instance PlanOutput[Sleep![T] -> (T, Completion[()])] {}
 
 forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
-instance PlanOutput[Select![First, Second] -> RaceOutcome[A, B]] {}
+instance PlanOutput[Select![First, Second] -> (A, B, Completion[Side])] {}
 
 forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
 instance PlanOutput[Join![First, Second] -> (A, B, Completion[()])] {}
@@ -114,7 +108,7 @@ fn collect_pair(first: First, second: Second, &scope: Driver, id: Option[usize])
 }
 
 forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-instance Plan[Select![First, Second], Driver -> RaceOutcome[A, B]] {
+instance Plan[Select![First, Second], Driver -> (A, B, Completion[Side])] {
     fn stage(&task: Select![First, Second], &scope: Driver) -> Option[usize] {
         let { first, second, id } = task;
         let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, PairKind::Select);
@@ -122,16 +116,17 @@ instance Plan[Select![First, Second], Driver -> RaceOutcome[A, B]] {
         id
     }
 
-    fn collect(task: Select![First, Second], &scope: Driver) -> RaceOutcome[A, B] {
+    fn collect(task: Select![First, Second], &scope: Driver) -> (A, B, Completion[Side]) {
         let { first, second, id } = task;
         let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope, id);
-        match result {
-            Resolution::First => RaceOutcome::First.(a, b),
-            Resolution::Second => RaceOutcome::Second.(a, b),
-            Resolution::Cancelled => RaceOutcome::Cancelled.(a, b),
-            Resolution::Failed(code) => RaceOutcome::Failed.(a, b, code),
-            Resolution::Completed => RaceOutcome::Failed.(a, b, -1i32),
-        }
+        let status = match result {
+            Resolution::First => Completion::Ready.(Side::First),
+            Resolution::Second => Completion::Ready.(Side::Second),
+            Resolution::Cancelled => Completion::Cancelled,
+            Resolution::Failed(code) => Completion::Failed.(code),
+            Resolution::Completed => Completion::Failed.(-1),
+        };
+        (a, b, status)
     }
 }
 
@@ -168,12 +163,17 @@ impl Task {
 
     /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, ms: u64)
-        -> Map![Select![Sleep![()], Task], RaceOutcome[((), Completion[()]), Input], WithinOutcome[Input], ()] {
-        select(sleep(ms, ()), self).map(|result| match result {
-            RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
-            RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),
-            RaceOutcome::Cancelled(timer, outcome) => WithinOutcome::Cancelled.(outcome),
-            RaceOutcome::Failed(timer, outcome, code) => WithinOutcome::Failed.(outcome, code),
+        -> Map![Select![Sleep![()], Task], (((), Completion[()]), Input, Completion[Side]), WithinOutcome[Input], ()] {
+        select(sleep(ms, ()), self).map(|result| {
+            let (timer, outcome, status) = result;
+            match status {
+                Completion::Ready(side) => match side {
+                    Side::First => WithinOutcome::TimedOut.(outcome),
+                    Side::Second => WithinOutcome::Completed.(outcome),
+                },
+                Completion::Cancelled => WithinOutcome::Cancelled.(outcome),
+                Completion::Failed(code) => WithinOutcome::Failed.(outcome, code),
+            }
         })
     }
 }

@@ -1,4 +1,4 @@
-use async::{Completion, PlanOutput, RaceOutcome, WithinOutcome, join, run, run_with_deadline,
+use async::{Completion, PlanOutput, Side, WithinOutcome, join, run, run_with_deadline,
     select, sleep};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
@@ -12,29 +12,16 @@ fn main() -> i32 {
     }
 
     let owned = Buffer!::new().push_static("owned by the slower task");
-    let result = run(select(sleep(20, ()), sleep(100, owned)));
-    match result {
-        RaceOutcome::First(unit, cancelled) => {
-            if !reclaim_cancelled(cancelled) { return 1; }
-            print_buffer(f"First timer won. Reclaimed the slower task's buffer.\n");
-        },
-        RaceOutcome::Second(unit, ready) => { reclaim_cancelled(ready); return 1i32; },
-        RaceOutcome::Cancelled(unit, cancelled) => { reclaim_cancelled(cancelled); return 1i32; },
-        RaceOutcome::Failed(unit, recovered, code) => { reclaim_cancelled(recovered); return 1i32; },
-    }
+    let (timer, slower, status) = run(select(sleep(20, ()), sleep(100, owned)));
+    if !reclaim_cancelled(slower) || !won(status, Side::First) { return 1; }
+    print_buffer(f"First timer won. Reclaimed the slower task's buffer.\n");
 
     let owned = Buffer!::new().push_static("owned by the first task");
     let waiting = select(sleep(30_000, owned), sleep(60_000, ()));
-    let result = run_with_deadline(waiting, 10);
-    match result {
-        RaceOutcome::Cancelled(cancelled, unit) => {
-            if !reclaim_cancelled(cancelled) { return 1; }
-            print_buffer(f"Parent deadline cancelled both timers.\n");
-        },
-        RaceOutcome::First(ready, unit) => { reclaim_cancelled(ready); return 1i32; },
-        RaceOutcome::Second(cancelled, unit) => { reclaim_cancelled(cancelled); return 1i32; },
-        RaceOutcome::Failed(recovered, unit, code) => { reclaim_cancelled(recovered); return 1i32; },
-    }
+    let (first, second, status) = run_with_deadline(waiting, 10);
+    let (unit, second_status) = second;
+    if !reclaim_cancelled(first) || !cancelled(second_status) || !cancelled(status) { return 1; }
+    print_buffer(f"Parent deadline cancelled both timers.\n");
     if !check_join() || !check_nested_deadline() || !check_select() || !check_map() ||
         !check_within() { return 1i32; }
     0i32
@@ -89,16 +76,8 @@ fn check_map() -> bool {
     let loser_label = Buffer!::new().push_static("-lose");
     let first = sleep(0, Buffer!::new().push_static("a")).map(|result| label(result, winner_label));
     let second = sleep(30_000, Buffer!::new().push_static("b")).map(|result| label(result, loser_label));
-    let result = run(select(first, second));
-    let (a, b, first_won) = match result {
-        RaceOutcome::First(a, b) => (a, b, true),
-        RaceOutcome::Second(a, b) => (a, b, false),
-        RaceOutcome::Cancelled(a, b) => (a, b, false),
-        RaceOutcome::Failed(a, b, code) => (a, b, false),
-    };
-    let (first, ready) = a;
-    let (second, loser_ready) = b;
-    let valid = first_won && ready && !loser_ready && &first.len() == 5usize && &second.len() == 6usize;
+    let ((first, ready), (second, loser_ready), status) = run(select(first, second));
+    let valid = won(status, Side::First) && ready && !loser_ready && &first.len() == 5 && &second.len() == 6;
     first.destroy();
     second.destroy();
     if !valid { return false; }
@@ -114,27 +93,20 @@ fn check_map() -> bool {
 
 fn check_select() -> bool {
     let slow = join(sleep(0u64, 1u8), sleep(30_000u64, 2u8));
-    let result = run(select(slow, sleep(10u64, 3u8)));
-    match result {
-        RaceOutcome::Second(loser, winner) => {
-            let (first, pending, status) = loser;
-            let reclaimed = cancelled(status) && is_ready(first, 1) && is_cancelled(pending, 2);
-            if !reclaimed || !is_ready(winner, 3u8) { return false; }
-            print_buffer(f"Select cancelled the unfinished part of a losing join.\n");
-            true
-        },
-        _ => false,
-    }
+    let (loser, winner, status) = run(select(slow, sleep(10u64, 3u8)));
+    let (first, pending, join_status) = loser;
+    let reclaimed = cancelled(join_status) && is_ready(first, 1) && is_cancelled(pending, 2);
+    if !won(status, Side::Second) || !reclaimed || !is_ready(winner, 3) { return false; }
+    print_buffer(f"Select cancelled the unfinished part of a losing join.\n");
+    true
 }
 
 fn check_join() -> bool {
     let winner = select(sleep(30_000, 1u8), sleep(1, 2u8));
     let plan = join(winner, sleep(10u64, 3u8));
     let (winner, timer, status) = run(plan);
-    let second_won = match winner {
-        RaceOutcome::Second(a, b) => is_cancelled(a, 1) && is_ready(b, 2),
-        _ => false,
-    };
+    let (a, b, selection) = winner;
+    let second_won = won(selection, Side::Second) && is_cancelled(a, 1) && is_ready(b, 2);
     if !ready(status) || !second_won || !is_ready(timer, 3) { return false; }
     print_buffer(f"Join waited for the race and the other timer.\n");
     true
@@ -146,10 +118,8 @@ fn check_nested_deadline() -> bool {
     let plan = join(sleep(0u64, owned), slow);
     let (first, nested, status) = run_with_deadline(plan, 10);
     let (timer, race, nested_status) = nested;
-    let race_cancelled = match race {
-        RaceOutcome::Cancelled(a, b) => is_cancelled(a, 3) && is_cancelled(b, 4),
-        _ => false,
-    };
+    let (a, b, selection) = race;
+    let race_cancelled = cancelled(selection) && is_cancelled(a, 3) && is_cancelled(b, 4);
     let (buffer, first_status) = first;
     let length = &buffer.len();
     buffer.destroy();
@@ -159,11 +129,18 @@ fn check_nested_deadline() -> bool {
     true
 }
 
+fn won(status: Completion[Side], expected: Side) -> bool {
+    let winner = match status { Completion::Ready(side) => side, _ => return false };
+    let first = match winner { Side::First => true, Side::Second => false };
+    match expected { Side::First => first, Side::Second => !first }
+}
+
 fn ready(status: Completion[()]) -> bool {
     match status { Completion::Ready => true, _ => false }
 }
 
-fn cancelled(status: Completion[()]) -> bool {
+forall T where Copy[T].
+fn cancelled(status: Completion[T]) -> bool {
     match status { Completion::Cancelled => true, _ => false }
 }
 
