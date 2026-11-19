@@ -67,15 +67,16 @@ the response.
 
 Request `/file` on the printed address to read the bundled `example.txt`.
 `/health` remains available while the read is pending.
-`/file-with-timeout` uses `within` to give the read a one-second deadline.
+`/file-with-timeout` uses `task.within(1000u64).defer(...)` to give the read
+a one-second deadline.
 If the timer wins, the handler returns 504 after the worker closes the file
 and returns.
 
-An HTTP handler can pass a portable sequence to `defer_sequence`. The
-listener drives each stage under the original request deadline and delivers
+An HTTP handler can use `sequence.defer(state, resume, cancel)` to drive a
+portable sequence under the original request deadline. The listener delivers
 request cancellation after the active plan joins. The example’s
-`/file-sequence` reads `example.txt`, then captures its owned buffer in a
-`map` on the second read of `footer.txt` and returns both files together.
+`/file-sequence` reads `example.txt`, then uses `.map` on the second read
+to capture the first file’s owned buffer and return both files together.
 
 ## Scoped task plans
 
@@ -146,6 +147,10 @@ timer won, and `Cancelled` means the enclosing scope cancelled the plan.
 Every branch returns the inner outcome after cleanup so the caller can
 reclaim owned values. A local timeout leaves unrelated sibling plans running.
 
+Import `async::Plan` for libuv’s `plan.map(transform)` and
+`plan.within(ms)` methods. `server::Plan` brings the same trait into scope
+in HTTP handlers. The free functions work with either driver.
+
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain
 bin/task-chain
@@ -172,8 +177,9 @@ in argument order. Each file is limited to 64 KiB.
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per
 connection. A handler receives an owned `Connection!` in each event. It can
-return `wait(timeout(1000u64, read(connection)))` to start a timed read, or
-`write(bytes, next_read)` to write the bytes before starting another read.
+return `connection.read().timeout(1000u64).wait()` to start a timed read,
+`write(bytes, next_read)` to write before starting another read, or
+`connection.close()` to end the connection.
 
 A read that gets bytes first stops reading and cancels its timer. If the
 deadline fires first, the timer stops the read. In both cases the handler

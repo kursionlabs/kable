@@ -1,21 +1,21 @@
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Event!, Listener!, close, read, timeout, wait, write};
+use tcp::{Action!, Event!, Listener!, write};
 
 fn echo(event: Event!) -> Action! {
     match event {
-        Event!::Connected(connection) => wait(timeout(1000u64, read(connection))),
-        Event!::Bytes(connection, bytes) => write(bytes, timeout(1000u64, read(connection))),
+        Event!::Connected(connection) => connection.read().timeout(1000u64).wait(),
+        Event!::Bytes(connection, bytes) => write(bytes, connection.read().timeout(1000u64)),
         Event!::TimedOut(connection) => {
             eprint_buffer(f"Read deadline expired.\n");
-            close(connection)
+            connection.close()
         },
-        Event!::End(connection) => close(connection),
+        Event!::End(connection) => connection.close(),
         Event!::Cancelled(connection) => {
             eprint_buffer(f"Cancelled connection on shutdown.\n");
-            close(connection)
+            connection.close()
         },
-        Event!::Failed(connection, code) => close(connection),
+        Event!::Failed(connection, code) => connection.close(),
     }
 }
 

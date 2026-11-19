@@ -2,7 +2,7 @@ use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
-use tcp::{Action!, Connection!, Event!, Listener!, Read!, close, read, timeout, wait, write};
+use tcp::{Action!, Connection!, Event!, Listener!, Read!, write};
 
 struct Session! { pending: Buffer!, retried: bool }
 
@@ -17,7 +17,7 @@ fn finish(session: Session!) {
     eprint_buffer(f"Closed session with {length} buffered bytes.\n");
 }
 
-fn read_line(connection: Connection!) -> Read! { timeout(1000u64, read(connection)) }
+fn read_line(connection: Connection!) -> Read! { connection.read().timeout(1000u64) }
 
 fn receive(connection: Connection!, pending: Buffer!) -> (Session!, Action!) {
     let exists 'k. (access, bytes, restore) = pending.open();
@@ -26,7 +26,7 @@ fn receive(connection: Connection!, pending: Buffer!) -> (Session!, Action!) {
         Option::None => {
             let pending = restore.restore(access);
             let oversized = &pending.len() > 16384usize;
-            let action = if oversized { close(connection) } else { wait(read_line(connection)) };
+            let action = if oversized { connection.close() } else { read_line(connection).wait() };
             (Session!.{ pending, retried: false }, action)
         },
         Option::Some(index) => {
@@ -42,7 +42,7 @@ fn receive(connection: Connection!, pending: Buffer!) -> (Session!, Action!) {
 
 fn handle(session: Session!, event: Event!) -> (Session!, Action!) {
     match event {
-        Event!::Connected(connection) => (session, wait(read_line(connection))),
+        Event!::Connected(connection) => (session, read_line(connection).wait()),
         Event!::Bytes(connection, bytes) => {
             let { pending, retried } = session;
             receive(connection, pending.push_buffer(bytes))
@@ -51,15 +51,15 @@ fn handle(session: Session!, event: Event!) -> (Session!, Action!) {
             let { pending, retried } = session;
             let session = Session!.{ pending, retried: true };
             if retried {
-                (session, close(connection))
+                (session, connection.close())
             } else {
                 eprint_buffer(f"Retrying idle read.\n");
-                (session, wait(read_line(connection)))
+                (session, read_line(connection).wait())
             }
         },
-        Event!::End(connection) => (session, close(connection)),
-        Event!::Cancelled(connection) => (session, close(connection)),
-        Event!::Failed(connection, code) => (session, close(connection)),
+        Event!::End(connection) => (session, connection.close()),
+        Event!::Cancelled(connection) => (session, connection.close()),
+        Event!::Failed(connection, code) => (session, connection.close()),
     }
 }
 

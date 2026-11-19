@@ -94,6 +94,16 @@ fn defer_sequence(plan: Sequence![Stages], state: State, resume: fn(State, Optio
     host_sequence[Stages, Output, RequestHost, Action!](plan, next)
 }
 
+forall Stages, Output where HostedChain[Stages, RequestHost, Action! -> Output].
+impl Sequence![Stages] {
+    /// Drives the sequence under the current request's deadline.
+    forall State.
+    fn defer(self, state: State, resume: fn(State, Option[Output]) -> Action!,
+        cancel: fn(State, Option[Output]) -> ()) -> Action! {
+        defer_sequence(self, state, resume, cancel)
+    }
+}
+
 forall Task, Output, Env where Plan[Task, Scope! -> Output].
 fn defer_plan(task: Task, finish: closure[Env](Output, bool) -> Option[Action!]) -> Action! {
     let prepared = prepare(task);

@@ -1,12 +1,12 @@
-use async::{FileOutcome!, ReadFile!, WithinOutcome, read_file, within};
+use async::{FileOutcome!, ReadFile!, WithinOutcome, read_file};
 use http::{Method, Request!, Response!};
-use server::{Action!, Plan, Server!, defer_sequence};
+use server::{Action!, Plan, Server!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::slice::StaticRead;
-use task::{Map!, map, sequence};
+use task::{Map!, sequence};
 
 fn file_response(outcome: FileOutcome!) -> Response! {
     match outcome {
@@ -82,7 +82,7 @@ fn next_file(unit: (), outcome: FileOutcome!)
         FileOutcome!::Read(first) => {
             let access = StaticRead::new();
             let footer = read_file(&access, "footer.txt", 65_536usize);
-            Option::Some.(map(footer, |file| (first, file)))
+            Option::Some.(footer.map(|file| (first, file)))
         },
         FileOutcome!::Cancelled => Option::None,
         FileOutcome!::Failed(code) => Option::None,
@@ -109,11 +109,11 @@ fn handle(request: Request!) -> Action! {
         let access = StaticRead::new();
         let task = read_file(&access, "example.txt", 65_536usize);
         if sequence_path {
-            let plan = sequence(task).then_owned((), next_file, cancel_first);
-            return defer_sequence(plan, (), finish_sequence, cancel_sequence);
+            return sequence(task).then_owned((), next_file, cancel_first)
+                .defer((), finish_sequence, cancel_sequence);
         }
         if timed {
-            return within(1000u64, task).defer(|outcome| timed_response(outcome));
+            return task.within(1000u64).defer(|outcome| timed_response(outcome));
         }
         return task.defer(|outcome| file_response(outcome));
     }

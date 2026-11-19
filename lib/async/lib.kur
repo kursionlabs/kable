@@ -7,12 +7,13 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, Plan, PlanDriver, RaceOutcome, Select!, Sleep!,
     join, race, select, sleep};
-use task::{Branch, ScopeState!, WithinOutcome, map, within};
+use task::{Branch, Map!, ScopeState!, Within!, WithinOutcome, map, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export Join!;
 export JoinOutcome;
 export Outcome;
+export Plan;
 export RaceOutcome;
 export Select!;
 export Sleep!;
@@ -24,6 +25,18 @@ export sleep;
 export WithinOutcome;
 export within;
 export sequence;
+
+forall Task, Output where Plan[Task, Scope! -> Output].
+impl Task {
+    /// Transforms the outcome once after the plan has joined.
+    forall Env, Mapped.
+    fn map(self, transform: closure[Env](Output) -> Mapped) -> Map![Task, Output, Mapped, Env] {
+        map(self, transform)
+    }
+
+    /// Gives this plan a local deadline in milliseconds.
+    fn within(self, ms: u64) -> Within![Task] { within(ms, self) }
+}
 
 extern "C" fn uv_hrtime() -> u64;
 
