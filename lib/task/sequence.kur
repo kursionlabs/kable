@@ -31,15 +31,15 @@ exposed enum StageResult {
 forall Task.
 enum NextStage { Start(Task), Stop, Cancel }
 
-forall State, Input, Task.
+forall State, Input, Task, Env.
 struct Handoff! {
     state: State,
-    resume: fn(State, Input) -> Option[Task],
+    resume: closure[Env](State, Input) -> Option[Task],
     cancel: fn(State, Option[Input]) -> (),
 }
 
-forall State, Input, Task.
-impl Handoff![State, Input, Task] {
+forall State, Input, Task, Env where Copy[Env].
+impl Handoff![State, Input, Task, Env] {
     fn advance(self, result: StageResult[Input]) -> NextStage[Task] {
         let { state, resume, cancel } = self;
         match result {
@@ -59,8 +59,8 @@ impl Handoff![State, Input, Task] {
     }
 }
 
-forall Previous, State, Input, Task.
-struct Then! { previous: Previous, handoff: Handoff![State, Input, Task] }
+forall Previous, State, Input, Task, Env.
+struct Then! { previous: Previous, handoff: Handoff![State, Input, Task, Env] }
 
 /// The outcome type of the last stage in a sequence.
 forall Stages -> Output.
@@ -69,8 +69,8 @@ trait SequenceOutput {}
 forall Task, Output where PlanOutput[Task -> Output].
 instance SequenceOutput[First![Task] -> Output] {}
 
-forall Previous, State, Input, Task, Output where PlanOutput[Task -> Output].
-instance SequenceOutput[Then![Previous, State, Input, Task] -> Output] {}
+forall Previous, State, Input, Task, Env, Output where PlanOutput[Task -> Output].
+instance SequenceOutput[Then![Previous, State, Input, Task, Env] -> Output] {}
 
 forall Stages.
 struct Sequence! { stages: Stages }
@@ -78,11 +78,6 @@ struct Sequence! { stages: Stages }
 forall Task.
 fn sequence(task: Task) -> Sequence![First![Task]] {
     Sequence!.{ stages: First!.{ task } }
-}
-
-forall Env, Input, Task.
-fn resume_copy(resume: closure[Env](Input) -> Option[Task], input: Input) -> Option[Task] {
-    resume(input)
 }
 
 forall Env, Input, Task where Copy[Env], Copy[Input].
@@ -93,16 +88,17 @@ impl Sequence![Stages] {
     /// The callback and its input can both be dropped if the handoff is skipped.
     forall Env, Input, Task where SequenceOutput[Stages -> Input], Copy[Env], Copy[Input].
     fn then(self, resume: closure[Env](Input) -> Option[Task])
-        -> Sequence![Then![Stages, closure[Env](Input) -> Option[Task], Input, Task]] {
-        self.then_owned(resume, resume_copy[Env, Input, Task], skip_copy[Env, Input, Task])
+        -> Sequence![Then![Stages, closure[Env](Input) -> Option[Task], Input, Task, ()]] {
+        self.then_owned(resume, |resume, input| resume(input), skip_copy[Env, Input, Task])
     }
 
     /// Transfers state to resume after the prior stage joins. If the deadline
     /// prevents the handoff, cancel receives the state and any prior outcome.
     /// Resume can consume its inputs and return None to stop explicitly.
-    forall State, Input, Task where SequenceOutput[Stages -> Input].
-    fn then_owned(self, state: State, resume: fn(State, Input) -> Option[Task],
-        cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task]] {
+    /// Its captures must be copyable because cancellation can skip it.
+    forall State, Input, Task, Env where SequenceOutput[Stages -> Input], Copy[Env].
+    fn then_owned(self, state: State, resume: closure[Env](State, Input) -> Option[Task],
+        cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task, Env]] {
         let { stages } = self;
         Sequence!.{ stages: Then!.{ previous: stages, handoff: Handoff!.{ state, resume, cancel } } }
     }
@@ -132,10 +128,10 @@ instance Chain[First![Task], Engine -> Output] {
     }
 }
 
-forall Previous, State, Input, Task, Output, Engine
-    where Clock[Engine], Chain[Previous, Engine -> Input], StageDriver[Task, Engine -> Output].
-instance Chain[Then![Previous, State, Input, Task], Engine -> Output] {
-    fn drive(stages: Then![Previous, State, Input, Task], &engine: Engine, deadline: Option[u64]) -> StageResult[Output] {
+forall Previous, State, Input, Task, Env, Output, Engine
+    where Copy[Env], Clock[Engine], Chain[Previous, Engine -> Input], StageDriver[Task, Engine -> Output].
+instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
+    fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[u64]) -> StageResult[Output] {
         let { previous, handoff } = stages;
         let result = Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline);
         let result = match result {
@@ -218,10 +214,10 @@ instance HostedChain[First![Task], Host, Action -> Output] {
     }
 }
 
-forall Previous, State, Input, Task, Output, Host, Action
-    where HostedChain[Previous, Host, Action -> Input], StageHost[Task, Host, Action -> Output].
-instance HostedChain[Then![Previous, State, Input, Task], Host, Action -> Output] {
-    fn schedule(stages: Then![Previous, State, Input, Task], next: Continuation![Output, Action]) -> Action {
+forall Previous, State, Input, Task, Env, Output, Host, Action
+    where Copy[Env], HostedChain[Previous, Host, Action -> Input], StageHost[Task, Host, Action -> Output].
+instance HostedChain[Then![Previous, State, Input, Task, Env], Host, Action -> Output] {
+    fn schedule(stages: Then![Previous, State, Input, Task, Env], next: Continuation![Output, Action]) -> Action {
         let { previous, handoff } = stages;
         let next = box_continuation(|result: StageResult[Input]| match handoff.advance(result) {
             NextStage::Start(task) => Option::Some.(StageHost[Task, Host, Action -> Output]::schedule(task, next)),

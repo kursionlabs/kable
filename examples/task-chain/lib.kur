@@ -51,7 +51,8 @@ fn expect_stop(result: Option[Outcome[Buffer!]]) {
 
 fn check_chain(budget: Option[u64], should_finish: bool) {
     let plan = sequence(sleep(65u64, Buffer!::new().push_static("first")))
-        .then_owned(Buffer!::new().push_static("second"), append, discard);
+        .then_owned(Buffer!::new().push_static("second"),
+            |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, budget);
     match result {
         Option::Some(outcome) => {
@@ -84,14 +85,14 @@ fn main() -> i32 {
     print_buffer(f"The second stage used the original deadline.\n");
 
     let plan = sequence(sleep(0u64, Buffer!::new()))
-        .then_owned(Buffer!::new(), stop, discard)
-        .then_owned(Buffer!::new(), append, discard);
+        .then_owned(Buffer!::new(), |state, prior| stop(state, prior), discard)
+        .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, Option::None);
     expect_stop(result);
 
     let plan = sequence(sleep(30_000u64, Buffer!::new()))
-        .then_owned(Buffer!::new(), append, discard)
-        .then_owned(Buffer!::new(), append, discard);
+        .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard)
+        .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, Option::Some.(10u64));
     expect_stop(result);
     0i32

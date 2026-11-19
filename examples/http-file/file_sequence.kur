@@ -1,5 +1,5 @@
 //! Chooses a footer from the first file's contents and appends it.
-use async::{FileOutcome!, ReadFile!, read_file};
+use async::{FileOutcome!, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file};
 use server::{Action!, PlanOutput};
@@ -8,13 +8,21 @@ use std::io::eprint_buffer;
 use std::option::Option;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
-use task::{Map!, sequence};
+use task::sequence;
 
 fn serve() -> Action! {
     let access = StaticRead::new();
     let first = read_file(&access, "example.txt", FILE_LIMIT);
     sequence(first)
-        .then_owned((), next_file, cancel_first)
+        .then_owned((), |unit, outcome| match outcome {
+            FileOutcome!::Read(first) => {
+                let path = footer_path(&first);
+                let footer = read_file(&access, path, FILE_LIMIT);
+                Option::Some.(footer.map(|file| (first, file)))
+            },
+            FileOutcome!::Cancelled => Option::None,
+            FileOutcome!::Failed(code) => Option::None,
+        }, cancel_first)
         .defer((), finish_sequence, cancel_sequence)
 }
 
@@ -45,20 +53,6 @@ fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action!
         Option::None => return Response!::rejected(500).reply(),
     };
     append_file(first, outcome).reply()
-}
-
-fn next_file(unit: (), outcome: FileOutcome!)
-    -> Option[Map![ReadFile!, FileOutcome!, (Buffer!, FileOutcome!), (Buffer!,)]] {
-    match outcome {
-        FileOutcome!::Read(first) => {
-            let path = footer_path(&first);
-            let access = StaticRead::new();
-            let footer = read_file(&access, path, FILE_LIMIT);
-            Option::Some.(footer.map(|file| (first, file)))
-        },
-        FileOutcome!::Cancelled => Option::None,
-        FileOutcome!::Failed(code) => Option::None,
-    }
 }
 
 fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {

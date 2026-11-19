@@ -180,9 +180,11 @@ the closure captures and the previous outcome must be copyable because
 the handoff can be skipped.
 
 Use `.then_owned(state, resume, cancel)` when the captures or outcome need
-explicit cleanup. `resume(state, outcome)` runs after the previous stage
-joins. If a deadline or an earlier stage prevents a handoff, `cancel`
-consumes the state and any available outcome.
+explicit cleanup. An inline `resume` closure infers its inputs and the next
+plan. It takes ownership of `state` and the outcome after the previous stage
+joins. Put linear values in `state` so the named `cancel` function can
+consume them and any available outcome if the handoff is skipped. The
+`resume` closure’s own captures must be copyable.
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
 Its optional millisecond budget applies to the whole chain. It returns
