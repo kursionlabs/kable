@@ -1,8 +1,8 @@
-use async::{DeadlineStatus, PlanOutput, Stream, StreamOutcome!};
+use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Connection!, Event!, Listener!, WriteOutcome!, defer};
+use tcp::{Action!, Connection!, Event!, Listener!, defer};
 
 fn read_next(connection: Connection!) -> Action! {
     defer(connection.next().within(1000), |result| read_finished(result))
@@ -24,7 +24,7 @@ fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus
     };
     match outcome {
         StreamOutcome!::Item(bytes) => {
-            if active { return defer(connection.write_plan(bytes).within(1000), |result| write_finished(result)); }
+            if active { return defer(connection.write(bytes).within(1000), |result| write_finished(result)); }
             bytes.destroy();
             connection.close()
         },
@@ -32,18 +32,15 @@ fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus
     }
 }
 
-fn write_finished(result: (WriteOutcome!, DeadlineStatus)) -> Action! {
-    let (outcome, deadline) = result;
-    match outcome {
-        WriteOutcome!::Written(connection, bytes) => {
-            bytes.destroy();
-            match deadline {
-                DeadlineStatus::Completed => read_next(connection),
-                _ => connection.close(),
-            }
+fn write_finished(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
+    let ((connection, bytes, status), deadline) = result;
+    bytes.destroy();
+    match deadline {
+        DeadlineStatus::Completed => match status {
+            Completion::Ready => read_next(connection),
+            _ => connection.close(),
         },
-        WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); connection.close() },
-        WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); connection.close() },
+        _ => connection.close(),
     }
 }
 

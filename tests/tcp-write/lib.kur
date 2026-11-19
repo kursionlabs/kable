@@ -1,21 +1,21 @@
-use async::{DeadlineStatus, PlanOutput, Stream, StreamOutcome!};
+use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Connection!, Event!, Listener!, WriteOutcome!, defer};
+use tcp::{Action!, Connection!, Event!, Listener!, defer};
 
-fn finish_write(result: (WriteOutcome!, DeadlineStatus)) -> Action! {
-    let (outcome, deadline) = result;
+fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
+    let ((connection, bytes, completion), deadline) = result;
     let reason = match deadline {
         DeadlineStatus::Completed => "completed",
         DeadlineStatus::TimedOut => "timeout",
         DeadlineStatus::Cancelled => "shutdown",
         DeadlineStatus::Failed => "scope failure",
     };
-    let (connection, bytes, status) = match outcome {
-        WriteOutcome!::Written(connection, bytes) => (connection, bytes, "written"),
-        WriteOutcome!::Cancelled(connection, bytes) => (connection, bytes, "cancelled"),
-        WriteOutcome!::Failed(connection, bytes, code) => (connection, bytes, "failed"),
+    let status = match completion {
+        Completion::Ready => "written",
+        Completion::Cancelled => "cancelled",
+        Completion::Failed => "failed",
     };
     let length = &bytes.len();
     bytes.destroy();
@@ -24,15 +24,12 @@ fn finish_write(result: (WriteOutcome!, DeadlineStatus)) -> Action! {
 }
 
 fn send_after_eof(connection: Connection!) -> Action! {
-    defer(connection.write_plan(Buffer!::new_with_cap(0)), |outcome| {
-        let (connection, bytes) = match outcome {
-            WriteOutcome!::Written(connection, bytes) => (connection, bytes),
-            WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); return connection.close(); },
-            WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); return connection.close(); },
-        };
+    defer(connection.write(Buffer!::new_with_cap(0)), |outcome| {
+        let (connection, bytes, status) = outcome;
         bytes.destroy();
+        match status { Completion::Ready => (), _ => return connection.close() };
         let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
-        defer(connection.write_plan(bytes).within(1500), |result| finish_write(result))
+        defer(connection.write(bytes).within(1500), |result| finish_write(result))
     })
 }
 

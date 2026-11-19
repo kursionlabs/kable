@@ -904,6 +904,7 @@ def main():
             check_timer_engines(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
             file_copy = build("examples/file-copy", Path(directory) / "file-copy")
+            file_position = build("tests/file-position", Path(directory) / "file-position")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
@@ -912,6 +913,8 @@ def main():
             check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
             check_file_copy([str(file_copy)], Path(directory))
+            subprocess.run([file_position], cwd=directory, check=True, timeout=10)
+            assert (Path(directory) / "mixed-writes").read_bytes() == b"aXcd"
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
             check_tcp_write([str(tcp_write)])

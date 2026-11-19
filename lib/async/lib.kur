@@ -6,7 +6,7 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
-use task::{Completion, Join!, PlanOutput, Side, Select!, Sleep!, Stream, StreamOutcome!, DeadlineStatus,
+use task::{Completion, Join!, Map!, PlanOutput, Side, Select!, Sink, Sleep!, Stream, StreamOutcome!, DeadlineStatus,
     join, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
@@ -17,6 +17,7 @@ export host;
 export PlanOutput;
 export Side;
 export Select!;
+export Sink;
 export Sleep!;
 export Stream;
 export StreamOutcome!;
@@ -62,7 +63,7 @@ fn read_file_beneath_cwd(&cx: C, path: S, limit: usize) -> ReadFile! {
 struct OpenFile! { path: Buffer!, beneath: bool, id: Option[usize] }
 struct OpenedFile! { fd: i32, length: u64 }
 struct CreateFile! { path: Buffer!, id: Option[usize] }
-struct OutputFile! { fd: i32 }
+struct OutputFile! { fd: i32, position: u64 }
 struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, id: Option[usize] }
 struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
 struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
@@ -96,16 +97,41 @@ fn create_file(&cx: C, path: S) -> CreateFile! {
 }
 
 impl OutputFile! {
-    /// Writes the buffer at offset, continuing through short writes.
+    /// The next sequential write starts here, including after a partial write.
+    fn position(&self) -> u64 {
+        let { fd, position } = self;
+        self = OutputFile!.{ fd, position };
+        position
+    }
+
+    /// Writes the buffer at offset without advancing the sequential position.
     /// The joined result returns the file, buffer, and confirmed byte count.
     fn write_chunk(self, offset: u64, bytes: Buffer!) -> WriteChunk! {
         WriteChunk!.{ file: self, offset, bytes, id: Option::None }
     }
 
     fn close(self) -> Result[(), i32] {
-        let { fd } = self;
+        let { fd, position } = self;
         let status = unsafe kable_file_close_descriptor(fd);
         if status < 0 { Result::Err.(status) } else { Result::Ok.(()) }
+    }
+}
+
+instance Sink[OutputFile! -> Buffer!,
+    Map![WriteChunk!, (OutputFile!, Buffer!, FileWriteOutcome), (OutputFile!, Buffer!, Completion[()]), ()]] {
+    fn write(file: OutputFile!, bytes: Buffer!)
+        -> Map![WriteChunk!, (OutputFile!, Buffer!, FileWriteOutcome), (OutputFile!, Buffer!, Completion[()]), ()] {
+        let offset = &file.position();
+        file.write_chunk(offset, bytes).map(|result| {
+            let (file, bytes, outcome) = result;
+            let (count, status) = match outcome {
+                FileWriteOutcome::Written(count) => (count, Completion::Ready.(())),
+                FileWriteOutcome::Cancelled(count) => (count, Completion::Cancelled),
+                FileWriteOutcome::Failed(count, code) => (count, Completion::Failed.(code)),
+            };
+            let { fd, position } = file;
+            (OutputFile!.{ fd, position: position + count as u64 }, bytes, status)
+        })
     }
 }
 
@@ -264,9 +290,9 @@ impl Scope! {
 
     fn add_write(&self, &file: OutputFile!, offset: u64, &bytes: Buffer!) -> Option[usize] {
         let { raw } = self;
-        let { fd } = file;
+        let { fd, position } = file;
         let id = unsafe kable_scope_add_write(raw, fd, offset, unsafe &bytes.as_ptr(), &bytes.len());
-        file = OutputFile!.{ fd };
+        file = OutputFile!.{ fd, position };
         self = Scope!.{ raw };
         registered(id)
     }
@@ -456,7 +482,7 @@ instance Plan[CreateFile!, Scope! -> Completion[OutputFile!]] {
     fn collect(task: CreateFile!, &scope: Scope!) -> Completion[OutputFile!] {
         let { path, id } = task;
         path.destroy();
-        &scope.collect_descriptor(id, |fd, length| OutputFile!.{ fd })
+        &scope.collect_descriptor(id, |fd, length| OutputFile!.{ fd, position: 0 })
     }
 }
 

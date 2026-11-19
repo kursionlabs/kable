@@ -6,7 +6,7 @@ use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{PlanOutput, Stream, StreamOutcome!};
+use task::{Completion, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Plan, Resolution};
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -212,6 +212,17 @@ impl Connection! {
 instance Stream[Connection! -> NextRead!] {
     /// Plans one read. EOF hands back the connection with its write side available.
     fn next(source: Connection!) -> NextRead! { NextRead!.{ connection: source, id: Option::None } }
+}
+
+instance Sink[Connection! -> Buffer!, Map![WritePlan!, WriteOutcome!, (Connection!, Buffer!, Completion[()]), ()]] {
+    fn write(connection: Connection!, bytes: Buffer!)
+        -> Map![WritePlan!, WriteOutcome!, (Connection!, Buffer!, Completion[()]), ()] {
+        connection.write_plan(bytes).map(|outcome| match outcome {
+            WriteOutcome!::Written(connection, bytes) => (connection, bytes, Completion::Ready.(())),
+            WriteOutcome!::Cancelled(connection, bytes) => (connection, bytes, Completion::Cancelled),
+            WriteOutcome!::Failed(connection, bytes, code) => (connection, bytes, Completion::Failed.(code)),
+        })
+    }
 }
 
 impl Read! {

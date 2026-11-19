@@ -24,6 +24,14 @@ trait Stream {
     fn next(source: Source) -> Next;
 }
 
+/// A sequential writer that builds a one-shot plan for an owned item.
+/// The joined plan returns (Writer, Item, Completion[()]) on every path.
+/// Ready means the writer accepted the whole item.
+forall Writer -> Item, Write.
+trait Sink {
+    fn write(writer: Writer, item: Item) -> Write;
+}
+
 /// The result of one pull. The plan returns the owned source alongside it.
 forall Item.
 exposed enum StreamOutcome! {

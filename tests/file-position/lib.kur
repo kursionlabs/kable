@@ -1,0 +1,30 @@
+use async::{Completion, FileWriteOutcome, PlanOutput, Sink, create_file, run};
+use std::bytes::buffer::Buffer!;
+use std::process::trap;
+use std::slice::StaticRead;
+
+forall Writer, Item, Write where Sink[Writer -> Item, Write], PlanOutput[Write -> (Writer, Item, Completion[()])].
+fn write_item(writer: Writer, item: Item) -> Write { writer.write(item) }
+
+fn main() -> i32 {
+    let access = StaticRead::new();
+    let file = match run(create_file(&access, "mixed-writes")) {
+        Completion::Ready(file) => file,
+        _ => return 1,
+    };
+    let (file, bytes, status) = run(write_item(file, Buffer!::new().push_static("abc")));
+    bytes.destroy();
+    match status { Completion::Ready => (), _ => trap() };
+    if &file.position() != 3 { trap(); }
+
+    let (file, bytes, outcome) = run(file.write_chunk(1, Buffer!::new().push_static("X")));
+    bytes.destroy();
+    match outcome { FileWriteOutcome::Written(n) => { if n != 1 { trap(); } }, _ => trap() };
+    if &file.position() != 3 { trap(); }
+
+    let (file, bytes, status) = run(write_item(file, Buffer!::new().push_static("d")));
+    bytes.destroy();
+    match status { Completion::Ready => (), _ => trap() };
+    if &file.position() != 4 { trap(); }
+    if file.close().is_ok() { 0 } else { 1 }
+}

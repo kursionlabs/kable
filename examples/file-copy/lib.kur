@@ -1,4 +1,4 @@
-use async::{Completion, FileChunks!, FileWriteOutcome, OutputFile!, Stream, StreamOutcome!,
+use async::{Completion, FileChunks!, OutputFile!, Sink, Stream, StreamOutcome!,
     create_file, open_file, run, run_with_deadline};
 use std::io::eprint_buffer;
 use std::option::{Option, Result};
@@ -7,7 +7,6 @@ use std::process::Args;
 use std::slice::StaticRead;
 
 fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u64]) -> bool {
-    var offset: u64 = 0;
     while &source.remaining() != 0 {
         let (next, outcome) = run(source.next());
         source = next;
@@ -20,7 +19,7 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u6
                 return false;
             },
         };
-        let write = destination.write_chunk(offset, bytes);
+        let write = destination.write(bytes);
         let (file, bytes, outcome) = match deadline {
             Option::Some(ms) => run_with_deadline(write, ms),
             Option::None => run(write),
@@ -28,13 +27,15 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u6
         destination = file;
         bytes.destroy();
         match outcome {
-            FileWriteOutcome::Written(count) => { offset = offset + count as u64; },
-            FileWriteOutcome::Cancelled(count) => {
-                eprint_buffer(f"file-copy: write cancelled after {offset + count as u64} bytes\n");
+            Completion::Ready => (),
+            Completion::Cancelled => {
+                let count = &destination.position();
+                eprint_buffer(f"file-copy: write cancelled after {count} bytes\n");
                 return false;
             },
-            FileWriteOutcome::Failed(count, code) => {
-                eprint_buffer(f"file-copy: write failed after {offset + count as u64} bytes ({code})\n");
+            Completion::Failed(code) => {
+                let count = &destination.position();
+                eprint_buffer(f"file-copy: write failed after {count} bytes ({code})\n");
                 return false;
             },
         }

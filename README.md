@@ -235,6 +235,14 @@ error code. The caller decides when to request another item. File chunks
 and TCP connections both use this interface. TCP EOF ends the read side
 and the returned connection can still write.
 
+### Sequential writes
+
+Import `Sink` to call `writer.write(bytes)` on an output file or a TCP
+connection. The plan owns both values until it joins and returns
+`(writer, bytes, status)`. A `Completion::Ready` status means the writer
+accepted the full buffer. The caller can release or reuse the buffer on
+every path.
+
 ### Standalone sequencing
 
 Import `sequence` from `task::sequence`. `sequence(first).then(resume)` builds a chain of adapters in the style
@@ -288,10 +296,11 @@ bin/file-copy README.md README.copy.md
 ```
 
 The example pulls one chunk from `FileChunks!` and waits for
-`destination.write_chunk(offset, bytes)` to join before pulling the next.
-The write runs on the worker pool and continues through short writes. Each
-outcome returns the destination, buffer, and number of bytes accepted so far,
-including when a deadline cancels the plan. [Linux positioned I/O manual](https://man7.org/linux/man-pages/man2/pwrite.2.html)
+`destination.write(bytes)` to join before pulling the next. Each sequential
+write starts at the file's current position. The worker continues through
+short writes, and `&destination.position()` reports the total accepted even
+after cancellation or failure. For random access, `write_chunk(offset, bytes)`
+reports its own byte count and preserves the sequential position. [Linux positioned I/O manual](https://man7.org/linux/man-pages/man2/pwrite.2.html)
 
 The destination must be a new path. Pass an optional third argument to set
 a deadline in milliseconds for each write. If a copy fails or is cancelled,
@@ -302,7 +311,7 @@ the destination contains the bytes written so far.
 `lib/tcp/` runs a loopback listener with one in-flight operation per
 connection. The echo handler runs `connection.next().within(1000)`
 with `tcp::defer` on the listener loop. When it receives bytes, it defers
-`connection.write_plan(bytes).within(1000)`. The next read starts after
+`connection.write(bytes).within(1000)`. The next read starts after
 the write joins.
 
 The write plan owns the connection and buffer until completion and returns
