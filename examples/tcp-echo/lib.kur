@@ -1,7 +1,11 @@
 use async::{PlanOutput, WithinOutcome};
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Connection!, Event!, Listener!, ReadOutcome!, defer, defer_write};
+use tcp::{Action!, Connection!, Event!, Listener!, ReadOutcome!, WriteOutcome!, defer};
+
+fn read_next(connection: Connection!) -> Action! {
+    defer(connection.read_plan().within(1000), |result| read_finished(result))
+}
 
 fn reclaim(outcome: ReadOutcome!) -> Connection! {
     match outcome {
@@ -16,7 +20,7 @@ fn read_finished(result: WithinOutcome[ReadOutcome!]) -> Action! {
     match result {
         WithinOutcome::Completed(outcome) => match outcome {
             ReadOutcome!::Bytes(connection, bytes) =>
-                defer_write(bytes, connection.read_plan().within(1000u64), |result| read_finished(result)),
+                defer(connection.write_plan(bytes).within(1000), |result| write_finished(result)),
             ReadOutcome!::End(connection) => connection.close(),
             ReadOutcome!::Cancelled(connection) => connection.close(),
             ReadOutcome!::Failed(connection, code) => connection.close(),
@@ -33,10 +37,26 @@ fn read_finished(result: WithinOutcome[ReadOutcome!]) -> Action! {
     }
 }
 
+fn write_finished(result: WithinOutcome[WriteOutcome!]) -> Action! {
+    let (outcome, active) = match result {
+        WithinOutcome::Completed(outcome) => (outcome, true),
+        WithinOutcome::TimedOut(outcome) => (outcome, false),
+        WithinOutcome::Cancelled(outcome) => (outcome, false),
+        WithinOutcome::Failed(outcome, code) => (outcome, false),
+    };
+    match outcome {
+        WriteOutcome!::Written(connection, bytes) => {
+            bytes.destroy();
+            if active { read_next(connection) } else { connection.close() }
+        },
+        WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); connection.close() },
+        WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); connection.close() },
+    }
+}
+
 fn echo(event: Event!) -> Action! {
     match event {
-        Event!::Connected(connection) =>
-            defer(connection.read_plan().within(1000u64), |result| read_finished(result)),
+        Event!::Connected(connection) => read_next(connection),
         Event!::Bytes(connection, bytes) => { bytes.destroy(); connection.close() },
         Event!::TimedOut(connection) => {
             eprint_buffer(f"Read deadline expired.\n");

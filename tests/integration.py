@@ -733,6 +733,35 @@ def read_log_until(stream, message):
     return logs
 
 
+def check_tcp_write(command):
+    @contextmanager
+    def pending_write(port):
+        with socket.socket() as client:
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            client.settimeout(5)
+            client.connect(("127.0.0.1", port))
+            assert client.recv(1) == b"\0", "scoped write did not start"
+            yield client
+
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
+        try:
+            port = listening_port(process, b"Listening on 127.0.0.1:")
+            size = b"16777216"
+            with pending_write(port):
+                read_log_until(process.stderr, b"timeout: cancelled " + size)
+            with pending_write(port) as client:
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            read_log_until(process.stderr, b"completed: failed " + size)
+            with pending_write(port):
+                process.terminate()
+                read_log_until(process.stderr, b"shutdown: cancelled " + size)
+                assert process.wait(timeout=5) == 0, process.stderr.read()
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable scoped TCP write checks passed")
+
+
 def check_tcp_session(command):
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           bufsize=0) as process:
@@ -816,12 +845,14 @@ def main():
             async_read = build("examples/async-read", Path(directory) / "async-read")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
+            tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
             check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
+            check_tcp_write([str(tcp_write)])
             check_tcp_session([str(tcp_session)])
             run_checks([str(binary)], args.check_timeout)
 

@@ -1,0 +1,56 @@
+use async::{PlanOutput, WithinOutcome};
+use std::bytes::buffer::Buffer!;
+use std::io::{eprint_buffer, print_buffer};
+use std::option::Result;
+use tcp::{Action!, Event!, Listener!, WriteOutcome!, defer};
+
+fn finish_write(result: WithinOutcome[WriteOutcome!]) -> Action! {
+    let (outcome, reason) = match result {
+        WithinOutcome::Completed(outcome) => (outcome, "completed"),
+        WithinOutcome::TimedOut(outcome) => (outcome, "timeout"),
+        WithinOutcome::Cancelled(outcome) => (outcome, "shutdown"),
+        WithinOutcome::Failed(outcome, code) => (outcome, "scope failure"),
+    };
+    let (connection, bytes, status) = match outcome {
+        WriteOutcome!::Written(connection, bytes) => (connection, bytes, "written"),
+        WriteOutcome!::Cancelled(connection, bytes) => (connection, bytes, "cancelled"),
+        WriteOutcome!::Failed(connection, bytes, code) => (connection, bytes, "failed"),
+    };
+    let length = &bytes.len();
+    bytes.destroy();
+    eprint_buffer(f"{reason}: {status} {length}\n");
+    connection.close()
+}
+
+fn serve(event: Event!) -> Action! {
+    match event {
+        Event!::Connected(connection) => defer(connection.write_plan(Buffer!::new_with_cap(0)), |outcome| {
+            let (connection, bytes) = match outcome {
+                WriteOutcome!::Written(connection, bytes) => (connection, bytes),
+                WriteOutcome!::Cancelled(connection, bytes) => { bytes.destroy(); return connection.close(); },
+                WriteOutcome!::Failed(connection, bytes, code) => { bytes.destroy(); return connection.close(); },
+            };
+            bytes.destroy();
+            let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
+            defer(connection.write_plan(bytes).within(1500), |result| finish_write(result))
+        }),
+        Event!::Bytes(connection, bytes) => { bytes.destroy(); connection.close() },
+        Event!::TimedOut(connection) => connection.close(),
+        Event!::End(connection) => connection.close(),
+        Event!::Cancelled(connection) => connection.close(),
+        Event!::Failed(connection, code) => connection.close(),
+    }
+}
+
+fn main() -> i32 {
+    let listener = match Listener!::bind_local(0, serve) {
+        Result::Ok(listener) => listener,
+        Result::Err(code) => return 1,
+    };
+    let port = &listener.port();
+    if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {
+        listener.stop();
+        return 1;
+    }
+    if listener.run().is_ok() { 0 } else { 1 }
+}

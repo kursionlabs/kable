@@ -5,7 +5,7 @@ use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
-use std::ptr::is_null;
+use std::ptr::{is_null, null};
 use task::PlanOutput;
 use task::driver::{Plan, Resolution};
 
@@ -21,20 +21,32 @@ extern "C" fn kable_tcp_attach(connection: *u8, state: *u8, dispose: unsafe fn(*
 extern "C" fn kable_tcp_attachment(connection: *u8) -> *u8;
 extern "C" fn kable_tcp_start_scoped_read(connection: *u8, loop: *u8,
     ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
-extern "C" fn kable_tcp_stop_scoped_read(connection: *u8) -> ();
+extern "C" fn kable_tcp_stop_scoped_read(connection: *u8) -> u8;
 extern "C" fn kable_tcp_read_result(connection: *u8, bytes: *(*u8), len: *usize, error: *i32) -> u8;
+extern "C" fn kable_tcp_new_scoped_write(connection: *u8, bytes: *u8, len: usize) -> *u8;
+extern "C" fn kable_tcp_start_scoped_write(request: *u8, loop: *u8,
+    ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
+extern "C" fn kable_tcp_stop_scoped_write(request: *u8) -> u8;
+extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, bytes: *u8, len: usize) -> i32;
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
 struct ReadPlan! { connection: Connection!, id: Option[usize] }
+struct WritePlan! { connection: Connection!, bytes: Buffer!, request: *u8, id: Option[usize] }
 
 exposed enum ReadOutcome! {
     Bytes(Connection!, Buffer!),
     End(Connection!),
     Cancelled(Connection!),
     Failed(Connection!, i32),
+}
+
+exposed enum WriteOutcome! {
+    Written(Connection!, Buffer!),
+    Cancelled(Connection!, Buffer!),
+    Failed(Connection!, Buffer!, i32),
 }
 
 instance PlanOutput[ReadPlan! -> ReadOutcome!] {}
@@ -54,6 +66,32 @@ instance Plan[ReadPlan!, Scope! -> ReadOutcome!] {
             Resolution::Cancelled => ReadOutcome!::Cancelled.(connection),
             Resolution::Failed(status) => ReadOutcome!::Failed.(connection, status),
             Resolution::First | Resolution::Second => ReadOutcome!::Failed.(connection, -1i32),
+        }
+    }
+}
+
+instance PlanOutput[WritePlan! -> WriteOutcome!] {}
+
+instance Plan[WritePlan!, Scope! -> WriteOutcome!] {
+    fn stage(&task: WritePlan!, &scope: Scope!) -> Option[usize] {
+        let { connection: { raw }, bytes, request, id } = task;
+        let request = unsafe kable_tcp_new_scoped_write(raw, unsafe &bytes.as_ptr(), &bytes.len());
+        let id = unsafe &scope.add_operation(request, kable_tcp_start_scoped_write, kable_tcp_stop_scoped_write);
+        task = WritePlan!.{ connection: Connection!.{ raw }, bytes, request, id };
+        id
+    }
+
+    fn collect(task: WritePlan!, &scope: Scope!) -> WriteOutcome! {
+        let { connection, bytes, request, id } = task;
+        let status = unsafe kable_tcp_collect_scoped_write(request);
+        match &scope.result(id) {
+            Resolution::Completed => {
+                if status < 0 { WriteOutcome!::Failed.(connection, bytes, status) }
+                else { WriteOutcome!::Written.(connection, bytes) }
+            },
+            Resolution::Cancelled => WriteOutcome!::Cancelled.(connection, bytes),
+            Resolution::Failed(code) => WriteOutcome!::Failed.(connection, bytes, code),
+            Resolution::First | Resolution::Second => WriteOutcome!::Failed.(connection, bytes, -1),
         }
     }
 }
@@ -136,6 +174,14 @@ impl Connection! {
 
     /// Plans a read that composes with other tasks on the listener's loop.
     fn read_plan(self) -> ReadPlan! { ReadPlan!.{ connection: self, id: Option::None } }
+
+    /// Writes the buffer on this connection's listener loop.
+    /// Every outcome returns the connection and buffer after the write joins.
+    /// Cancelling an in-flight write closes the socket. A failed or cancelled
+    /// write may have sent some of the bytes.
+    fn write_plan(self, bytes: Buffer!) -> WritePlan! {
+        WritePlan!.{ connection: self, bytes, request: null(), id: Option::None }
+    }
 
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { close(self) }

@@ -128,8 +128,7 @@ static void cancel_operations(Scope *scope) {
         else if (node->kind == READ_FILE) kable_file_cancel(node->file);
         else if (node->kind == OPERATION && node->active) {
             node->active = 0;
-            node->stop(node->operation);
-            report(scope, RETIRED, 0);
+            if (!node->stop(node->operation)) report(scope, RETIRED, 0);
         }
     }
 }

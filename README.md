@@ -260,19 +260,19 @@ bin/async-read kur.toml README.md
 The example joins two reads under a common deadline and writes their contents
 in argument order. Each file is limited to 64 KiB.
 
-## Scoped TCP reads
+## Scoped TCP reads and writes
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per
-connection. The echo handler moves its owned `Connection!` into
-`connection.read_plan().within(1000u64)` and returns a `tcp::defer` action.
-That action runs the plan on the connection’s listener loop.
-`tcp::defer_write` writes a chunk before starting the next plan.
+connection. The echo handler runs `connection.read_plan().within(1000)`
+with `tcp::defer` on the listener loop. When it receives bytes, it defers
+`connection.write_plan(bytes).within(1000)`. The next read starts after
+the write joins.
 
-The read and its timer race in the same scope used by file plans. The read
-finishes or stops before the scope returns the connection, and the timer
-handle has closed by then. The handler can use the returned connection for
-another read or close it. On SIGINT or SIGTERM the listener stops accepting
-and waits for pending scopes to finish cancelling before returning.
+The write plan owns the connection and buffer until completion and returns
+both on every outcome. Cancelling an in-flight write closes the socket and
+waits for the write callback. On failure or cancellation, the buffer is
+available for cleanup and delivery progress is unspecified. On SIGINT or
+SIGTERM the listener stops accepting and waits for pending scopes to join.
 
 Handlers that work directly with TCP events can use
 `connection.read().timeout(1000u64).wait()`, `write(bytes, next_read)`, and
@@ -284,8 +284,8 @@ bin/tcp-echo
 ```
 
 Connect to the printed address with a TCP client such as `nc 127.0.0.1 PORT`.
-The example echoes binary data and closes connections after one second of
-read inactivity. Other connections can continue sending data during that wait.
+The example echoes binary data and gives each read and write one second.
+Other connections can continue while either operation is pending.
 
 ### Connection-local state
 
