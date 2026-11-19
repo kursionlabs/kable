@@ -2,7 +2,7 @@
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::process::trap;
-use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, ScopeState!, Sleep!, WithinOutcome,
+use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, Resolution, ScopeState!, Sleep!, WithinOutcome,
     join, map, race, select, sleep, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
@@ -43,11 +43,11 @@ instance PlanDriver[Virtual!] {
         id
     }
 
-    fn next(&scope: Virtual!) -> i32 {
+    fn next(&scope: Virtual!) -> Resolution {
         let { state, timers, cursor } = scope;
-        let code = &state.result(cursor);
+        let result = &state.result(cursor);
         scope = Virtual!.{ state, timers, cursor: cursor + 1usize };
-        code
+        result
     }
 }
 

@@ -7,6 +7,7 @@
 enum { SLEEP, RACE, JOIN, READ_FILE };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY };
+enum { SCOPE_COMPLETED = 1 };
 
 typedef size_t (*policy_add)(uint8_t *, uint8_t, size_t, size_t);
 typedef size_t (*policy_event)(uint8_t *, uint8_t, size_t);
@@ -212,7 +213,7 @@ int32_t kable_scope_file_result(uint8_t *raw, uint8_t **data, size_t *len) {
     Scope *scope = (Scope *)raw;
     if (!scope || !scope->driven || report(scope, PENDING, 0) || scope->cursor == 0) return UV_EINVAL;
     Node *node = &scope->nodes[scope->cursor - 1];
-    if (node->kind != READ_FILE || report(scope, RESULT, node->id) != 1) return UV_EINVAL;
+    if (node->kind != READ_FILE || report(scope, RESULT, node->id) != SCOPE_COMPLETED) return UV_EINVAL;
     return kable_file_result(node->file, data, len);
 }
 

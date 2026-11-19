@@ -1,7 +1,8 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
-use package::scope::{Branch, ScopeState!};
+use package::scope::{Branch, Resolution, ScopeState!};
 
 export Branch;
+export Resolution;
 export ScopeState!;
 
 forall Driver.
@@ -9,9 +10,7 @@ trait PlanDriver {
     fn timer(&scope: Driver, ms: u64) -> usize;
     fn pair(&scope: Driver, kind: Branch, first: usize, second: usize) -> usize;
     /// Reads the next result in staging order after the engine has joined.
-    /// Zero means cancelled, one means ready or first, and two means second.
-    /// Negative codes report engine or staging failures.
-    fn next(&scope: Driver) -> i32;
+    fn next(&scope: Driver) -> Resolution;
 }
 
 /// The outcome a plan exposes independently of where it runs.
@@ -91,11 +90,11 @@ instance Plan[Sleep![T], Driver -> Outcome[T]] {
 
     fn collect(task: Sleep![T], &scope: Driver) -> Outcome[T] {
         let { ms, value } = task;
-        let code = PlanDriver[Driver]::next(&scope);
-        match code {
-            1i32 => Outcome::Ready.(value),
-            0i32 => Outcome::Cancelled.(value),
-            _ => Outcome::Failed.(value, code),
+        match PlanDriver[Driver]::next(&scope) {
+            Resolution::Completed => Outcome::Ready.(value),
+            Resolution::Cancelled => Outcome::Cancelled.(value),
+            Resolution::Failed(code) => Outcome::Failed.(value, code),
+            Resolution::First | Resolution::Second => Outcome::Failed.(value, -1i32),
         }
     }
 }
@@ -108,11 +107,11 @@ fn stage_pair(&first: First, &second: Second, &scope: Driver, kind: Branch) -> u
 }
 
 forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-fn collect_pair(first: First, second: Second, &scope: Driver) -> (A, B, i32) {
+fn collect_pair(first: First, second: Second, &scope: Driver) -> (A, B, Resolution) {
     let a = Plan[First, Driver -> A]::collect(first, &scope);
     let b = Plan[Second, Driver -> B]::collect(second, &scope);
-    let code = PlanDriver[Driver]::next(&scope);
-    (a, b, code)
+    let result = PlanDriver[Driver]::next(&scope);
+    (a, b, result)
 }
 
 forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
@@ -126,18 +125,14 @@ instance Plan[Select![First, Second], Driver -> RaceOutcome[A, B]] {
 
     fn collect(task: Select![First, Second], &scope: Driver) -> RaceOutcome[A, B] {
         let { first, second } = task;
-        let (a, b, code) = collect_pair[First, Second, A, B, Driver](first, second, &scope);
-        race_outcome(a, b, code)
-    }
-}
-
-forall A, B.
-fn race_outcome(a: A, b: B, code: i32) -> RaceOutcome[A, B] {
-    match code {
-        1i32 => RaceOutcome::First.(a, b),
-        2i32 => RaceOutcome::Second.(a, b),
-        0i32 => RaceOutcome::Cancelled.(a, b),
-        _ => RaceOutcome::Failed.(a, b, code),
+        let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope);
+        match result {
+            Resolution::First => RaceOutcome::First.(a, b),
+            Resolution::Second => RaceOutcome::Second.(a, b),
+            Resolution::Cancelled => RaceOutcome::Cancelled.(a, b),
+            Resolution::Failed(code) => RaceOutcome::Failed.(a, b, code),
+            Resolution::Completed => RaceOutcome::Failed.(a, b, -1i32),
+        }
     }
 }
 
@@ -152,11 +147,12 @@ instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
 
     fn collect(task: Join![First, Second], &scope: Driver) -> JoinOutcome[A, B] {
         let { first, second } = task;
-        let (a, b, code) = collect_pair[First, Second, A, B, Driver](first, second, &scope);
-        match code {
-            1i32 => JoinOutcome::Ready.(a, b),
-            0i32 => JoinOutcome::Cancelled.(a, b),
-            _ => JoinOutcome::Failed.(a, b, code),
+        let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope);
+        match result {
+            Resolution::Completed => JoinOutcome::Ready.(a, b),
+            Resolution::Cancelled => JoinOutcome::Cancelled.(a, b),
+            Resolution::Failed(code) => JoinOutcome::Failed.(a, b, code),
+            Resolution::First | Resolution::Second => JoinOutcome::Failed.(a, b, -1i32),
         }
     }
 }

@@ -1,4 +1,4 @@
-use task::{Branch, ScopeState!};
+use task::{Branch, Resolution, ScopeState!};
 
 fn main() -> i32 {
     let scope = ScopeState!::new();
@@ -17,10 +17,15 @@ fn main() -> i32 {
     let late = &scope.complete(second);
     let joined = &scope.retired();
     let result = &scope.result(root);
+    let winner = &scope.result(first);
     let loser = &scope.result(second);
     let next_stop = &scope.take_cancel();
     scope.destroy();
+    let hidden_until_joined = match early { Resolution::Failed(code) => code < 0i32, _ => false, };
+    let first_won = match result { Resolution::First => true, _ => false, };
+    let winner_completed = match winner { Resolution::Completed => true, _ => false, };
+    let loser_cancelled = match loser { Resolution::Cancelled => true, _ => false, };
     if valid && won && cancelled == second && !first_retired && still_pending &&
-        early < 0i32 && !late && joined && result == 1i32 && loser == 0i32 &&
+        hidden_until_joined && !late && joined && first_won && winner_completed && loser_cancelled &&
         next_stop == usize::MAX { 0i32 } else { 1i32 }
 }

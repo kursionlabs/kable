@@ -1,16 +1,24 @@
 //! Engine-independent task selection and resource lifetime bookkeeping.
 use std::collections::vec::{OwnedVec!, Popped!};
-
-const PENDING: i32 = i32::MAX;
+use std::option::Option;
 
 exposed enum Branch { Leaf, Select, Join }
+
+/// The outcome of a node after its scope joins.
+exposed enum Resolution {
+    Completed,
+    First,
+    Second,
+    Cancelled,
+    Failed(i32),
+}
 
 struct Node {
     kind: Branch,
     first: usize,
     second: usize,
     parent: usize,
-    result: i32,
+    result: Option[Resolution],
 }
 
 impl Node {
@@ -19,9 +27,9 @@ impl Node {
         Node.{ parent, ..rest }
     }
 
-    fn resolve(self, result: i32) -> Node {
+    fn resolve(self, result: Resolution) -> Node {
         let { result: old, ..rest } = self;
-        Node.{ result, ..rest }
+        Node.{ result: Option::Some.(result), ..rest }
     }
 }
 
@@ -57,7 +65,7 @@ impl ScopeState! {
                 &nodes.set(first, a.reparent(index));
                 &nodes.set(second, b.reparent(index));
             }
-            nodes = nodes.push(Node.{ kind, first, second, parent: usize::MAX, result: PENDING });
+            nodes = nodes.push(Node.{ kind, first, second, parent: usize::MAX, result: Option::None });
         }
         self = ScopeState!.{ nodes, stops, root, pending };
         if valid { index } else { usize::MAX }
@@ -127,13 +135,13 @@ impl ScopeState! {
         id
     }
 
-    fn result(&self, id: usize) -> i32 {
+    fn result(&self, id: usize) -> Resolution {
         let { nodes, stops, root, pending } = self;
         let result = if root != usize::MAX && pending == 0usize && id < &nodes.len() {
             (&nodes.at(id)).result
-        } else { PENDING };
+        } else { Option::None };
         self = ScopeState!.{ nodes, stops, root, pending };
-        if result == PENDING { -1i32 } else { result }
+        result.unwrap_or(Resolution::Failed.(-1i32))
     }
 
     fn destroy(self) {
@@ -152,8 +160,8 @@ fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize)
     while true {
         let node = &nodes.at(index);
         var child = usize::MAX;
-        if node.result == PENDING {
-            &nodes.set(index, node.resolve(0i32));
+        if node.result.is_none() {
+            &nodes.set(index, node.resolve(Resolution::Cancelled));
             match node.kind {
                 Branch::Leaf => { stops = stops.push(index); },
                 _ => { child = node.first; },
@@ -174,10 +182,10 @@ fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize)
 
 fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bool {
     var index = start;
-    var result = 1i32;
+    var result = Resolution::Completed;
     while true {
         let node = &nodes.at(index);
-        if node.result != PENDING { return false; }
+        if node.result.is_some() { return false; }
         &nodes.set(index, node.resolve(result));
         if node.parent == usize::MAX { return true; }
 
@@ -187,11 +195,11 @@ fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bo
         match parent.kind {
             Branch::Select => {
                 cancel_branch(&nodes, &stops, other);
-                result = if first { 1i32 } else { 2i32 };
+                result = if first { Resolution::First } else { Resolution::Second };
             },
             _ => {
-                if (&nodes.at(other)).result == PENDING { return false; }
-                result = 1i32;
+                if (&nodes.at(other)).result.is_none() { return false; }
+                result = Resolution::Completed;
             },
         }
         index = node.parent;

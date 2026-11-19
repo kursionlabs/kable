@@ -7,7 +7,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, Select!, Sleep!,
     join, race, select, sleep};
-use task::{Branch, ScopeState!, WithinOutcome, map, within};
+use task::{Branch, Resolution, ScopeState!, WithinOutcome, map, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export Join!;
@@ -56,6 +56,12 @@ exposed enum FileOutcome! {
 // Owned payloads stay in Kursal throughout the native event loop.
 struct Scope! { raw: *u8 }
 
+// Scalar encoding used by the native scope adapter.
+const CANCELLED: i32 = 0i32;
+const COMPLETED: i32 = 1i32;
+const FIRST: i32 = 2i32;
+const SECOND: i32 = 3i32;
+
 unsafe fn add_branch(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
     let branch = match kind {
         0u8 => Branch::Leaf,
@@ -88,9 +94,12 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
         4u8 => if &state.complete(id) { 1usize } else { 0usize },
         5u8 => { &state.cancel(); 0usize },
         6u8 => &state.take_cancel(),
-        7u8 => {
-            let code = &state.result(id);
-            if code < 0i32 { usize::MAX } else { code as usize }
+        7u8 => match &state.result(id) {
+            Resolution::Cancelled => CANCELLED as usize,
+            Resolution::Completed => COMPLETED as usize,
+            Resolution::First => FIRST as usize,
+            Resolution::Second => SECOND as usize,
+            Resolution::Failed(code) => usize::MAX,
         },
         _ => 0usize,
     };
@@ -144,11 +153,15 @@ impl Scope! {
         self = Scope!.{ raw };
     }
 
-    fn next(&self) -> i32 {
+    fn next(&self) -> Resolution {
         let { raw } = self;
         let code = unsafe kable_scope_next(raw);
         self = Scope!.{ raw };
-        code
+        if code == CANCELLED { return Resolution::Cancelled; }
+        if code == COMPLETED { return Resolution::Completed; }
+        if code == FIRST { return Resolution::First; }
+        if code == SECOND { return Resolution::Second; }
+        Resolution::Failed.(code)
     }
 
     fn close(self) {
@@ -170,11 +183,11 @@ instance Plan[ReadFile!, Scope! -> FileOutcome!] {
     fn collect(task: ReadFile!, &scope: Scope!) -> FileOutcome! {
         let { path, limit } = task;
         path.destroy();
-        let code = &scope.next();
-        match code {
-            1i32 => &scope.file_result(),
-            0i32 => FileOutcome!::Cancelled,
-            _ => FileOutcome!::Failed.(code),
+        match &scope.next() {
+            Resolution::Completed => &scope.file_result(),
+            Resolution::Cancelled => FileOutcome!::Cancelled,
+            Resolution::Failed(code) => FileOutcome!::Failed.(code),
+            Resolution::First | Resolution::Second => FileOutcome!::Failed.(-1i32),
         }
     }
 }
@@ -191,7 +204,7 @@ instance PlanDriver[Scope!] {
         &scope.add(tag, 0u64, first, second)
     }
 
-    fn next(&scope: Scope!) -> i32 { &scope.next() }
+    fn next(&scope: Scope!) -> Resolution { &scope.next() }
 }
 
 forall Task.
