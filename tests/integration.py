@@ -269,6 +269,7 @@ def main():
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
             assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
+            assert b"Join waited" in result.stdout and b"cancelled the nested waits" in result.stdout
             check_tcp_echo([str(tcp_echo)])
             check_tcp_session([str(tcp_session)])
             run_checks([str(binary)], args.check_timeout)

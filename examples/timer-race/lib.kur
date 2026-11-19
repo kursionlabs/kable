@@ -1,4 +1,4 @@
-use async::{Outcome, RaceOutcome, race, run, sleep, timeout};
+use async::{JoinOutcome, Outcome, RaceOutcome, join, race, run, sleep, timeout};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
 
@@ -28,10 +28,78 @@ fn main() -> i32 {
         RaceOutcome::Cancelled(cancelled, unit) => {
             cancelled.destroy();
             print_buffer(f"Parent deadline cancelled both timers.\n");
-            0i32
         },
-        RaceOutcome::First(ready, unit) => { ready.destroy(); 1i32 },
-        RaceOutcome::Second(cancelled, unit) => { cancelled.destroy(); 1i32 },
-        RaceOutcome::Failed(recovered, unit, code) => { recovered.destroy(); 1i32 },
+        RaceOutcome::First(ready, unit) => { ready.destroy(); return 1i32; },
+        RaceOutcome::Second(cancelled, unit) => { cancelled.destroy(); return 1i32; },
+        RaceOutcome::Failed(recovered, unit, code) => { recovered.destroy(); return 1i32; },
+    }
+    if !check_join() || !check_nested_deadline() { return 1i32; }
+    0i32
+}
+
+fn check_join() -> bool {
+    let winner = race(sleep(30_000u64, 1u8), sleep(1u64, 2u8));
+    let plan = join(winner, sleep(10u64, 3u8));
+    let result: JoinOutcome[RaceOutcome[u8, u8], Outcome[u8]] = run(plan);
+    match result {
+        JoinOutcome::Ready(winner, timer) => {
+            let second_won = match winner {
+                RaceOutcome::Second(a, b) => a == 1u8 && b == 2u8,
+                _ => false,
+            };
+            if !second_won || !is_ready(timer, 3u8) { return false; }
+            print_buffer(f"Join waited for the race and the other timer.\n");
+            true
+        },
+        _ => false,
+    }
+}
+
+fn check_nested_deadline() -> bool {
+    let slow = join(sleep(30_000u64, 2u8), race(sleep(60_000u64, 3u8), sleep(60_000u64, 4u8)));
+    let owned = Buffer!::new().push_static("ready");
+    let plan = join(sleep(0u64, owned), slow);
+    let result: JoinOutcome[Outcome[Buffer!], JoinOutcome[Outcome[u8], RaceOutcome[u8, u8]]] =
+        timeout(10u64, plan);
+    match result {
+        JoinOutcome::Cancelled(first, nested) => {
+            let nested_cancelled = match nested {
+                JoinOutcome::Cancelled(timer, race) => {
+                    let timer_cancelled = match timer {
+                        Outcome::Cancelled(value) => value == 2u8,
+                        _ => false,
+                    };
+                    let race_cancelled = match race {
+                        RaceOutcome::Cancelled(a, b) => a == 3u8 && b == 4u8,
+                        _ => false,
+                    };
+                    timer_cancelled && race_cancelled
+                },
+                _ => false,
+            };
+            if !reclaim_ready_buffer(first) || !nested_cancelled { return false; }
+            print_buffer(f"Parent deadline kept the ready result and cancelled the nested waits.\n");
+            true
+        },
+        JoinOutcome::Ready(first, nested) => { reclaim_ready_buffer(first); false },
+        JoinOutcome::Failed(first, nested, code) => { reclaim_ready_buffer(first); false },
+    }
+}
+
+fn reclaim_ready_buffer(result: Outcome[Buffer!]) -> bool {
+    let (buffer, ready) = match result {
+        Outcome::Ready(buffer) => (buffer, true),
+        Outcome::Cancelled(buffer) => (buffer, false),
+        Outcome::Failed(buffer, code) => (buffer, false),
+    };
+    let length = &buffer.len();
+    buffer.destroy();
+    ready && length == 5usize
+}
+
+fn is_ready(result: Outcome[u8], expected: u8) -> bool {
+    match result {
+        Outcome::Ready(value) => value == expected,
+        _ => false,
     }
 }

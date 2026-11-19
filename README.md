@@ -55,23 +55,27 @@ Handlers run synchronously on the event loop and should return promptly.
 a `sleep` plan. The server schedules the plan on its own loop, and the
 connection owns the wait until the response is sent or the wait is cancelled.
 
-## Scoped timers
+## Scoped task plans
 
 `lib/async/` lets any Kursal program build a wait with `sleep(ms, value)` and
-drive it with `run`. `race` runs two waits in one scope, cancelling the loser
-when the first timer fires. `timeout` adds a parent deadline that cancels every
-pending child. The scope closes all timer handles before returning. The
-outcome hands ownership of the values back to the caller on readiness,
-cancellation, or startup failure.
+drive it with `run`. `race` runs two waits in one scope and cancels the
+loser when the first timer fires. `join` starts two plans together and waits for
+both. A join can contain waits, races, or other joins.
+
+`timeout` adds a parent deadline that cancels every pending child, including
+children of nested joins. The scope closes all timer handles before returning.
+The outcome hands ownership of the values back to the caller on readiness,
+cancellation, or startup failure. A cancelled join preserves the individual
+outcomes of children that already completed.
 
 ```sh
 ../kursal/bin/kursal build examples/timer-race -o bin/timer-race
 bin/timer-race
 ```
 
-The example reclaims an owned `Buffer!` from the losing timer, then sets a
-parent deadline that cancels both timers. The public task API currently
-supports single waits and two-way races.
+The example reclaims an owned `Buffer!` from the losing timer, then joins
+a timer race with another wait. It also demonstrates a parent deadline that
+preserves a completed child and cancels nested waits.
 
 ## Scoped TCP reads
 
@@ -117,12 +121,12 @@ buffer.
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
-- `lib/async/` — scoped timer plans and cancellation
+- `lib/async/` — scoped waits, joins, races, and cancellation
 - `lib/http/` — owned request and response types and response encoding
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — standalone server with a custom handler
-- `examples/timer-race/` — race and parent cancellation with linear payloads
+- `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
 - `examples/tcp-session/` — owned connection state across a read retry
 
