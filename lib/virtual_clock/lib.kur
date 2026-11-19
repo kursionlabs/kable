@@ -22,30 +22,32 @@ export within;
 struct Virtual! {
     state: ScopeState!,
     timers: OwnedVec![Option[u64]],
-    cursor: usize,
 }
 
 instance PlanDriver[Virtual!] {
     fn timer(&scope: Virtual!, ms: u64) -> Option[usize] {
-        let { state, timers, cursor } = scope;
+        let { state, timers } = scope;
         let id = &state.add(Branch::Leaf, 0usize, 0usize);
         let timers = if id.is_some() { timers.push(Option::Some.(ms)) } else { timers };
-        scope = Virtual!.{ state, timers, cursor };
+        scope = Virtual!.{ state, timers };
         id
     }
 
     fn pair(&scope: Virtual!, kind: Branch, first: usize, second: usize) -> Option[usize] {
-        let { state, timers, cursor } = scope;
+        let { state, timers } = scope;
         let id = &state.add(kind, first, second);
         let timers = if id.is_some() { timers.push(Option::None) } else { timers };
-        scope = Virtual!.{ state, timers, cursor };
+        scope = Virtual!.{ state, timers };
         id
     }
 
-    fn next(&scope: Virtual!) -> Resolution {
-        let { state, timers, cursor } = scope;
-        let result = &state.result(cursor);
-        scope = Virtual!.{ state, timers, cursor: cursor + 1usize };
+    fn result(&scope: Virtual!, id: Option[usize]) -> Resolution {
+        let { state, timers } = scope;
+        let result = match id {
+            Option::Some(id) => &state.result(id),
+            Option::None => Option::None,
+        };
+        scope = Virtual!.{ state, timers };
         result.unwrap_or(Resolution::Failed.(-1i32))
     }
 }
@@ -70,19 +72,19 @@ fn earliest(&timers: OwnedVec![Option[u64]]) -> Option[(usize, u64)] {
 }
 
 fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 {
-    let { state, timers, cursor } = scope;
+    let { state, timers } = scope;
     let valid = match root {
         Option::Some(id) => &state.begin(id),
         Option::None => false,
     };
     if !valid {
-        scope = Virtual!.{ state, timers, cursor };
+        scope = Virtual!.{ state, timers };
         return 0u64;
     }
     let expired = match deadline { Option::Some(ms) => ms == 0u64, Option::None => false, };
     if expired {
         &state.cancel();
-        scope = Virtual!.{ state, timers, cursor };
+        scope = Virtual!.{ state, timers };
         return 0u64;
     }
     var limit = deadline;
@@ -133,7 +135,7 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 
             cancelled = &state.take_cancel();
         }
     }
-    scope = Virtual!.{ state, timers, cursor };
+    scope = Virtual!.{ state, timers };
     elapsed
 }
 
@@ -147,11 +149,11 @@ fn drive(task: Task, deadline: Option[u64]) -> Output {
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[u64]) -> (Output, u64) {
-    var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), cursor: 0usize };
+    var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new() };
     let root = Plan[Task, Virtual! -> Output]::stage(&task, &scope);
     let elapsed = advance(&scope, root, deadline);
     let result = Plan[Task, Virtual! -> Output]::collect(task, &scope);
-    let { state, timers, cursor } = scope;
+    let { state, timers } = scope;
     state.destroy();
     timers.destroy(ignore_timer);
     (result, elapsed)

@@ -84,6 +84,7 @@ to capture the first file’s owned buffer and return both files together.
 Kursal. A driver provides primitive operations and reports logical completion
 and resource retirement separately. The scope chooses winners, tracks
 cancellation, and exposes results after all operations have retired.
+Plans collect results by the node IDs they registered during staging.
 
 `lib/async/` drives plans with libuv and provides bounded file reads.
 `lib/virtual_clock/` drives timer plans by advancing directly to the next

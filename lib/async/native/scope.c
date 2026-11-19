@@ -33,7 +33,6 @@ struct Scope {
     uint8_t *policy;
     policy_add add;
     policy_event event;
-    size_t cursor;
     int status;
     int driven;
 };
@@ -200,20 +199,20 @@ void kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t timed) {
     if (uv_loop_close(&loop) != 0) abort();
 }
 
-int32_t kable_scope_next(uint8_t *raw) {
+int32_t kable_scope_result(uint8_t *raw, size_t id) {
     Scope *scope = (Scope *)raw;
     if (!scope) return UV_ENOMEM;
     if (scope->status < 0) return scope->status;
-    if (!scope->driven || report(scope, PENDING, 0) || scope->cursor >= scope->count) return UV_EINVAL;
-    size_t result = report(scope, RESULT, scope->cursor++);
+    if (!scope->driven || report(scope, PENDING, 0) || id >= scope->count) return UV_EINVAL;
+    size_t result = report(scope, RESULT, id);
     return result == SIZE_MAX ? UV_EINVAL : (int32_t)result;
 }
 
-int32_t kable_scope_file_result(uint8_t *raw, uint8_t **data, size_t *len) {
+int32_t kable_scope_file_result(uint8_t *raw, size_t id, uint8_t **data, size_t *len) {
+    if (kable_scope_result(raw, id) != SCOPE_COMPLETED) return UV_EINVAL;
     Scope *scope = (Scope *)raw;
-    if (!scope || !scope->driven || report(scope, PENDING, 0) || scope->cursor == 0) return UV_EINVAL;
-    Node *node = &scope->nodes[scope->cursor - 1];
-    if (node->kind != READ_FILE || report(scope, RESULT, node->id) != SCOPE_COMPLETED) return UV_EINVAL;
+    Node *node = &scope->nodes[id];
+    if (node->kind != READ_FILE) return UV_EINVAL;
     return kable_file_result(node->file, data, len);
 }
 

@@ -34,16 +34,16 @@ extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize)
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
 extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize) -> usize;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> ();
-extern "C" fn kable_scope_next(scope: *u8) -> i32;
-extern "C" fn kable_scope_file_result(scope: *u8, bytes: *(*u8), len: *usize) -> i32;
+extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
+extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
 
-struct ReadFile! { path: Buffer!, limit: usize }
+struct ReadFile! { path: Buffer!, limit: usize, id: Option[usize] }
 
 /// Plans a read of a regular file. A file larger than limit fails.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn read_file(&cx: C, path: S, limit: usize) -> ReadFile! {
-    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit }
+    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, id: Option::None }
 }
 
 exposed enum FileOutcome! {
@@ -139,11 +139,11 @@ impl Scope! {
         registered(id)
     }
 
-    fn file_result(&self) -> FileOutcome! {
+    fn file_result(&self, id: Option[usize]) -> FileOutcome! {
         let { raw } = self;
         let data = unsafe alloca[*u8]();
         let size = unsafe alloca[usize]();
-        let code = unsafe kable_scope_file_result(raw, data, size);
+        let code = unsafe kable_scope_file_result(raw, id.unwrap_or(usize::MAX), data, size);
         self = Scope!.{ raw };
         if code < 0i32 { return FileOutcome!::Failed.(code); }
         let bytes = unsafe *data;
@@ -161,9 +161,9 @@ impl Scope! {
         self = Scope!.{ raw };
     }
 
-    fn next(&self) -> Resolution {
+    fn result(&self, id: Option[usize]) -> Resolution {
         let { raw } = self;
-        let code = unsafe kable_scope_next(raw);
+        let code = unsafe kable_scope_result(raw, id.unwrap_or(usize::MAX));
         self = Scope!.{ raw };
         if code == CANCELLED { return Resolution::Cancelled; }
         if code == COMPLETED { return Resolution::Completed; }
@@ -182,17 +182,17 @@ instance PlanOutput[ReadFile! -> FileOutcome!] {}
 
 instance Plan[ReadFile!, Scope! -> FileOutcome!] {
     fn stage(&task: ReadFile!, &scope: Scope!) -> Option[usize] {
-        let { path, limit } = task;
+        let { path, limit, id } = task;
         let id = &scope.add_file(&path, limit);
-        task = ReadFile!.{ path, limit };
+        task = ReadFile!.{ path, limit, id };
         id
     }
 
     fn collect(task: ReadFile!, &scope: Scope!) -> FileOutcome! {
-        let { path, limit } = task;
+        let { path, limit, id } = task;
         path.destroy();
-        match &scope.next() {
-            Resolution::Completed => &scope.file_result(),
+        match &scope.result(id) {
+            Resolution::Completed => &scope.file_result(id),
             Resolution::Cancelled => FileOutcome!::Cancelled,
             Resolution::Failed(code) => FileOutcome!::Failed.(code),
             Resolution::First | Resolution::Second => FileOutcome!::Failed.(-1i32),
@@ -212,7 +212,7 @@ instance PlanDriver[Scope!] {
         &scope.add(tag, 0u64, first, second)
     }
 
-    fn next(&scope: Scope!) -> Resolution { &scope.next() }
+    fn result(&scope: Scope!, id: Option[usize]) -> Resolution { &scope.result(id) }
 }
 
 forall Task.

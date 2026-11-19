@@ -543,10 +543,11 @@ def build(package, binary):
     return binary
 
 
-def build_virtual_example(name, directory):
+def build_virtual(package, directory):
+    name = Path(package).name
     virtual_package = directory / f"virtual-{name}-source"
     virtual_package.mkdir()
-    (virtual_package / "lib.kur").write_bytes((ROOT / "examples" / name / "lib.kur").read_bytes())
+    (virtual_package / "lib.kur").write_bytes((ROOT / package / "lib.kur").read_bytes())
     (virtual_package / "kur.toml").write_text(f"""
 [package]
 name="virtual_task_test"
@@ -559,6 +560,9 @@ path="{(ROOT / '../kursal/lib/std').resolve()}"
 
 [dependencies.async]
 path="{ROOT / 'lib/virtual_clock'}"
+
+[dependencies.task]
+path="{ROOT / 'lib/task'}"
 """)
     return build(str(virtual_package), directory / f"virtual-{name}")
 
@@ -603,8 +607,10 @@ fn main() {
 
 def check_timer_engines(directory):
     native = build("examples/timer-race", directory / "timer-race")
-    virtual = build_virtual_example("timer-race", directory)
+    virtual = build_virtual("examples/timer-race", directory)
     scope = build("tests/task-scope", directory / "task-scope")
+    collection = build("tests/task-collection", directory / "task-collection")
+    virtual_collection = build_virtual("tests/task-collection", directory)
 
     def output(binary):
         return subprocess.run([str(binary)], check=True, capture_output=True, timeout=5).stdout
@@ -617,9 +623,11 @@ def check_timer_engines(directory):
     assert b"Local deadline left its sibling running" in expected
     assert output(virtual) == expected
     output(scope)
+    output(collection)
+    output(virtual_collection)
     print("Kable libuv and virtual timer checks passed")
     chain = build("examples/task-chain", directory / "task-chain")
-    virtual_chain = build_virtual_example("task-chain", directory)
+    virtual_chain = build_virtual("examples/task-chain", directory)
     expected = output(chain)
     assert b"The second stage used the original deadline" in expected
     assert b"Stopped after the first result and reclaimed both buffers" in expected
