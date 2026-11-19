@@ -573,6 +573,8 @@ def check_http_sequence(command, directory, library, payload, check_request_time
             assert_response(read_response(client), 200, payload + suffix)
         head = b"HEAD /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
         assert_response(exchange(port, head), 200, payload + suffix, head=True)
+        legacy_head = head.replace(b"HTTP/1.1", b"HTTP/1.0")
+        assert_response(exchange(port, legacy_head), 200, payload + suffix, head=True, version=b"HTTP/1.0")
         document.write_bytes(detailed_payload)
         with connect(port) as client:
             client.sendall(request)
@@ -882,6 +884,7 @@ def check_timer_engines(directory):
     scope = build("tests/task-scope", directory / "task-scope")
     collection = build("tests/task-collection", directory / "task-collection")
     virtual_collection = build_virtual("tests/task-collection", directory)
+    hosted = build("tests/hosted-plan", directory / "hosted-plan")
 
     def output(binary):
         return subprocess.run([str(binary)], check=True, capture_output=True, timeout=5).stdout
@@ -896,6 +899,7 @@ def check_timer_engines(directory):
     output(scope)
     output(collection)
     output(virtual_collection)
+    output(hosted)
     print("Kable libuv and virtual timer checks passed")
     chain = build("examples/task-chain", directory / "task-chain")
     virtual_chain = build_virtual("examples/task-chain", directory)

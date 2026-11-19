@@ -5,7 +5,6 @@
 #include <string.h>
 #include <uv.h>
 
-#include "../../async/native/scope.h"
 #include "../../async/native/timer.h"
 #include "transport.h"
 
@@ -41,7 +40,7 @@ typedef struct {
     uint8_t *scope;
     size_t scope_root;
     uint8_t *plan;
-    int32_t (*finish_plan)(uint8_t *, uint8_t *);
+    KablePlanFinish finish_plan;
     int scope_ready;
     int completing_scope;
     void (*read_ready)(uint8_t *);
@@ -267,7 +266,7 @@ static void scope_joined(void *context) {
         uint8_t *plan = connection->plan;
         connection->plan = NULL;
         connection->phase = IDLE;
-        int status = connection->finish_plan(plan, (uint8_t *)connection);
+        int status = connection->finish_plan(plan, (uint8_t *)connection, 0);
         if (status < 0 || connection->listener->stopping) close_connection(connection);
     }
     connection->completing_scope = 0;
@@ -317,7 +316,7 @@ static void stream_scope_joined(void *context) {
     connection->scope = NULL;
     connection->plan = NULL;
     connection->stream_scope_started = 0;
-    int status = connection->finish_plan(plan, (uint8_t *)connection);
+    int status = connection->finish_plan(plan, (uint8_t *)connection, 0);
     if (status < 0 || connection->cancelled) end_stream(connection, 0);
 }
 
@@ -382,7 +381,7 @@ static int queue_write(Connection *connection, uint8_t *bytes, size_t len) {
 }
 
 int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    int32_t (*finish)(uint8_t *, uint8_t *), uint8_t *bytes, size_t len) {
+    KablePlanFinish finish, uint8_t *bytes, size_t len) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != IDLE || connection->listener->stopping ||
         uv_is_closing((uv_handle_t *)&connection->socket)) return UV_ECANCELED;
@@ -512,7 +511,7 @@ int32_t kable_tcp_stream_finish(uint8_t *raw, uint8_t *bytes, size_t len) {
 }
 
 int32_t kable_tcp_stream_write(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms,
-    uint8_t *scope, size_t root, uint8_t *plan, int32_t (*finish)(uint8_t *, uint8_t *)) {
+    uint8_t *scope, size_t root, uint8_t *plan, KablePlanFinish finish) {
     Connection *connection = (Connection *)raw;
     int status = connection->phase == IDLE ? begin_stream(raw, bytes, len, ms)
         : queue_stream_write(connection, bytes, len);

@@ -1,5 +1,6 @@
 //! Scoped TCP reads and writes on a listener's event loop.
-use async::{Prepared!, Scope!, collect, prepare};
+use async::Scope!;
+use async::host::{HostedPlan!, prepare_hosted};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
@@ -23,7 +24,7 @@ extern "C" fn kable_tcp_start_scoped_read(connection: *u8, loop: *u8,
 extern "C" fn kable_tcp_stop_scoped_read(connection: *u8) -> ();
 extern "C" fn kable_tcp_read_result(connection: *u8, bytes: *(*u8), len: *usize, error: *i32) -> u8;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8) -> i32, bytes: *u8, len: usize) -> i32;
+    finish: unsafe fn(*u8, *u8, u8) -> i32, bytes: *u8, len: usize) -> i32;
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
@@ -100,15 +101,7 @@ enum Action! {
     Close(Connection!),
 }
 
-struct Deferred! {
-    scope: *u8,
-    root: usize,
-    plan: *u8,
-    finish: unsafe fn(*u8, *u8) -> i32,
-}
-
-forall Task, Output, Env.
-struct DeferredPlan! { prepared: Prepared![Task], resume: closure[Env](Output) -> Action! }
+struct Deferred! { hosted: HostedPlan! }
 
 /// Runs a plan on the connection's listener and resumes after it joins.
 forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
@@ -124,18 +117,8 @@ fn defer_write(bytes: Buffer!, task: Task, resume: closure[Env](Output) -> Actio
 
 forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn prepare_deferred(task: Task, resume: closure[Env](Output) -> Action!) -> Deferred! {
-    let prepared = prepare(task);
-    let (scope, root) = unsafe &prepared.native();
-    let plan = HeapAllocator::alloc(sizeof[DeferredPlan![Task, Output, Env]]()).into_raw();
-    unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env])) = DeferredPlan!.{ prepared, resume };
-    Deferred!.{ scope, root, plan, finish: finish_deferred[Task, Output, Env] }
-}
-
-forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-unsafe fn finish_deferred(plan: *u8, connection: *u8) -> i32 {
-    let { prepared, resume } = unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env]));
-    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(plan));
-    unsafe apply(connection, resume(collect(prepared)))
+    let hosted = prepare_hosted(task, |outcome, connection, flags| unsafe apply(connection, resume(outcome)));
+    Deferred!.{ hosted }
 }
 
 fn wait(task: Read!) -> Action! { Action!::Wait.(task) }
@@ -240,8 +223,8 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
 }
 
 unsafe fn submit_deferred(connection: *u8, deferred: Deferred!, bytes: Option[Buffer!]) -> i32 {
-    let { scope, root, plan, finish } = deferred;
-    let status = match bytes {
+    let { hosted } = deferred;
+    let (status, handled) = unsafe hosted.submit(connection, |scope, root, plan, finish| match bytes {
         Option::Some(buffer) => {
             let ptr = unsafe &buffer.as_ptr();
             let len = &buffer.len();
@@ -250,10 +233,8 @@ unsafe fn submit_deferred(connection: *u8, deferred: Deferred!, bytes: Option[Bu
             status
         },
         Option::None => unsafe kable_tcp_schedule(connection, scope, root, plan, finish, 0usize as *u8, 0usize),
-    };
-    if status < 0i32 {
-        unsafe finish(plan, connection)
-    } else { status }
+    });
+    handled
 }
 
 unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {

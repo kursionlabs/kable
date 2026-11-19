@@ -1,7 +1,7 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{FileOutcome!, OpenedFile!, Outcome, Prepared!, ReadChunk!, Scope!,
-    collect, prepare, sleep};
+use async::{FileOutcome!, OpenedFile!, Outcome, Scope!, sleep};
+use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, Response!, encode_file_headers};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
@@ -23,10 +23,10 @@ extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
 extern "C" fn kable_file_range(client: *u8, total: u64, offset: *u64, length: *u64) -> u16;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
 extern "C" fn kable_tcp_stream_write(connection: *u8, bytes: *u8, len: usize, idle_ms: u64,
-    scope: *u8, root: usize, plan: *u8, finish: unsafe fn(*u8, *u8) -> i32) -> i32;
+    scope: *u8, root: usize, plan: *u8, finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
 extern "C" fn kable_tcp_stream_finish(connection: *u8, bytes: *u8, len: usize) -> i32;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8, u8, u8, u8) -> i32, head: u8, http10: u8) -> i32;
+    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
 extern "C" fn kable_stop(server: *u8) -> ();
 
@@ -37,10 +37,14 @@ exposed enum Action! {
 }
 
 struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
-struct PendingChunk! { read: Prepared![ReadChunk!], offset: u64, remaining: u64 }
 
 const FILE_CHUNK: u64 = 64 * 1024;
 const STREAM_IDLE: u64 = 5000;
+
+// The native HTTP host adds RESPONSE_ACTIVE when it can still send a reply.
+const RESPONSE_ACTIVE: u8 = 1;
+const RESPONSE_HEAD: u8 = 2;
+const RESPONSE_HTTP10: u8 = 4;
 
 /// Sends a measured file using one write at a time.
 fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
@@ -73,19 +77,9 @@ enum Handler {
 }
 
 struct Pending! { response: Response!, head: bool, http10: bool }
-
-struct Deferred! {
-    plan: *u8, scope: *u8, root: usize,
-    finish: unsafe fn(*u8, *u8, u8, u8, u8) -> i32,
-}
+struct Deferred! { hosted: HostedPlan! }
 
 exposed enum RequestState { Active, Cancelled }
-
-forall Task, Output, Env.
-struct DeferredPlan! {
-    prepared: Prepared![Task],
-    finish: closure[Env](Output, RequestState) -> Option[Action!],
-}
 
 forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
@@ -93,11 +87,22 @@ impl Task {
     /// Return None when the request is cancelled or should close without a reply.
     forall Env where Plan[Task, Scope! -> Output].
     fn defer(self, finish: closure[Env](Output, RequestState) -> Option[Action!]) -> Action! {
-        let prepared = prepare(self);
-        let (scope, root) = unsafe &prepared.native();
-        let plan = HeapAllocator::alloc(sizeof[DeferredPlan![Task, Output, Env]]()).into_raw();
-        unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env])) = DeferredPlan!.{ prepared, finish };
-        Action!::Deferred.(Deferred!.{ plan, scope, root, finish: finish_plan[Task, Output, Env] })
+        let hosted = prepare_hosted(self, |outcome, client, flags| {
+            let active = (flags & RESPONSE_ACTIVE) != 0;
+            let state = if active { RequestState::Active } else { RequestState::Cancelled };
+            match finish(outcome, state) {
+                Option::Some(action) => {
+                    if active {
+                        unsafe apply(client, action, (flags & RESPONSE_HEAD) != 0, (flags & RESPONSE_HTTP10) != 0)
+                    } else {
+                        unsafe discard_action(client, action);
+                        0
+                    }
+                },
+                Option::None => -1,
+            }
+        });
+        Action!::Deferred.(Deferred!.{ hosted })
     }
 }
 
@@ -111,25 +116,7 @@ unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
     result
 }
 
-forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-unsafe fn finish_plan(raw: *u8, client: *u8, ready: u8, head: u8, http10: u8) -> i32 {
-    let { prepared, finish } = unsafe *(unsafe (raw as *DeferredPlan![Task, Output, Env]));
-    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    let state = if ready != 0 { RequestState::Active } else { RequestState::Cancelled };
-    match finish(collect(prepared), state) {
-        Option::Some(action) => {
-            if ready != 0 {
-                unsafe apply(client, action, head != 0, http10 != 0)
-            } else {
-                unsafe discard_action(client, action, head, http10);
-                0
-            }
-        },
-        Option::None => -1,
-    }
-}
-
-unsafe fn discard_action(client: *u8, action: Action!, head: u8, http10: u8) {
+unsafe fn discard_action(client: *u8, action: Action!) {
     match action {
         Action!::Reply(response) => response.destroy(),
         Action!::File(reply) => {
@@ -137,18 +124,18 @@ unsafe fn discard_action(client: *u8, action: Action!, head: u8, http10: u8) {
             file.close();
         },
         Action!::Deferred(deferred) => {
-            let { plan, scope, root, finish } = deferred;
-            unsafe finish(plan, client, 0, head, http10);
+            let { hosted } = deferred;
+            unsafe hosted.discard(client);
         },
     }
 }
 
 unsafe fn schedule(client: *u8, deferred: Deferred!, head: bool, http10: bool) -> i32 {
-    let { plan, scope, root, finish } = deferred;
-    let head = if head { 1u8 } else { 0u8 };
-    let http10 = if http10 { 1u8 } else { 0u8 };
-    let status = unsafe kable_schedule(client, scope, root, plan, finish, head, http10);
-    if status < 0i32 { unsafe finish(plan, client, 0u8, head, http10); }
+    let { hosted } = deferred;
+    let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
+    let (status, handled) = unsafe hosted.submit(client, |scope, root, plan, finish| {
+        unsafe kable_schedule(client, scope, root, plan, finish, flags)
+    });
     status
 }
 
@@ -181,23 +168,22 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
 
 unsafe fn write_then_read(connection: *u8, bytes: Buffer!, file: OpenedFile!, offset: u64, remaining: u64) -> i32 {
     let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
-    let read = prepare(file.read_chunk(offset, limit as usize));
-    let (scope, root) = unsafe &read.native();
-    let pending = HeapAllocator::alloc(sizeof[PendingChunk!]()).into_raw();
-    unsafe *(unsafe (pending as *PendingChunk!)) = PendingChunk!.{ read, offset, remaining };
+    let read = prepare_hosted(file.read_chunk(offset, limit as usize), |result, raw, flags| {
+        unsafe chunk_joined(raw, result, offset, remaining)
+    });
 
-    // The transport holds the prepared read and starts it after this write.
-    let status = unsafe kable_tcp_stream_write(connection, unsafe &bytes.as_ptr(), &bytes.len(),
-        STREAM_IDLE, scope, root, pending, chunk_joined);
-    bytes.destroy();
-    if status < 0 { unsafe chunk_joined(pending, connection); }
+    // The transport starts the read after this write completes.
+    let (status, handled) = unsafe read.submit(connection, |scope, root, plan, finish| {
+        let status = unsafe kable_tcp_stream_write(connection, unsafe &bytes.as_ptr(), &bytes.len(),
+            STREAM_IDLE, scope, root, plan, finish);
+        bytes.destroy();
+        status
+    });
     status
 }
 
-unsafe fn chunk_joined(pending: *u8, connection: *u8) -> i32 {
-    let { read, offset, remaining } = unsafe *(unsafe (pending as *PendingChunk!));
-    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(pending));
-    let (file, outcome) = collect(read);
+unsafe fn chunk_joined(connection: *u8, result: (OpenedFile!, FileOutcome!), offset: u64, remaining: u64) -> i32 {
+    let (file, outcome) = result;
     let bytes = match outcome {
         FileOutcome!::Read(bytes) => bytes,
         FileOutcome!::Cancelled | FileOutcome!::Failed => { file.close(); return -1; },

@@ -1,0 +1,36 @@
+use async::{Outcome, sleep};
+use async::host::{HostedPlan!, prepare_hosted};
+use std::bytes::buffer::Buffer!;
+use std::mem::alloca;
+
+fn pending() -> HostedPlan! {
+    let bytes = Buffer!::new().push_static("owned");
+    prepare_hosted(sleep(0, bytes), |outcome, host, state| {
+        let (bytes, failed) = match outcome {
+            Outcome::Failed(bytes, code) => (bytes, true),
+            Outcome::Cancelled(bytes) => (bytes, false),
+            Outcome::Ready(bytes) => (bytes, false),
+        };
+        let length = &bytes.len();
+        bytes.destroy();
+        let count = unsafe (host as *usize);
+        unsafe *count = (unsafe *count) + 1;
+        if failed && length == 5 && state == 0 {
+            17
+        } else {
+            -1
+        }
+    })
+}
+
+fn main() -> i32 {
+    let count = unsafe alloca[usize]();
+    unsafe *count = 0;
+    let host = unsafe (count as *u8);
+
+    let (status, handled) = unsafe pending().submit(host, |scope, root, plan, finish| -42);
+    if status != -42 || handled != 17 || (unsafe *count) != 1 { return 1; }
+
+    unsafe pending().discard(host);
+    if (unsafe *count) == 2 { 0 } else { 1 }
+}

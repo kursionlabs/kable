@@ -1,4 +1,5 @@
 //! Structured waits, joins, and bounded file reads on libuv.
+use package::host;
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
@@ -11,6 +12,7 @@ use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeSt
 use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
 
 export Join!;
+export host;
 export JoinOutcome;
 export Outcome;
 export PlanOutput;

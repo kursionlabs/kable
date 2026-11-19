@@ -1,0 +1,52 @@
+//! Runs a prepared libuv plan under a host that already owns an event loop.
+use package::{Prepared!, Scope!, collect, prepare};
+use std::alloc::heap::HeapAllocator;
+use std::mem::sizeof;
+use task::PlanOutput;
+use task::driver::Plan;
+
+struct HostedPlan! {
+    scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8) -> i32,
+}
+
+forall Task, Output, Env.
+struct Pending! { prepared: Prepared![Task], resume: closure[Env](Output, *u8, u8) -> i32 }
+
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+fn prepare_hosted(task: Task, resume: closure[Env](Output, *u8, u8) -> i32) -> HostedPlan! {
+    let prepared = prepare(task);
+    let (scope, root) = unsafe &prepared.native();
+    let plan = HeapAllocator::alloc(sizeof[Pending![Task, Output, Env]]()).into_raw();
+    unsafe *(unsafe (plan as *Pending![Task, Output, Env])) = Pending!.{ prepared, resume };
+    HostedPlan!.{ scope, root, plan, finish: finish_hosted[Task, Output, Env] }
+}
+
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+unsafe fn finish_hosted(plan: *u8, host: *u8, state: u8) -> i32 {
+    let { prepared, resume } = unsafe *(unsafe (plan as *Pending![Task, Output, Env]));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(plan));
+    resume(collect(prepared), host, state)
+}
+
+impl HostedPlan! {
+    /// Finishes a plan discarded before submission with a valid host pointer.
+    /// The continuation receives host state zero.
+    unsafe fn discard(self, host: *u8) {
+        let { scope, root, plan, finish } = self;
+        unsafe finish(plan, host, 0);
+    }
+
+    /// A successful start owns the plan and must finish it exactly once after
+    /// the scope joins, with the matching host pointer.
+    /// A rejected start leaves the plan here to be collected with host state zero.
+    /// Returns the submission status and, on rejection, the continuation status.
+    forall Env.
+    unsafe fn submit(self, host: *u8,
+        start: closure[Env](*u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32) -> i32) -> (i32, i32) {
+        let { scope, root, plan, finish } = self;
+        let status = start(scope, root, plan, finish);
+        let handled = if status < 0 { unsafe finish(plan, host, 0) } else { status };
+        (status, handled)
+    }
+}

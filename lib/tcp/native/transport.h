@@ -5,6 +5,8 @@
 #include <stdint.h>
 #include <uv.h>
 
+#include "../../async/native/scope.h"
+
 enum KableTcpEvent {
     KABLE_TCP_CONNECTED, KABLE_TCP_BYTES, KABLE_TCP_TIMED_OUT, KABLE_TCP_END,
     KABLE_TCP_CANCELLED, KABLE_TCP_FAILED
@@ -34,7 +36,7 @@ uint8_t kable_tcp_read_result(uint8_t *connection, uint8_t **bytes, size_t *len,
 /* A successful submission owns plan until finish runs. Any bytes are copied
    for a write, and the scope starts after that write completes. */
 int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
-    int32_t (*finish)(uint8_t *, uint8_t *), uint8_t *bytes, size_t len);
+    KablePlanFinish finish, uint8_t *bytes, size_t len);
 /* An external operation holds the connection until it joins. While parked,
    incoming bytes are discarded, and a close or read error requests
    cancellation. Unpark returns whether the socket can reply. */
@@ -47,7 +49,7 @@ int32_t kable_tcp_finish(uint8_t *connection, uint8_t *bytes, size_t len, uint64
    the write. A successful submission owns plan until the scope joins. The
    first submission sets the idle deadline, refreshed on each completed write. */
 int32_t kable_tcp_stream_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms,
-    uint8_t *scope, size_t root, uint8_t *plan, int32_t (*finish)(uint8_t *, uint8_t *));
+    uint8_t *scope, size_t root, uint8_t *plan, KablePlanFinish finish);
 /* Writes the last bytes, then half-closes and drains. */
 int32_t kable_tcp_stream_finish(uint8_t *connection, uint8_t *bytes, size_t len);
 void kable_tcp_close(uint8_t *connection);

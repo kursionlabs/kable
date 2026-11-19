@@ -6,7 +6,6 @@
 #include <uv.h>
 
 #include "../../tcp/native/transport.h"
-#include "../../async/native/scope.h"
 
 enum {
     MAX_HEAD = 16 * 1024,
@@ -22,6 +21,8 @@ typedef int32_t (*respond_fn)(uint8_t *, uint8_t *, uint16_t, uint8_t,
 
 /* Values shared with respond in server.kur. */
 enum { METHOD_OTHER, METHOD_GET, METHOD_HEAD, METHOD_POST };
+/* Matches the flags in the Kursal HTTP host. */
+enum { RESPONSE_ACTIVE = 1 };
 
 typedef struct {
     uint8_t *data;
@@ -39,9 +40,8 @@ typedef struct {
     uint8_t *connection;
     uint8_t *scope;
     uint8_t *plan;
-    int32_t (*finish)(uint8_t *, uint8_t *, uint8_t, uint8_t, uint8_t);
-    uint8_t head;
-    uint8_t http10;
+    KablePlanFinish finish;
+    uint8_t response_flags;
     int plan_ready;
     int completing_plan;
     Server *server;
@@ -291,7 +291,8 @@ static void finish_plan(void *context) {
         uint8_t *plan = client->plan;
         client->plan = NULL;
         client->scope = NULL;
-        int status = client->finish(plan, (uint8_t *)client, ready, client->head, client->http10);
+        uint8_t flags = client->response_flags | (ready ? RESPONSE_ACTIVE : 0);
+        int status = client->finish(plan, (uint8_t *)client, flags);
         if (!ready || status < 0) kable_tcp_close(client->connection);
     }
     client->completing_plan = 0;
@@ -299,16 +300,14 @@ static void finish_plan(void *context) {
 
 /* The request owns the plan and its continuation once the socket is parked. */
 int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    int32_t (*finish)(uint8_t *, uint8_t *, uint8_t, uint8_t, uint8_t),
-    uint8_t head, uint8_t http10) {
+    KablePlanFinish finish, uint8_t flags) {
     Client *client = (Client *)raw;
     int status = kable_tcp_park(client->connection, cancel_plan, client);
     if (status < 0) return status;
     client->scope = scope;
     client->plan = plan;
     client->finish = finish;
-    client->head = head;
-    client->http10 = http10;
+    client->response_flags = flags;
     uint64_t remaining = time_left(client);
     if (!kable_scope_start(scope, root, kable_tcp_loop(client->connection), remaining,
         1, finish_plan, client)) {
