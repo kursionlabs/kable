@@ -1,0 +1,115 @@
+//! Explicit sequential adapters. Engines drive one fully scoped stage at a time.
+use std::option::Option;
+
+forall Engine.
+trait Clock {
+    fn now(&engine: Engine) -> u64;
+}
+
+forall Task, Output, Engine.
+trait StageDriver {
+    /// Joins the stage and returns its outcome. The deadline uses the same
+    /// clock as now, so preparation time also counts against the budget.
+    fn drive(task: Task, &engine: Engine, deadline: Option[u64]) -> Output;
+}
+
+forall Task.
+struct First! { task: Task }
+
+forall Previous, State, Input, Task.
+struct Then! {
+    previous: Previous,
+    state: State,
+    resume: fn(State, Input) -> Option[Task],
+    cancel: fn(State, Option[Input]) -> (),
+}
+
+forall Stages.
+struct Sequence! { stages: Stages }
+
+forall Task.
+fn sequence(task: Task) -> Sequence![First![Task]] {
+    Sequence!.{ stages: First!.{ task } }
+}
+
+forall Stages.
+impl Sequence![Stages] {
+    /// Transfers state to resume after the prior stage joins. If the deadline
+    /// prevents the handoff, cancel receives the state and any prior outcome.
+    /// Resume can consume its inputs and return None to stop explicitly.
+    forall State, Input, Task.
+    fn then(self, state: State, resume: fn(State, Input) -> Option[Task],
+        cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task]] {
+        let { stages } = self;
+        Sequence!.{ stages: Then!.{ previous: stages, state, resume, cancel } }
+    }
+}
+
+forall Stages, Output, Engine.
+trait Chain {
+    fn drive(stages: Stages, &engine: Engine, deadline: Option[u64]) -> Option[Output];
+}
+
+forall Engine where Clock[Engine].
+fn remaining_budget(&engine: Engine, deadline: Option[u64]) -> Option[u64] {
+    match deadline {
+        Option::Some(end) => {
+            let now = Clock[Engine]::now(&engine);
+            Option::Some.(if now < end { end - now } else { 0u64 })
+        },
+        Option::None => Option::None,
+    }
+}
+
+forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Output, Engine].
+instance Chain[First![Task], Output, Engine] {
+    fn drive(stages: First![Task], &engine: Engine, deadline: Option[u64]) -> Option[Output] {
+        let { task } = stages;
+        Option::Some.(StageDriver[Task, Output, Engine]::drive(task, &engine, deadline))
+    }
+}
+
+forall Previous, State, Input, Task, Output, Engine
+    where Clock[Engine], Chain[Previous, Input, Engine], StageDriver[Task, Output, Engine].
+instance Chain[Then![Previous, State, Input, Task], Output, Engine] {
+    fn drive(stages: Then![Previous, State, Input, Task], &engine: Engine, deadline: Option[u64]) -> Option[Output] {
+        let { previous, state, resume, cancel } = stages;
+        let result = Chain[Previous, Input, Engine]::drive(previous, &engine, deadline);
+        match result {
+            Option::None => {
+                cancel(state, Option::None);
+                Option::None
+            },
+            Option::Some(input) => {
+                let budget = remaining_budget(&engine, deadline);
+                let expired = match budget { Option::Some(ms) => ms == 0u64, Option::None => false, };
+                if expired {
+                    cancel(state, Option::Some.(input));
+                    Option::None
+                } else {
+                    match resume(state, input) {
+                        Option::None => Option::None,
+                        Option::Some(next) => {
+                            Option::Some.(StageDriver[Task, Output, Engine]::drive(next, &engine, deadline))
+                        },
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// Uses one absolute deadline for the whole chain. None means the final
+/// stage was never constructed. Otherwise it returns that stage's outcome.
+forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Output, Engine].
+fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u64]) -> Option[Output] {
+    let { stages } = sequence;
+    let deadline = match budget {
+        Option::Some(ms) => {
+            let now = Clock[Engine]::now(&engine);
+            Option::Some.(if ms > u64::MAX - now { u64::MAX } else { now + ms })
+        },
+        Option::None => Option::None,
+    };
+    Chain[Stages, Output, Engine]::drive(stages, &engine, deadline)
+}

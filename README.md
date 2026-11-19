@@ -112,6 +112,25 @@ a timer race with another wait. It also shows a parent deadline and a
 winning branch preserving completed child results while cancelling pending
 nested waits.
 
+### Explicit sequencing
+
+`sequence(first).then(state, resume, cancel)` builds a chain of adapters in
+the style of Kursal's iterator chaining. `resume(state, outcome)` runs after
+the previous stage joins and returns `Some(next)` to start another stage or
+`None` to stop. When the deadline prevents a handoff, `cancel` consumes
+the state and any previous outcome. Later adapters also receive their
+state back through `cancel` if an earlier adapter stopped.
+
+`run_sequence(chain, budget)` drives a standalone chain on either engine.
+Its optional millisecond budget applies to the whole chain. It returns
+`None` when the last stage was never constructed and `Some(outcome)` when
+that stage produced an outcome, including cancellation during the stage.
+
+```sh
+../kursal/bin/kursal build examples/task-chain -o bin/task-chain
+bin/task-chain
+```
+
 ### Bounded file reads
 
 `read_file(&access, path, limit)` plans a regular-file read. `run` or `timeout`
@@ -183,6 +202,7 @@ buffer.
 - `examples/http-file/` — file plan and an owned continuation in an HTTP request
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
+- `examples/task-chain/` — explicit sequential adapters and owned state on both engines
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
 - `examples/tcp-session/` — owned connection state across a read retry
 

@@ -1,0 +1,83 @@
+use async::{Outcome, Sleep!, run_sequence, sequence, sleep};
+use std::bytes::buffer::Buffer!;
+use std::io::print_buffer;
+use std::option::Option;
+use std::process::trap;
+
+fn unpack(outcome: Outcome[Buffer!]) -> (Buffer!, bool) {
+    match outcome {
+        Outcome::Ready(bytes) => (bytes, true),
+        Outcome::Cancelled(bytes) => (bytes, false),
+        Outcome::Failed(bytes, code) => { bytes.destroy(); trap() },
+    }
+}
+
+fn append(suffix: Buffer!, prior: Outcome[Buffer!]) -> Option[Sleep![Buffer!]] {
+    let (bytes, ready) = unpack(prior);
+    if !ready { bytes.destroy(); suffix.destroy(); trap(); }
+    Option::Some.(sleep(150u64, bytes.push_buffer(suffix)))
+}
+
+fn stop(state: Buffer!, prior: Outcome[Buffer!]) -> Option[Sleep![Buffer!]] {
+    let (bytes, ready) = unpack(prior);
+    bytes.destroy();
+    state.destroy();
+    if !ready { trap(); }
+    print_buffer(f"Stopped after the first result and reclaimed both buffers.\n");
+    Option::None
+}
+
+fn discard(state: Buffer!, prior: Option[Outcome[Buffer!]]) {
+    state.destroy();
+    match prior {
+        Option::Some(outcome) => {
+            let (bytes, ready) = unpack(outcome);
+            bytes.destroy();
+            if ready { trap(); }
+            print_buffer(f"Deadline reclaimed the first result and the pending state.\n");
+        },
+        Option::None => {
+            print_buffer(f"Reclaimed the last adapter's state without starting it.\n");
+        },
+    }
+}
+
+fn expect_stop(result: Option[Outcome[Buffer!]]) {
+    match result {
+        Option::None => (),
+        Option::Some(outcome) => { let (bytes, ready) = unpack(outcome); bytes.destroy(); trap(); },
+    }
+}
+
+fn check_chain(budget: Option[u64], should_finish: bool) {
+    let plan = sequence(sleep(65u64, Buffer!::new().push_static("first")))
+        .then(Buffer!::new().push_static("second"), append, discard);
+    let result: Option[Outcome[Buffer!]] = run_sequence(plan, budget);
+    match result {
+        Option::Some(outcome) => {
+            let (bytes, ready) = unpack(outcome);
+            let length = &bytes.len();
+            bytes.destroy();
+            if length != 11usize || ready != should_finish { trap(); }
+        },
+        Option::None => trap(),
+    }
+}
+
+fn main() -> i32 {
+    check_chain(Option::None, true);
+    check_chain(Option::Some.(180u64), false);
+    print_buffer(f"The second stage used the original deadline.\n");
+
+    let plan = sequence(sleep(0u64, Buffer!::new()))
+        .then(Buffer!::new(), stop, discard)
+        .then(Buffer!::new(), append, discard);
+    let result: Option[Outcome[Buffer!]] = run_sequence(plan, Option::None);
+    expect_stop(result);
+
+    let plan = sequence(sleep(30_000u64, Buffer!::new()))
+        .then(Buffer!::new(), append, discard);
+    let result: Option[Outcome[Buffer!]] = run_sequence(plan, Option::Some.(10u64));
+    expect_stop(result);
+    0i32
+}

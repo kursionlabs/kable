@@ -186,3 +186,13 @@ instance Plan[Join![First, Second], JoinOutcome[A, B], Driver] {
         }
     }
 }
+
+use package::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
+
+export Chain;
+export Clock;
+export Sequence!;
+export StageDriver;
+export drive_sequence;
+export remaining_budget;
+export sequence;

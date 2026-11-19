@@ -8,6 +8,7 @@ use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, Plan as TaskPlan, PlanDriver, Race!, RaceOutcome, Select!, Sleep!,
     join, race, select, sleep};
 use task::{Branch, ScopeState!};
+use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export Join!;
 export JoinOutcome;
@@ -20,6 +21,9 @@ export join;
 export race;
 export select;
 export sleep;
+export sequence;
+
+extern "C" fn uv_hrtime() -> u64;
 
 extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize) -> usize,
     event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
@@ -237,7 +241,12 @@ fn collect(prepared: Prepared![Task]) -> Output {
 
 forall Task, Output where Plan[Task, Output].
 fn drive_plan(task: Task, deadline: Option[u64]) -> Output {
-    let { scope, task, root } = prepare[Task, Output](task);
+    run_prepared(prepare[Task, Output](task), deadline)
+}
+
+forall Task, Output where Plan[Task, Output].
+fn run_prepared(prepared: Prepared![Task], deadline: Option[u64]) -> Output {
+    let { scope, task, root } = prepared;
     &scope.run(root, deadline);
     collect[Task, Output](Prepared!.{ scope, task, root })
 }
@@ -278,4 +287,25 @@ fn run(task: Task) -> Output { Runnable[Task, Output]::drive(task, Option::None)
 forall Task, Output where Runnable[Task, Output].
 fn timeout(ms: u64, task: Task) -> Output {
     Runnable[Task, Output]::drive(task, Option::Some.(ms))
+}
+
+struct SequenceClock {}
+
+instance Clock[SequenceClock] {
+    fn now(&engine: SequenceClock) -> u64 { (unsafe uv_hrtime()) / 1_000_000u64 }
+}
+
+forall Task, Output where Plan[Task, Output].
+instance StageDriver[Task, Output, SequenceClock] {
+    fn drive(task: Task, &engine: SequenceClock, deadline: Option[u64]) -> Output {
+        let prepared = prepare[Task, Output](task);
+        run_prepared(prepared, remaining_budget(&engine, deadline))
+    }
+}
+
+/// Runs a sequence with an optional shared budget in milliseconds.
+forall Stages, Output where Chain[Stages, Output, SequenceClock].
+fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> Option[Output] {
+    let clock = SequenceClock.{};
+    drive_sequence(plan, &clock, budget)
 }

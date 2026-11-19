@@ -536,14 +536,13 @@ def build(package, binary):
     return binary
 
 
-def check_timer_engines(directory):
-    native = build("examples/timer-race", directory / "timer-race")
-    virtual_package = directory / "virtual-timers"
+def build_virtual_example(name, directory):
+    virtual_package = directory / f"virtual-{name}-source"
     virtual_package.mkdir()
-    (virtual_package / "lib.kur").write_bytes((ROOT / "examples/timer-race/lib.kur").read_bytes())
+    (virtual_package / "lib.kur").write_bytes((ROOT / "examples" / name / "lib.kur").read_bytes())
     (virtual_package / "kur.toml").write_text(f"""
 [package]
-name="virtual_timer_test"
+name="virtual_task_test"
 source_root="."
 kind="executable"
 entry="main"
@@ -554,7 +553,12 @@ path="{(ROOT / '../kursal/lib/std').resolve()}"
 [dependencies.async]
 path="{ROOT / 'lib/virtual_clock'}"
 """)
-    virtual = build(str(virtual_package), directory / "virtual-timer-race")
+    return build(str(virtual_package), directory / f"virtual-{name}")
+
+
+def check_timer_engines(directory):
+    native = build("examples/timer-race", directory / "timer-race")
+    virtual = build_virtual_example("timer-race", directory)
     scope = build("tests/task-scope", directory / "task-scope")
 
     def output(binary):
@@ -567,6 +571,14 @@ path="{ROOT / 'lib/virtual_clock'}"
     assert output(virtual) == expected
     output(scope)
     print("Kable libuv and virtual timer checks passed")
+    chain = build("examples/task-chain", directory / "task-chain")
+    virtual_chain = build_virtual_example("task-chain", directory)
+    expected = output(chain)
+    assert b"The second stage used the original deadline" in expected
+    assert b"Stopped after the first result and reclaimed both buffers" in expected
+    assert b"Deadline reclaimed the first result and the pending state" in expected
+    assert output(virtual_chain) == expected
+    print("Kable libuv and virtual sequence checks passed")
 
 
 if __name__ == "__main__":
