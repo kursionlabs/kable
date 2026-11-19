@@ -45,6 +45,7 @@ fn reason(status: u16) -> Slice[u8, 'static] {
     match status {
         200u16 => "OK",
         400u16 => "Bad Request",
+        403 => "Forbidden",
         404u16 => "Not Found",
         405u16 => "Method Not Allowed",
         408u16 => "Request Timeout",
@@ -65,7 +66,11 @@ impl Response! {
     }
 
     fn ok(body: Buffer!) -> Response! {
-        Response!.{ status: 200u16, content_type: "application/octet-stream", allow: "", body }
+        Response!::bytes(body, "application/octet-stream")
+    }
+
+    fn bytes(body: Buffer!, content_type: Slice[u8, 'static]) -> Response! {
+        Response!.{ status: 200, content_type, allow: "", body }
     }
 
     fn text(status: u16, text: Slice[u8, 'static]) -> Response! {

@@ -35,6 +35,23 @@ The limits are 128 active connections, 16 KiB for the request line and
 headers, 1 MiB for the decoded body, and 1088 KiB for the full request on the
 wire.
 
+## Serve a directory
+
+```sh
+../kursal/bin/kursal build examples/static-files -o bin/static-files
+bin/static-files examples/http-file 8080
+```
+
+From another terminal, run `curl http://127.0.0.1:8080/example.txt`. Pass the
+directory you want to serve as the first argument. The port defaults to 8080.
+The server listens on loopback, accepts `GET` and `HEAD`, and serves
+`index.html` for paths ending in a slash.
+
+File reads use the worker pool with a 1 MiB limit and a two-second deadline.
+The server sets the content type for common web files. Path resolution uses
+Linux’s `openat2` to stay below the document root and reject symlinks.
+This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://man7.org/linux/man-pages/man2/openat2.2.html)
+
 ## A small async server
 
 The hello server uses one handler for immediate replies and replies that
@@ -287,6 +304,7 @@ buffer.
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — immediate and delayed replies in one handler
+- `examples/static-files/` — serves a document root with bounded async reads
 - `examples/http-file/` — bounded file replies, parallel reads, and an owned continuation
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads

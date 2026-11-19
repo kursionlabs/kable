@@ -85,11 +85,11 @@ size_t kable_scope_add(uint8_t *raw, uint8_t kind, uint64_t ms, size_t first, si
     return index;
 }
 
-size_t kable_scope_add_file(uint8_t *raw, uint8_t *path, size_t len, size_t limit) {
+size_t kable_scope_add_file(uint8_t *raw, uint8_t *path, size_t len, size_t limit, uint8_t beneath) {
     size_t index = kable_scope_add(raw, SLEEP, 0, 0, 0);
     if (index == SIZE_MAX) return index;
     Scope *scope = (Scope *)raw;
-    KableFile *file = kable_file_new(path, len, limit);
+    KableFile *file = kable_file_new(path, len, limit, beneath);
     if (!file) {
         scope->status = UV_ENOMEM;
         return SIZE_MAX;

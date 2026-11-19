@@ -8,6 +8,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(__linux__) && __has_include(<linux/openat2.h>)
+#include <linux/openat2.h>
+#include <sys/syscall.h>
+#endif
+
 struct KableFile {
     uv_work_t request;
     void (*done)(void *);
@@ -17,16 +22,18 @@ struct KableFile {
     size_t len;
     size_t capacity;
     size_t limit;
+    uint8_t beneath;
     atomic_bool cancelled;
     int queued;
     int status;
 };
 
-KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit) {
+KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t beneath) {
     KableFile *file = calloc(1, sizeof *file);
     if (!file) return NULL;
     atomic_init(&file->cancelled, 0);
     file->limit = limit;
+    file->beneath = beneath;
     if (len == SIZE_MAX || (len && memchr(path, 0, len))) {
         file->status = UV_EINVAL;
         return file;
@@ -79,6 +86,22 @@ static int read_contents(KableFile *file, int fd) {
     return UV_ECANCELED;
 }
 
+static int open_file(KableFile *file) {
+    int flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK;
+    if (!file->beneath) return open(file->path, flags);
+
+#ifdef SYS_openat2
+    struct open_how how = {
+        .flags = flags,
+        .resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS,
+    };
+    return (int)syscall(SYS_openat2, AT_FDCWD, file->path, &how, sizeof how);
+#else
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 static void read_file(uv_work_t *request) {
     KableFile *file = request->data;
     if (file->status < 0 || atomic_load_explicit(&file->cancelled, memory_order_relaxed)) {
@@ -86,7 +109,7 @@ static void read_file(uv_work_t *request) {
     }
 
     /* Avoid blocking on a pipe before fstat can reject it. */
-    int fd = open(file->path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    int fd = open_file(file);
     if (fd < 0) {
         file->status = uv_translate_sys_error(errno);
         return;

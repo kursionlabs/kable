@@ -151,6 +151,54 @@ def check_hello_server(binary):
     print("Kable hello server checks passed")
 
 
+def check_static_files(command, directory):
+    root = directory / "public"
+    root.mkdir()
+    pages = root / "pages"
+    pages.mkdir()
+    outside = directory / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_bytes(b"outside the document root")
+    (root / "external.txt").symlink_to(outside / "secret.txt")
+    (root / "external").symlink_to(outside, target_is_directory=True)
+    (root / "index.html").write_bytes(b"<h1>Kable</h1>\n")
+    (pages / "index.html").write_bytes(b"<p>Nested index</p>\n")
+    (pages / "a b.txt").write_bytes(b"A file with spaces\n")
+    (root / "payload.bin").write_bytes(b"\x00\x01\xff")
+    (root / "large.bin").write_bytes(b"x" * (1024 * 1024 + 1))
+    os.mkfifo(root / "pipe")
+
+    with subprocess.Popen([*command, str(root), "0"], stdout=subprocess.PIPE) as process:
+        try:
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
+
+            def request(path, method=b"GET"):
+                return exchange(port, method + b" " + path + b" HTTP/1.1\r\nHost: localhost\r\n\r\n")
+
+            headers = assert_response(request(b"/"), 200, b"<h1>Kable</h1>\n")
+            assert headers[b"content-type"] == b"text/html; charset=utf-8"
+            assert_response(request(b"/pages/"), 200, b"<p>Nested index</p>\n")
+            headers = assert_response(request(b"/pages/a%20b.txt?download"), 200, b"A file with spaces\n")
+            assert headers[b"content-type"] == b"text/plain; charset=utf-8"
+            headers = assert_response(request(b"/payload.bin"), 200, b"\x00\x01\xff")
+            assert headers[b"content-type"] == b"application/octet-stream"
+            assert_response(request(b"/payload.bin", b"HEAD"), 200, b"\x00\x01\xff", head=True)
+            headers = assert_response(request(b"/", b"POST"), 405, b"Method Not Allowed\n")
+            assert headers[b"allow"] == b"GET, HEAD"
+            for path in (b"/missing", b"/pages", b"/pipe", b"/external.txt",
+                         b"/external/secret.txt", b"/%2e%2e/outside/secret.txt"):
+                assert_response(request(path), 404, b"Not Found\n")
+            for path in (b"/%xz", b"/%00", b"/short%"):
+                assert_response(request(path), 400, b"Bad Request\n")
+            assert_response(request(b"/large.bin"), 403, b"Forbidden\n")
+            process.terminate()
+            assert process.wait(timeout=5) == 0
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable static file checks passed")
+
+
 def check_timeout(port):
     with connect(port) as stalled:
         stalled.sendall(b"GET /health HTTP/1.1\r\nHost: local")
@@ -606,12 +654,14 @@ def main():
         with tempfile.TemporaryDirectory() as directory:
             binary = build("kable", Path(directory) / "kable")
             hello = build("examples/hello-server", Path(directory) / "hello-server")
+            static_files = build("examples/static-files", Path(directory) / "static-files")
             check_timer_engines(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
+            check_static_files([str(static_files)], Path(directory))
             check_async_read([str(async_read)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])

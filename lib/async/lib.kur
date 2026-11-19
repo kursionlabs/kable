@@ -32,7 +32,7 @@ extern "C" fn uv_hrtime() -> u64;
 extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize) -> usize,
     event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
-extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize) -> usize;
+extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize, beneath: u8) -> usize;
 extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> ()) -> usize;
@@ -41,12 +41,19 @@ extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
 
-struct ReadFile! { path: Buffer!, limit: usize, id: Option[usize] }
+struct ReadFile! { path: Buffer!, limit: usize, beneath: bool, id: Option[usize] }
 
 /// Plans a read of a regular file. A file larger than limit fails.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn read_file(&cx: C, path: S, limit: usize) -> ReadFile! {
-    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, id: Option::None }
+    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, beneath: false, id: Option::None }
+}
+
+/// Plans a regular-file read below the process's working directory.
+/// Linux resolves the relative path without following symlinks.
+forall C, S where ReadBytes[C, S], Copy[S].
+fn read_file_beneath_cwd(&cx: C, path: S, limit: usize) -> ReadFile! {
+    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, beneath: true, id: Option::None }
 }
 
 exposed enum FileOutcome! {
@@ -133,11 +140,11 @@ impl Scope! {
         registered(id)
     }
 
-    fn add_file(&self, &path: Buffer!, limit: usize) -> Option[usize] {
+    fn add_file(&self, &path: Buffer!, limit: usize, beneath: bool) -> Option[usize] {
         let { raw } = self;
         let bytes = unsafe &path.as_ptr();
         let len = &path.len();
-        let id = unsafe kable_scope_add_file(raw, bytes, len, limit);
+        let id = unsafe kable_scope_add_file(raw, bytes, len, limit, if beneath { 1 } else { 0 });
         self = Scope!.{ raw };
         registered(id)
     }
@@ -196,14 +203,14 @@ instance PlanOutput[ReadFile! -> FileOutcome!] {}
 
 instance Plan[ReadFile!, Scope! -> FileOutcome!] {
     fn stage(&task: ReadFile!, &scope: Scope!) -> Option[usize] {
-        let { path, limit, id } = task;
-        let id = &scope.add_file(&path, limit);
-        task = ReadFile!.{ path, limit, id };
+        let { path, limit, beneath, id } = task;
+        let id = &scope.add_file(&path, limit, beneath);
+        task = ReadFile!.{ path, limit, beneath, id };
         id
     }
 
     fn collect(task: ReadFile!, &scope: Scope!) -> FileOutcome! {
-        let { path, limit, id } = task;
+        let { path, limit, beneath, id } = task;
         path.destroy();
         match &scope.result(id) {
             Resolution::Completed => &scope.file_result(id),

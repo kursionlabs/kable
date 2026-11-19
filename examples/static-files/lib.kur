@@ -1,0 +1,175 @@
+use async::{FileOutcome!, read_file_beneath_cwd};
+use http::{Method, Request!, Response!};
+use server::{Action!, Plan, PlanOutput, Server!};
+use std::bytes::buffer::Buffer!;
+use std::io::{eprint_buffer, print_buffer};
+use std::option::{Option, Result};
+use std::parse::parse_u64;
+use std::process::Args;
+use std::raw::Span;
+use std::slice::{Slice, StaticRead};
+
+extern "C" fn uv_chdir(path: *u8) -> i32;
+extern "C" fn kable_static_file_status(error: i32) -> u16;
+
+const FILE_LIMIT: usize = 1_048_576;
+const READ_DEADLINE: u64 = 2000;
+
+fn serve(request: Request!) -> Action! {
+    let { method, target, body } = request;
+    body.destroy();
+    match method {
+        Method::Get | Method::Head => (),
+        _ => {
+            target.destroy();
+            return Response!::method_not_allowed("GET, HEAD").reply();
+        },
+    }
+    let path = match file_path(target) {
+        Option::Some(path) => path,
+        Option::None => return Response!::rejected(400).reply(),
+    };
+    let content_type = path_type(&path);
+    let exists 'k. (access, bytes, restore) = path.open();
+    let file = read_file_beneath_cwd(&access, bytes, FILE_LIMIT);
+    restore.restore(access).destroy();
+
+    file.map(|outcome| (content_type, outcome))
+        .defer_within(READ_DEADLINE, file_response, discard_file)
+}
+
+fn file_response(result: (Slice[u8, 'static], FileOutcome!)) -> Response! {
+    let (content_type, outcome) = result;
+    match outcome {
+        FileOutcome!::Read(bytes) => Response!::bytes(bytes, content_type),
+        FileOutcome!::Cancelled => Response!::rejected(408),
+        FileOutcome!::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)),
+    }
+}
+
+fn discard_file(result: (Slice[u8, 'static], FileOutcome!)) {
+    let (content_type, outcome) = result;
+    match outcome {
+        FileOutcome!::Read(bytes) => bytes.destroy(),
+        FileOutcome!::Cancelled | FileOutcome!::Failed => (),
+    }
+}
+
+fn hex(byte: u8) -> Option[u8] {
+    if byte >= b'0' && byte <= b'9' { return Option::Some.(byte - b'0'); }
+    if byte >= b'a' && byte <= b'f' { return Option::Some.(byte - b'a' + 10); }
+    if byte >= b'A' && byte <= b'F' { return Option::Some.(byte - b'A' + 10); }
+    Option::None
+}
+
+fn file_path(target: Buffer!) -> Option[Buffer!] {
+    let exists 'k. (access, bytes, restore) = target.open();
+    let raw = Span::from_slice(bytes);
+    let path = match raw.find_byte(&access, b'?', 0) {
+        Option::Some(end) => raw.take(end),
+        Option::None => raw,
+    };
+    var valid = path.len() > 0 && path.at(&access, 0) == b'/';
+    var decoded = Buffer!::new_with_cap(path.len());
+    var last = b'/';
+    var i: usize = 1;
+    while valid && i < path.len() {
+        var byte = path.at(&access, i);
+        if byte == b'%' {
+            if path.len() - i < 3 {
+                valid = false;
+            } else {
+                let high = hex(path.at(&access, i + 1));
+                let low = hex(path.at(&access, i + 2));
+                valid = high.is_some() && low.is_some();
+                if valid { byte = high.unwrap() * 16 + low.unwrap(); }
+                i = i + 2;
+            }
+        }
+        valid = valid && byte >= 32 && byte != 127 && byte != b'\\';
+        if valid {
+            decoded = decoded.push_byte(byte);
+            last = byte;
+        }
+        i = i + 1;
+    }
+    restore.restore(access).destroy();
+    if valid {
+        Option::Some.(if last == b'/' { decoded.push_static("index.html") } else { decoded })
+    } else {
+        decoded.destroy();
+        Option::None
+    }
+}
+
+fn path_type(&path: Buffer!) -> Slice[u8, 'static] {
+    let exists 'k. (access, bytes, restore) = path.open();
+    let name = Span::from_slice(bytes);
+    let suffix = match name.rfind_byte(&access, b'.') {
+        Option::Some(dot) => name.skip(dot),
+        Option::None => name.skip(name.len()),
+    };
+    let content_type =
+        if suffix.is(&access, ".html") { "text/html; charset=utf-8" }
+        else if suffix.is(&access, ".css") { "text/css; charset=utf-8" }
+        else if suffix.is(&access, ".js") { "text/javascript; charset=utf-8" }
+        else if suffix.is(&access, ".txt") { "text/plain; charset=utf-8" }
+        else if suffix.is(&access, ".json") { "application/json" }
+        else if suffix.is(&access, ".svg") { "image/svg+xml" }
+        else if suffix.is(&access, ".png") { "image/png" }
+        else if suffix.is(&access, ".jpg") || suffix.is(&access, ".jpeg") { "image/jpeg" }
+        else if suffix.is(&access, ".gif") { "image/gif" }
+        else if suffix.is(&access, ".webp") { "image/webp" }
+        else if suffix.is(&access, ".ico") { "image/x-icon" }
+        else { "application/octet-stream" };
+    path = restore.restore(access);
+    content_type
+}
+
+fn usage() -> i32 {
+    eprint_buffer(f"usage: static-files ROOT [PORT]\n");
+    2
+}
+
+fn main(args: Args) -> i32 {
+    if args.len() < 2 || args.len() > 3 { return usage(); }
+    let port = match args.bytes(2) {
+        Option::None => 8080,
+        Option::Some(bytes) => {
+            let access = StaticRead::new();
+            match parse_u64(&access, bytes) {
+                Option::Some(port) => {
+                    if port > 65535 { return usage(); }
+                    port as u16
+                },
+                Option::None => return usage(),
+            }
+        },
+    };
+    let root = args.get(1).unwrap();
+    let status = unsafe uv_chdir(root.as_ptr());
+    if status < 0 {
+        eprint_buffer(f"static-files: cannot enter the document root (libuv error {status})\n");
+        return 1;
+    }
+
+    let server = match Server!::bind_async(port, serve) {
+        Result::Ok(server) => server,
+        Result::Err(code) => {
+            eprint_buffer(f"static-files: cannot listen (libuv error {code})\n");
+            return 1;
+        },
+    };
+    let port = &server.port();
+    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+        server.stop();
+        return 1;
+    }
+    match server.run() {
+        Result::Ok(unit) => 0,
+        Result::Err(code) => {
+            eprint_buffer(f"static-files: server stopped (libuv error {code})\n");
+            1
+        },
+    }
+}
