@@ -9,6 +9,9 @@ use std::option::{Option, Result};
 use std::ptr::is_null;
 use task::{Continuation!, HostedChain, Plan, Sequence!, StageHost, continuation, host_sequence};
 
+// Callers import Plan to bring the defer extension method into scope.
+export Plan;
+
 extern "C" fn kable_bind(port: u16,
     callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,
     context: *u8, error: *i32) -> *u8;
@@ -44,7 +47,7 @@ struct DeferredPlan! {
 
 /// Runs the plan in the request's scope. The continuation consumes its
 /// outcome once, including on cancellation, so it can reclaim owned values.
-forall Task, Output, Env where Plan[Task, Output, Scope!].
+forall Task, Output, Env where Plan[Task, Scope! -> Output].
 fn defer(task: Task, reply: closure[Env](Output) -> Response!) -> Action! {
     defer_plan(task, |outcome: Output, active: bool| {
         let response = reply(outcome);
@@ -57,10 +60,19 @@ fn defer(task: Task, reply: closure[Env](Output) -> Response!) -> Action! {
     })
 }
 
+forall Task, Output where Plan[Task, Scope! -> Output].
+impl Task {
+    /// Defers a reply until this plan has joined within the request scope.
+    forall Env.
+    fn defer(self, reply: closure[Env](Output) -> Response!) -> Action! {
+        defer(self, reply)
+    }
+}
+
 struct RequestHost {}
 
-forall Task, Output where Plan[Task, Output, Scope!].
-instance StageHost[Task, Output, RequestHost, Action!] {
+forall Task, Output where Plan[Task, Scope! -> Output].
+instance StageHost[Task, RequestHost, Action! -> Output] {
     fn schedule(task: Task, next: Continuation![Output, Action!]) -> Action! {
         defer_plan(task, |outcome: Output, active: bool| {
             let result = Option::Some.(outcome);
@@ -75,16 +87,16 @@ instance StageHost[Task, Output, RequestHost, Action!] {
 }
 
 /// Drives a portable sequence under the current request's deadline.
-forall Stages, Output, State where HostedChain[Stages, Output, RequestHost, Action!].
+forall Stages, Output, State where HostedChain[Stages, RequestHost, Action! -> Output].
 fn defer_sequence(plan: Sequence![Stages], state: State, resume: fn(State, Option[Output]) -> Action!,
     cancel: fn(State, Option[Output]) -> ()) -> Action! {
     let next = continuation(state, resume, cancel);
     host_sequence[Stages, Output, RequestHost, Action!](plan, next)
 }
 
-forall Task, Output, Env where Plan[Task, Output, Scope!].
+forall Task, Output, Env where Plan[Task, Scope! -> Output].
 fn defer_plan(task: Task, finish: closure[Env](Output, bool) -> Option[Action!]) -> Action! {
-    let prepared = prepare[Task, Output](task);
+    let prepared = prepare(task);
     let (scope, root) = unsafe &prepared.native();
     let plan = HeapAllocator::alloc(sizeof[DeferredPlan![Task, Output, Env]]()).into_raw();
     unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env])) = DeferredPlan!.{ prepared, finish };
@@ -101,11 +113,11 @@ unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
     result
 }
 
-forall Task, Output, Env where Plan[Task, Output, Scope!].
+forall Task, Output, Env where Plan[Task, Scope! -> Output].
 unsafe fn finish_plan(raw: *u8, client: *u8, ready: u8, head: u8, http10: u8) -> i32 {
     let { prepared, finish } = unsafe *(unsafe (raw as *DeferredPlan![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    match finish(collect[Task, Output](prepared), ready != 0u8) {
+    match finish(collect(prepared), ready != 0u8) {
         Option::Some(action) => unsafe apply(client, action, head != 0u8, http10 != 0u8),
         Option::None => 0i32,
     }

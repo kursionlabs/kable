@@ -129,28 +129,28 @@ fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) -> u64 {
 
 fn ignore_timer(timer: Option[u64]) {}
 
-forall Task, Output where Plan[Task, Output, Virtual!].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive(task: Task, deadline: Option[u64]) -> Output {
     let (result, elapsed) = drive_timed(task, deadline);
     result
 }
 
-forall Task, Output where Plan[Task, Output, Virtual!].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[u64]) -> (Output, u64) {
     var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), cursor: 0usize };
-    let root = Plan[Task, Output, Virtual!]::stage(&task, &scope);
+    let root = Plan[Task, Virtual! -> Output]::stage(&task, &scope);
     let elapsed = advance(&scope, root, deadline);
-    let result = Plan[Task, Output, Virtual!]::collect(task, &scope);
+    let result = Plan[Task, Virtual! -> Output]::collect(task, &scope);
     let { state, timers, cursor } = scope;
     state.destroy();
     timers.destroy(ignore_timer);
     (result, elapsed)
 }
 
-forall Task, Output where Plan[Task, Output, Virtual!].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn run(task: Task) -> Output { drive(task, Option::None) }
 
-forall Task, Output where Plan[Task, Output, Virtual!].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn timeout(ms: u64, task: Task) -> Output { drive(task, Option::Some.(ms)) }
 
 struct SequenceClock! { time: u64 }
@@ -163,8 +163,8 @@ instance Clock[SequenceClock!] {
     }
 }
 
-forall Task, Output where Plan[Task, Output, Virtual!].
-instance StageDriver[Task, Output, SequenceClock!] {
+forall Task, Output where Plan[Task, Virtual! -> Output].
+instance StageDriver[Task, SequenceClock! -> Output] {
     fn drive(task: Task, &engine: SequenceClock!, deadline: Option[u64]) -> Output {
         let remaining = remaining_budget(&engine, deadline);
         let { time } = engine;
@@ -175,7 +175,7 @@ instance StageDriver[Task, Output, SequenceClock!] {
     }
 }
 
-forall Stages, Output where Chain[Stages, Output, SequenceClock!].
+forall Stages, Output where Chain[Stages, SequenceClock! -> Output].
 fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> Option[Output] {
     let clock = SequenceClock!.{ time: 0u64 };
     let result = drive_sequence(plan, &clock, budget);

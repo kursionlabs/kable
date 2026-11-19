@@ -8,7 +8,7 @@ trait Clock {
     fn now(&engine: Engine) -> u64;
 }
 
-forall Task, Output, Engine.
+forall Task, Engine -> Output.
 trait StageDriver {
     /// Joins the stage and returns its outcome. The deadline uses the same
     /// clock as now, so preparation time also counts against the budget.
@@ -84,7 +84,7 @@ impl Sequence![Stages] {
     }
 }
 
-forall Stages, Output, Engine.
+forall Stages, Engine -> Output.
 trait Chain {
     fn drive(stages: Stages, &engine: Engine, deadline: Option[u64]) -> Option[Output];
 }
@@ -100,24 +100,24 @@ fn remaining_budget(&engine: Engine, deadline: Option[u64]) -> Option[u64] {
     }
 }
 
-forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Output, Engine].
-instance Chain[First![Task], Output, Engine] {
+forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Engine -> Output].
+instance Chain[First![Task], Engine -> Output] {
     fn drive(stages: First![Task], &engine: Engine, deadline: Option[u64]) -> Option[Output] {
         let { task } = stages;
-        Option::Some.(StageDriver[Task, Output, Engine]::drive(task, &engine, deadline))
+        Option::Some.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline))
     }
 }
 
 forall Previous, State, Input, Task, Output, Engine
-    where Clock[Engine], Chain[Previous, Input, Engine], StageDriver[Task, Output, Engine].
-instance Chain[Then![Previous, State, Input, Task], Output, Engine] {
+    where Clock[Engine], Chain[Previous, Engine -> Input], StageDriver[Task, Engine -> Output].
+instance Chain[Then![Previous, State, Input, Task], Engine -> Output] {
     fn drive(stages: Then![Previous, State, Input, Task], &engine: Engine, deadline: Option[u64]) -> Option[Output] {
         let { previous, handoff } = stages;
-        let result = Chain[Previous, Input, Engine]::drive(previous, &engine, deadline);
+        let result = Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline);
         let budget = remaining_budget(&engine, deadline);
         let expired = match budget { Option::Some(ms) => ms == 0u64, Option::None => false, };
         match handoff.advance(!expired, result) {
-            Option::Some(next) => Option::Some.(StageDriver[Task, Output, Engine]::drive(next, &engine, deadline)),
+            Option::Some(next) => Option::Some.(StageDriver[Task, Engine -> Output]::drive(next, &engine, deadline)),
             Option::None => Option::None,
         }
     }
@@ -182,32 +182,32 @@ impl Continuation![Input, Action] {
 }
 
 /// Hosts schedule one plan at a time under the same enclosing lifetime.
-forall Task, Output, Host, Action.
+forall Task, Host, Action -> Output.
 trait StageHost {
     fn schedule(task: Task, next: Continuation![Output, Action]) -> Action;
 }
 
-forall Stages, Output, Host, Action.
+forall Stages, Host, Action -> Output.
 trait HostedChain {
     fn schedule(stages: Stages, next: Continuation![Output, Action]) -> Action;
 }
 
-forall Task, Output, Host, Action where StageHost[Task, Output, Host, Action].
-instance HostedChain[First![Task], Output, Host, Action] {
+forall Task, Output, Host, Action where StageHost[Task, Host, Action -> Output].
+instance HostedChain[First![Task], Host, Action -> Output] {
     fn schedule(stages: First![Task], next: Continuation![Output, Action]) -> Action {
         let { task } = stages;
-        StageHost[Task, Output, Host, Action]::schedule(task, next)
+        StageHost[Task, Host, Action -> Output]::schedule(task, next)
     }
 }
 
 forall State, Input, Task, Output, Action.
 struct Next! { handoff: Handoff![State, Input, Task], tail: Continuation![Output, Action] }
 
-forall State, Input, Task, Output, Host, Action where StageHost[Task, Output, Host, Action].
+forall State, Input, Task, Output, Host, Action where StageHost[Task, Host, Action -> Output].
 fn resume_next(next: Next![State, Input, Task, Output, Action], prior: Option[Input]) -> Action {
     let { handoff, tail } = next;
     match handoff.advance(true, prior) {
-        Option::Some(task) => StageHost[Task, Output, Host, Action]::schedule(task, tail),
+        Option::Some(task) => StageHost[Task, Host, Action -> Output]::schedule(task, tail),
         Option::None => tail.resume(Option::None),
     }
 }
@@ -220,26 +220,26 @@ fn cancel_next(next: Next![State, Input, Task, Output, Action], prior: Option[In
 }
 
 forall Previous, State, Input, Task, Output, Host, Action
-    where HostedChain[Previous, Input, Host, Action], StageHost[Task, Output, Host, Action].
-instance HostedChain[Then![Previous, State, Input, Task], Output, Host, Action] {
+    where HostedChain[Previous, Host, Action -> Input], StageHost[Task, Host, Action -> Output].
+instance HostedChain[Then![Previous, State, Input, Task], Host, Action -> Output] {
     fn schedule(stages: Then![Previous, State, Input, Task], next: Continuation![Output, Action]) -> Action {
         let { previous, handoff } = stages;
         let link = Next!.{ handoff, tail: next };
         let next = continuation(link, resume_next[State, Input, Task, Output, Host, Action],
             cancel_next[State, Input, Task, Output, Action]);
-        HostedChain[Previous, Input, Host, Action]::schedule(previous, next)
+        HostedChain[Previous, Host, Action -> Input]::schedule(previous, next)
     }
 }
 
-forall Stages, Output, Host, Action where HostedChain[Stages, Output, Host, Action].
+forall Stages, Output, Host, Action where HostedChain[Stages, Host, Action -> Output].
 fn host_sequence(plan: Sequence![Stages], next: Continuation![Output, Action]) -> Action {
     let { stages } = plan;
-    HostedChain[Stages, Output, Host, Action]::schedule(stages, next)
+    HostedChain[Stages, Host, Action -> Output]::schedule(stages, next)
 }
 
 /// Uses one absolute deadline for the whole chain. None means the final
 /// stage was never constructed. Otherwise it returns that stage's outcome.
-forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Output, Engine].
+forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Engine -> Output].
 fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u64]) -> Option[Output] {
     let { stages } = sequence;
     let deadline = match budget {
@@ -249,5 +249,5 @@ fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u
         },
         Option::None => Option::None,
     };
-    Chain[Stages, Output, Engine]::drive(stages, &engine, deadline)
+    Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline)
 }

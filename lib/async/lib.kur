@@ -155,7 +155,7 @@ impl Scope! {
     }
 }
 
-instance Plan[ReadFile!, FileOutcome!, Scope!] {
+instance Plan[ReadFile!, Scope! -> FileOutcome!] {
     fn stage(&task: ReadFile!, &scope: Scope!) -> usize {
         let { path, limit } = task;
         let id = &scope.add_file(&path, limit);
@@ -193,10 +193,10 @@ instance PlanDriver[Scope!] {
 forall Task.
 struct Prepared! { scope: Scope!, task: Task, root: usize }
 
-forall Task, Output where Plan[Task, Output, Scope!].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn prepare(task: Task) -> Prepared![Task] {
     var scope = Scope!::new();
-    let root = Plan[Task, Output, Scope!]::stage(&task, &scope);
+    let root = Plan[Task, Scope! -> Output]::stage(&task, &scope);
     Prepared!.{ scope, task, root }
 }
 
@@ -211,32 +211,32 @@ impl Prepared![Task] {
     }
 }
 
-forall Task, Output where Plan[Task, Output, Scope!].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn collect(prepared: Prepared![Task]) -> Output {
     let { scope, task, root } = prepared;
-    let result = Plan[Task, Output, Scope!]::collect(task, &scope);
+    let result = Plan[Task, Scope! -> Output]::collect(task, &scope);
     scope.close();
     result
 }
 
-forall Task, Output where Plan[Task, Output, Scope!].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn drive_plan(task: Task, deadline: Option[u64]) -> Output {
-    run_prepared(prepare[Task, Output](task), deadline)
+    run_prepared(prepare(task), deadline)
 }
 
-forall Task, Output where Plan[Task, Output, Scope!].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn run_prepared(prepared: Prepared![Task], deadline: Option[u64]) -> Output {
     let { scope, task, root } = prepared;
     &scope.run(root, deadline);
-    collect[Task, Output](Prepared!.{ scope, task, root })
+    collect(Prepared!.{ scope, task, root })
 }
 
 /// Drives the plan to completion and joins its children before returning.
-forall Task, Output where Plan[Task, Output, Scope!].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn run(task: Task) -> Output { drive_plan(task, Option::None) }
 
 /// Cancels unfinished children when the parent deadline expires, then joins them.
-forall Task, Output where Plan[Task, Output, Scope!].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn timeout(ms: u64, task: Task) -> Output {
     drive_plan(task, Option::Some.(ms))
 }
@@ -247,16 +247,16 @@ instance Clock[SequenceClock] {
     fn now(&engine: SequenceClock) -> u64 { (unsafe uv_hrtime()) / 1_000_000u64 }
 }
 
-forall Task, Output where Plan[Task, Output, Scope!].
-instance StageDriver[Task, Output, SequenceClock] {
+forall Task, Output where Plan[Task, Scope! -> Output].
+instance StageDriver[Task, SequenceClock -> Output] {
     fn drive(task: Task, &engine: SequenceClock, deadline: Option[u64]) -> Output {
-        let prepared = prepare[Task, Output](task);
+        let prepared = prepare(task);
         run_prepared(prepared, remaining_budget(&engine, deadline))
     }
 }
 
 /// Runs a sequence with an optional shared budget in milliseconds.
-forall Stages, Output where Chain[Stages, Output, SequenceClock].
+forall Stages, Output where Chain[Stages, SequenceClock -> Output].
 fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> Option[Output] {
     let clock = SequenceClock.{};
     drive_sequence(plan, &clock, budget)

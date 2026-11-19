@@ -59,7 +59,7 @@ fn main(args: Args) -> i32 {
         Option::None => 5000u64,
     };
     let plan = join(read_file(&access, left, 65_536usize), read_file(&access, right, 65_536usize));
-    let result: JoinOutcome[FileOutcome!, FileOutcome!] = timeout(deadline, plan);
+    let result = timeout(deadline, plan);
     match result {
         JoinOutcome::Ready(left, right) => print_pair(left, right),
         JoinOutcome::Cancelled(left, right) => {

@@ -51,8 +51,9 @@ by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
 Handlers run on the event loop and should return promptly. A handler bound with
-`Server!::bind_async` can use `defer(plan, continuation)` to run a timer, file
-read, or joined plan on the listener's loop. The continuation can capture
+`Server!::bind_async` can import `server::Plan` and use
+`plan.defer(continuation)` to run a timer, file read, or joined plan on the
+listener’s loop. The continuation can capture
 owned request values and runs once after the plan joins, including on
 cancellation. A transport error, the request deadline, or shutdown cancels
 unfinished plans. When cancellation ends the request, the connection closes
@@ -87,6 +88,11 @@ cancellation, and exposes results after all operations have retired.
 `lib/virtual_clock/` drives timer plans by advancing directly to the next
 event. It builds and links without libuv. The integration suite builds
 the same timer program against both drivers and compares its outcomes.
+
+The runner determines a result type from the plan and its driver through
+`Plan[Task, Driver -> Output]`. For example, `run(sleep(0u64, 7u32))`
+infers `Outcome[u32]`, and HTTP’s `.defer` infers the closure’s input from
+the submitted plan.
 
 Build a wait with `sleep(ms, value)` and drive it with the chosen engine's
 `run`. `race` runs two waits in one scope and cancels the loser when the first

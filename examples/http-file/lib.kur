@@ -1,6 +1,6 @@
 use async::{FileOutcome!, ReadFile!, WithinOutcome, read_file, within};
 use http::{Method, Request!, Response!};
-use server::{Action!, Server!, defer, defer_sequence};
+use server::{Action!, Plan, Server!, defer_sequence};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -82,7 +82,7 @@ fn next_file(unit: (), outcome: FileOutcome!)
         FileOutcome!::Read(first) => {
             let access = StaticRead::new();
             let footer = read_file(&access, "footer.txt", 65_536usize);
-            Option::Some.(map(footer, |file: FileOutcome!| (first, file)))
+            Option::Some.(map(footer, |file| (first, file)))
         },
         FileOutcome!::Cancelled => Option::None,
         FileOutcome!::Failed(code) => Option::None,
@@ -113,10 +113,9 @@ fn handle(request: Request!) -> Action! {
             return defer_sequence(plan, (), finish_sequence, cancel_sequence);
         }
         if timed {
-            return defer(within(1000u64, task),
-                |outcome: WithinOutcome[FileOutcome!]| timed_response(outcome));
+            return within(1000u64, task).defer(|outcome| timed_response(outcome));
         }
-        return defer(task, |outcome: FileOutcome!| file_response(outcome));
+        return task.defer(|outcome| file_response(outcome));
     }
     if health { Action!::Reply.(Response!::text(200u16, "ok\n")) }
     else { Action!::Reply.(Response!::rejected(404u16)) }

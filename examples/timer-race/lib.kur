@@ -5,14 +5,14 @@ use std::io::print_buffer;
 use std::process::trap;
 
 fn main() -> i32 {
-    let ready: Outcome[u32] = run(sleep(0u64, 7u32));
+    let ready = run(sleep(0u64, 7u32));
     match ready {
         Outcome::Ready(value) => { if value != 7u32 { return 1i32; } },
         _ => return 1i32,
     }
 
     let owned = Buffer!::new().push_static("owned by the slower task");
-    let result: RaceOutcome[(), Buffer!] = run(race(sleep(20u64, ()), sleep(100u64, owned)));
+    let result = run(race(sleep(20u64, ()), sleep(100u64, owned)));
     match result {
         RaceOutcome::First(unit, cancelled) => {
             cancelled.destroy();
@@ -25,7 +25,7 @@ fn main() -> i32 {
 
     let owned = Buffer!::new().push_static("owned by the first task");
     let waiting = race(sleep(30_000u64, owned), sleep(60_000u64, ()));
-    let result: RaceOutcome[Buffer!, ()] = timeout(10u64, waiting);
+    let result = timeout(10u64, waiting);
     match result {
         RaceOutcome::Cancelled(cancelled, unit) => {
             cancelled.destroy();
@@ -43,7 +43,7 @@ fn main() -> i32 {
 fn check_within() -> bool {
     let owned = Buffer!::new().push_static("owned");
     let plan = join(within(10u64, sleep(30_000u64, owned)), sleep(25u64, 7u8));
-    let result: JoinOutcome[WithinOutcome[Outcome[Buffer!]], Outcome[u8]] = run(plan);
+    let result = run(plan);
     let (limited, sibling, joined) = match result {
         JoinOutcome::Ready(limited, sibling) => (limited, sibling, true),
         JoinOutcome::Cancelled(limited, sibling) => (limited, sibling, false),
@@ -53,11 +53,10 @@ fn check_within() -> bool {
     if !local_expired || !joined || !is_ready(sibling, 7u8) { return false; }
 
     let owned = Buffer!::new().push_static("owned");
-    let result: WithinOutcome[Outcome[Buffer!]] =
-        timeout(10u64, within(20_000u64, sleep(30_000u64, owned)));
+    let result = timeout(10u64, within(20_000u64, sleep(30_000u64, owned)));
     if !reclaim_limited_buffer(result, false) { return false; }
 
-    let result: WithinOutcome[Outcome[u8]] = run(within(30_000u64, sleep(0u64, 8u8)));
+    let result = run(within(30_000u64, sleep(0u64, 8u8)));
     match result {
         WithinOutcome::Completed(outcome) => {
             if !is_ready(outcome, 8u8) { return false; }
@@ -97,10 +96,10 @@ fn check_map() -> bool {
     let winner_label = Buffer!::new().push_static("-win");
     let loser_label = Buffer!::new().push_static("-lose");
     let first = map(sleep(0u64, Buffer!::new().push_static("a")),
-        |result: Outcome[Buffer!]| label(result, winner_label));
+        |result| label(result, winner_label));
     let second = map(sleep(30_000u64, Buffer!::new().push_static("b")),
-        |result: Outcome[Buffer!]| label(result, loser_label));
-    let result: RaceOutcome[(Buffer!, bool), (Buffer!, bool)] = run(select(first, second));
+        |result| label(result, loser_label));
+    let result = run(select(first, second));
     let (a, b, first_won) = match result {
         RaceOutcome::First(a, b) => (a, b, true),
         RaceOutcome::Second(a, b) => (a, b, false),
@@ -116,8 +115,8 @@ fn check_map() -> bool {
 
     let suffix = Buffer!::new().push_static("cancelled");
     let task = map(sleep(30_000u64, Buffer!::new()),
-        |outcome: Outcome[Buffer!]| label(outcome, suffix));
-    let (bytes, ready): (Buffer!, bool) = timeout(0u64, task);
+        |outcome| label(outcome, suffix));
+    let (bytes, ready) = timeout(0u64, task);
     let valid = !ready && &bytes.len() == 9usize;
     bytes.destroy();
     if valid { print_buffer(f"Mapped the winning and cancelled outcomes with owned closures.\n"); }
@@ -126,8 +125,7 @@ fn check_map() -> bool {
 
 fn check_select() -> bool {
     let slow = join(sleep(0u64, 1u8), sleep(30_000u64, 2u8));
-    let result: RaceOutcome[JoinOutcome[Outcome[u8], Outcome[u8]], Outcome[u8]] =
-        run(select(slow, sleep(10u64, 3u8)));
+    let result = run(select(slow, sleep(10u64, 3u8)));
     match result {
         RaceOutcome::Second(loser, winner) => {
             let reclaimed = match loser {
@@ -151,7 +149,7 @@ fn check_select() -> bool {
 fn check_join() -> bool {
     let winner = race(sleep(30_000u64, 1u8), sleep(1u64, 2u8));
     let plan = join(winner, sleep(10u64, 3u8));
-    let result: JoinOutcome[RaceOutcome[u8, u8], Outcome[u8]] = run(plan);
+    let result = run(plan);
     match result {
         JoinOutcome::Ready(winner, timer) => {
             let second_won = match winner {
@@ -170,8 +168,7 @@ fn check_nested_deadline() -> bool {
     let slow = join(sleep(30_000u64, 2u8), race(sleep(60_000u64, 3u8), sleep(60_000u64, 4u8)));
     let owned = Buffer!::new().push_static("ready");
     let plan = join(sleep(0u64, owned), slow);
-    let result: JoinOutcome[Outcome[Buffer!], JoinOutcome[Outcome[u8], RaceOutcome[u8, u8]]] =
-        timeout(10u64, plan);
+    let result = timeout(10u64, plan);
     match result {
         JoinOutcome::Cancelled(first, nested) => {
             let nested_cancelled = match nested {

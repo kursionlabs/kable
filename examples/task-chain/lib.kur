@@ -52,7 +52,7 @@ fn expect_stop(result: Option[Outcome[Buffer!]]) {
 fn check_chain(budget: Option[u64], should_finish: bool) {
     let plan = sequence(sleep(65u64, Buffer!::new().push_static("first")))
         .then_owned(Buffer!::new().push_static("second"), append, discard);
-    let result: Option[Outcome[Buffer!]] = run_sequence(plan, budget);
+    let result = run_sequence(plan, budget);
     match result {
         Option::Some(outcome) => {
             let (bytes, ready) = unpack(outcome);
@@ -66,12 +66,12 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
 
 fn main() -> i32 {
     let suffix = 3u32;
-    let plan = sequence(sleep(0u64, 4u32)).then(|outcome: Outcome[u32]| match outcome {
+    let plan = sequence(sleep(0u64, 4u32)).then(|outcome| match outcome {
         Outcome::Ready(value) => Option::Some.(sleep(0u64, value + suffix)),
         Outcome::Cancelled(value) => trap(),
         Outcome::Failed(value, code) => trap(),
     });
-    let result: Option[Outcome[u32]] = run_sequence(plan, Option::None);
+    let result = run_sequence(plan, Option::None);
     match result {
         Option::Some(outcome) => match outcome {
             Outcome::Ready(value) => { if value != 7u32 { trap(); } },
@@ -87,12 +87,12 @@ fn main() -> i32 {
     let plan = sequence(sleep(0u64, Buffer!::new()))
         .then_owned(Buffer!::new(), stop, discard)
         .then_owned(Buffer!::new(), append, discard);
-    let result: Option[Outcome[Buffer!]] = run_sequence(plan, Option::None);
+    let result = run_sequence(plan, Option::None);
     expect_stop(result);
 
     let plan = sequence(sleep(30_000u64, Buffer!::new()))
         .then_owned(Buffer!::new(), append, discard);
-    let result: Option[Outcome[Buffer!]] = run_sequence(plan, Option::Some.(10u64));
+    let result = run_sequence(plan, Option::Some.(10u64));
     expect_stop(result);
     0i32
 }
