@@ -3,7 +3,7 @@ use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::process::trap;
 use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, RaceOutcome, ScopeState!, Sleep!,
-    join, race, select, sleep};
+    join, map, race, select, sleep};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export JoinOutcome;
@@ -11,6 +11,7 @@ export Outcome;
 export RaceOutcome;
 export Sleep!;
 export join;
+export map;
 export race;
 export select;
 export sleep;

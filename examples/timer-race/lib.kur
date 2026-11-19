@@ -1,6 +1,7 @@
-use async::{JoinOutcome, Outcome, RaceOutcome, join, race, run, select, sleep, timeout};
+use async::{JoinOutcome, Outcome, RaceOutcome, join, map, race, run, select, sleep, timeout};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
+use std::process::trap;
 
 fn main() -> i32 {
     let ready: Outcome[u32] = run(sleep(0u64, 7u32));
@@ -33,8 +34,47 @@ fn main() -> i32 {
         RaceOutcome::Second(cancelled, unit) => { cancelled.destroy(); return 1i32; },
         RaceOutcome::Failed(recovered, unit, code) => { recovered.destroy(); return 1i32; },
     }
-    if !check_join() || !check_nested_deadline() || !check_select() { return 1i32; }
+    if !check_join() || !check_nested_deadline() || !check_select() || !check_map() { return 1i32; }
     0i32
+}
+
+fn label(outcome: Outcome[Buffer!], suffix: Buffer!) -> (Buffer!, bool) {
+    match outcome {
+        Outcome::Ready(bytes) => (bytes.push_buffer(suffix), true),
+        Outcome::Cancelled(bytes) => (bytes.push_buffer(suffix), false),
+        Outcome::Failed(bytes, code) => { bytes.destroy(); suffix.destroy(); trap() },
+    }
+}
+
+fn check_map() -> bool {
+    let winner_label = Buffer!::new().push_static("-win");
+    let loser_label = Buffer!::new().push_static("-lose");
+    let first = map(sleep(0u64, Buffer!::new().push_static("a")),
+        |result: Outcome[Buffer!]| label(result, winner_label));
+    let second = map(sleep(30_000u64, Buffer!::new().push_static("b")),
+        |result: Outcome[Buffer!]| label(result, loser_label));
+    let result: RaceOutcome[(Buffer!, bool), (Buffer!, bool)] = run(select(first, second));
+    let (a, b, first_won) = match result {
+        RaceOutcome::First(a, b) => (a, b, true),
+        RaceOutcome::Second(a, b) => (a, b, false),
+        RaceOutcome::Cancelled(a, b) => (a, b, false),
+        RaceOutcome::Failed(a, b, code) => (a, b, false),
+    };
+    let (first, ready) = a;
+    let (second, loser_ready) = b;
+    let valid = first_won && ready && !loser_ready && &first.len() == 5usize && &second.len() == 6usize;
+    first.destroy();
+    second.destroy();
+    if !valid { return false; }
+
+    let suffix = Buffer!::new().push_static("cancelled");
+    let task = map(sleep(30_000u64, Buffer!::new()),
+        |outcome: Outcome[Buffer!]| label(outcome, suffix));
+    let (bytes, ready): (Buffer!, bool) = timeout(0u64, task);
+    let valid = !ready && &bytes.len() == 9usize;
+    bytes.destroy();
+    if valid { print_buffer(f"Mapped the winning and cancelled outcomes with owned closures.\n"); }
+    valid
 }
 
 fn check_select() -> bool {

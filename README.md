@@ -131,6 +131,12 @@ that stage produced an outcome, including cancellation during the stage.
 `carry(plan, state)` moves an owned value alongside a stage and returns it
 with that stage's outcome.
 
+`map(plan, transform)` converts a plan's result without scheduling an
+extra operation. Its closure can capture owned state. It receives the full
+typed outcome once cleanup has finished, including outcomes from cancelled
+or failed plans. A mapped plan can be used inside `join`, `select`, or a
+sequence stage.
+
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain
 bin/task-chain

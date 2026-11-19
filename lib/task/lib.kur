@@ -226,3 +226,28 @@ instance Plan[Carry![Task, State], (State, Output), Driver] {
         (state, result)
     }
 }
+
+forall Task, Input, Output, Env.
+struct Map! { task: Task, transform: closure[Env](Input) -> Output }
+
+/// Transforms the outcome after the scope joins. The closure runs once,
+/// including for a cancelled or failed outcome, and may own captured values.
+forall Task, Input, Output, Env.
+fn map(task: Task, transform: closure[Env](Input) -> Output) -> Map![Task, Input, Output, Env] {
+    Map!.{ task, transform }
+}
+
+forall Task, Input, Output, Env, Driver where Plan[Task, Input, Driver].
+instance Plan[Map![Task, Input, Output, Env], Output, Driver] {
+    fn stage(&task: Map![Task, Input, Output, Env], &scope: Driver) -> usize {
+        let { task: inner, transform } = task;
+        let id = Plan[Task, Input, Driver]::stage(&inner, &scope);
+        task = Map!.{ task: inner, transform };
+        id
+    }
+
+    fn collect(task: Map![Task, Input, Output, Env], &scope: Driver) -> Output {
+        let { task, transform } = task;
+        transform(Plan[Task, Input, Driver]::collect(task, &scope))
+    }
+}

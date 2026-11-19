@@ -572,6 +572,7 @@ def check_timer_engines(directory):
     assert b"First timer won" in expected and b"cancelled both timers" in expected
     assert b"Join waited" in expected and b"cancelled the nested waits" in expected
     assert b"Select cancelled the unfinished part of a losing join" in expected
+    assert b"Mapped the winning and cancelled outcomes with owned closures" in expected
     assert output(virtual) == expected
     output(scope)
     print("Kable libuv and virtual timer checks passed")
