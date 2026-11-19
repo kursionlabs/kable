@@ -1,12 +1,31 @@
-use async::{FileOutcome!, ReadFile!, WithinOutcome, read_file};
+use async::{FileOutcome!, WithinOutcome, read_file};
 use http::{Method, Request!, Response!};
+use package::file_sequence;
 use server::{Action!, Plan, PlanOutput, Server!};
-use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
-use std::option::{Option, Result};
-use std::raw::Span;
+use std::option::Result;
 use std::slice::StaticRead;
-use task::{Map!, sequence};
+
+const FILE_LIMIT: usize = 65_536usize;
+
+fn serve_file(timed: bool) -> Action! {
+    let access = StaticRead::new();
+    let file = read_file(&access, "example.txt", FILE_LIMIT);
+    if !timed { return file.defer(|outcome| file_response(outcome)); }
+
+    file.within(1000u64).defer(|outcome| match outcome {
+        WithinOutcome::Completed(file) => file_response(file),
+        WithinOutcome::TimedOut(file) => {
+            discard_file(file);
+            Response!::rejected(504u16)
+        },
+        WithinOutcome::Cancelled(file) => file_response(file),
+        WithinOutcome::Failed(file, code) => {
+            discard_file(file);
+            Response!::rejected(500u16)
+        },
+    })
+}
 
 fn file_response(outcome: FileOutcome!) -> Response! {
     match outcome {
@@ -27,98 +46,33 @@ fn discard_file(outcome: FileOutcome!) {
     }
 }
 
-fn timed_response(outcome: WithinOutcome[FileOutcome!]) -> Response! {
-    match outcome {
-        WithinOutcome::Completed(file) => file_response(file),
-        WithinOutcome::TimedOut(file) => {
-            discard_file(file);
-            Response!::rejected(504u16)
-        },
-        WithinOutcome::Cancelled(file) => file_response(file),
-        WithinOutcome::Failed(file, code) => {
-            discard_file(file);
-            Response!::rejected(500u16)
-        },
-    }
-}
+enum Route { File, TimedFile, FileSequence, Health, Missing }
 
-fn cancel_first(unit: (), outcome: Option[FileOutcome!]) {
-    match outcome {
-        Option::Some(file) => discard_file(file),
-        Option::None => (),
-    }
-    eprint_buffer(f"Sequence cancelled before the second read.\n");
-}
-
-fn cancel_sequence(unit: (), outcome: Option[(Buffer!, FileOutcome!)]) {
-    match outcome {
-        Option::Some(result) => {
-            let (first, file) = result;
-            let length = &first.len();
-            first.destroy();
-            discard_file(file);
-            eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
-        },
-        Option::None => (),
-    }
-}
-
-fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action! {
-    let (first, outcome) = match result {
-        Option::Some(files) => files,
-        Option::None => return Action!::Reply.(Response!::rejected(500u16)),
-    };
-    let response = match outcome {
-        FileOutcome!::Read(second) => Response!::ok(first.push_buffer(second)),
-        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
-        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500u16) },
-    };
-    Action!::Reply.(response)
-}
-
-fn next_file(unit: (), outcome: FileOutcome!)
-    -> Option[Map![ReadFile!, FileOutcome!, (Buffer!, FileOutcome!), (Buffer!,)]] {
-    match outcome {
-        FileOutcome!::Read(first) => {
-            let access = StaticRead::new();
-            let footer = read_file(&access, "footer.txt", 65_536usize);
-            Option::Some.(footer.map(|file| (first, file)))
-        },
-        FileOutcome!::Cancelled => Option::None,
-        FileOutcome!::Failed(code) => Option::None,
-    }
+fn route(&request: Request!) -> Route {
+    if &request.path_is("/file") { return Route::File; }
+    if &request.path_is("/file-with-timeout") { return Route::TimedFile; }
+    if &request.path_is("/file-sequence") { return Route::FileSequence; }
+    if &request.path_is("/health") { return Route::Health; }
+    Route::Missing
 }
 
 fn handle(request: Request!) -> Action! {
+    let route = route(&request);
     let { method, target, body } = request;
+    target.destroy();
     body.destroy();
-    let exists 'k. (access, bytes, restore) = target.open();
-    let path = Span::from_slice(bytes);
-    let health = path.is(&access, "/health");
-    let file = path.is(&access, "/file");
-    let timed = path.is(&access, "/file-with-timeout");
-    let sequence_path = path.is(&access, "/file-sequence");
-    restore.restore(access).destroy();
+
     match method {
         Method::Get | Method::Head => (),
-        _ => {
-            return Action!::Reply.(Response!::method_not_allowed("GET, HEAD"));
-        },
+        _ => { return Response!::method_not_allowed("GET, HEAD").reply(); },
     }
-    if file || timed || sequence_path {
-        let access = StaticRead::new();
-        let task = read_file(&access, "example.txt", 65_536usize);
-        if sequence_path {
-            return sequence(task).then_owned((), next_file, cancel_first)
-                .defer((), finish_sequence, cancel_sequence);
-        }
-        if timed {
-            return task.within(1000u64).defer(|outcome| timed_response(outcome));
-        }
-        return task.defer(|outcome| file_response(outcome));
+    match route {
+        Route::File => serve_file(false),
+        Route::TimedFile => serve_file(true),
+        Route::FileSequence => file_sequence::serve(),
+        Route::Health => Response!::text(200u16, "ok\n").reply(),
+        Route::Missing => Response!::rejected(404u16).reply(),
     }
-    if health { Action!::Reply.(Response!::text(200u16, "ok\n")) }
-    else { Action!::Reply.(Response!::rejected(404u16)) }
 }
 
 fn main() -> i32 {

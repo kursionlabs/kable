@@ -88,23 +88,46 @@ unfinished plans. When cancellation ends the request, the connection closes
 after cleanup. A client can half-close its sending side and still receive
 the response.
 
+### A file response with a deadline
+
 ```sh
 ../kursal/bin/kursal build examples/http-file -o bin/http-file
 (cd examples/http-file && ../../bin/http-file)
 ```
 
-Request `/file` on the printed address to read the bundled `example.txt`.
-`/health` remains available while the read is pending.
-`/file-with-timeout` uses `task.within(1000u64).defer(...)` to give the read
-a one-second deadline.
-If the timer wins, the handler returns 504 after the worker closes the file
-and returns.
+Request `/file-with-timeout` on the printed address to read the bundled
+`example.txt` with a 64 KiB limit and a one-second deadline. The handler
+builds the plan and maps its outcome to a response in one place.
+
+```kursal
+let access = StaticRead::new();
+read_file(&access, "example.txt", FILE_LIMIT)
+    .within(1000u64)
+    .defer(|outcome| match outcome {
+        WithinOutcome::Completed(file) => file_response(file),
+        WithinOutcome::TimedOut(file) => {
+            discard_file(file);
+            Response!::rejected(504u16)
+        },
+        WithinOutcome::Cancelled(file) => file_response(file),
+        WithinOutcome::Failed(file, code) => {
+            discard_file(file);
+            Response!::rejected(500u16)
+        },
+    })
+```
+
+`file_response` moves the buffer into the response when the read succeeds.
+If the timer wins, the worker closes the file before the handler returns 504.
+`/file` uses the request deadline alone, and `/health` remains available
+while a read is pending.
 
 An HTTP handler can use `sequence.defer(state, resume, cancel)` to drive a
 portable sequence under the original request deadline. The listener delivers
 request cancellation after the active plan joins. The example’s
-`/file-sequence` reads `example.txt`, then uses `.map` on the second read
-to capture the first file’s owned buffer and return both files together.
+`/file-sequence` handler in `file_sequence.kur` reads `example.txt`, then
+uses `.map` on the second read to capture the first file’s owned buffer
+and return both files together.
 
 ## Scoped task plans
 

@@ -1,0 +1,65 @@
+//! Reads a second file while retaining ownership of the first file's buffer.
+use async::{FileOutcome!, ReadFile!, read_file};
+use http::Response!;
+use package::{FILE_LIMIT, discard_file};
+use server::{Action!, PlanOutput};
+use std::bytes::buffer::Buffer!;
+use std::io::eprint_buffer;
+use std::option::Option;
+use std::slice::StaticRead;
+use task::{Map!, sequence};
+
+fn serve() -> Action! {
+    let access = StaticRead::new();
+    let first = read_file(&access, "example.txt", FILE_LIMIT);
+    sequence(first)
+        .then_owned((), next_file, cancel_first)
+        .defer((), finish_sequence, cancel_sequence)
+}
+
+fn cancel_first(unit: (), outcome: Option[FileOutcome!]) {
+    match outcome {
+        Option::Some(file) => discard_file(file),
+        Option::None => (),
+    }
+    eprint_buffer(f"Sequence cancelled before the second read.\n");
+}
+
+fn cancel_sequence(unit: (), outcome: Option[(Buffer!, FileOutcome!)]) {
+    match outcome {
+        Option::Some(result) => {
+            let (first, file) = result;
+            let length = &first.len();
+            first.destroy();
+            discard_file(file);
+            eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+        },
+        Option::None => (),
+    }
+}
+
+fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action! {
+    let (first, outcome) = match result {
+        Option::Some(files) => files,
+        Option::None => return Response!::rejected(500u16).reply(),
+    };
+    let response = match outcome {
+        FileOutcome!::Read(second) => Response!::ok(first.push_buffer(second)),
+        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
+        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500u16) },
+    };
+    response.reply()
+}
+
+fn next_file(unit: (), outcome: FileOutcome!)
+    -> Option[Map![ReadFile!, FileOutcome!, (Buffer!, FileOutcome!), (Buffer!,)]] {
+    match outcome {
+        FileOutcome!::Read(first) => {
+            let access = StaticRead::new();
+            let footer = read_file(&access, "footer.txt", FILE_LIMIT);
+            Option::Some.(footer.map(|file| (first, file)))
+        },
+        FileOutcome!::Cancelled => Option::None,
+        FileOutcome!::Failed(code) => Option::None,
+    }
+}

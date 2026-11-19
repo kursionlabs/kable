@@ -264,7 +264,10 @@ def check_http_file(command, directory, check_request_timeout=False):
             assert_response(read_response(client), 200, payload)
         head = b"HEAD /file HTTP/1.1\r\nHost: localhost\r\n\r\n"
         assert_response(exchange(port, head), 200, payload, head=True)
-        assert_response(exchange(port, timed), 200, payload)
+        timed_with_query = timed.replace(b"/file-with-timeout ", b"/file-with-timeout?download=1 ")
+        assert_response(exchange(port, timed_with_query), 200, payload)
+        assert_response(exchange(port, timed.replace(b"GET ", b"POST ", 1)),
+                        405, b"Method Not Allowed\n")
         document.unlink()
         assert_response(exchange(port, timed), 500, b"Internal Server Error\n")
         document.write_bytes(payload)
