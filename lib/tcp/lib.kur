@@ -1,9 +1,11 @@
 //! Scoped TCP reads and writes on a listener's event loop.
+use async::{Prepared!, Scope!, collect, prepare};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
-use std::mem::sizeof;
+use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
+use task::{Plan, PlanOutput, Resolution};
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
     callback: unsafe fn(*u8, *u8, u8, *u8, usize, i32) -> i32, error: *i32) -> *u8;
@@ -15,9 +17,62 @@ extern "C" fn kable_tcp_write(connection: *u8, bytes: *u8, len: usize, ms: u64, 
 extern "C" fn kable_tcp_close(connection: *u8) -> ();
 extern "C" fn kable_tcp_attach(connection: *u8, state: *u8, dispose: unsafe fn(*u8) -> ()) -> ();
 extern "C" fn kable_tcp_attachment(connection: *u8) -> *u8;
+extern "C" fn kable_tcp_start_scoped_read(connection: *u8, loop: *u8,
+    ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
+extern "C" fn kable_tcp_stop_scoped_read(connection: *u8) -> ();
+extern "C" fn kable_tcp_read_result(connection: *u8, bytes: *(*u8), len: *usize, error: *i32) -> u8;
+extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8) -> i32, bytes: *u8, len: usize) -> i32;
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
+struct ReadPlan! { connection: Connection!, id: Option[usize] }
+
+exposed enum ReadOutcome! {
+    Bytes(Connection!, Buffer!),
+    End(Connection!),
+    Cancelled(Connection!),
+    Failed(Connection!, i32),
+}
+
+instance PlanOutput[ReadPlan! -> ReadOutcome!] {}
+
+instance Plan[ReadPlan!, Scope! -> ReadOutcome!] {
+    fn stage(&task: ReadPlan!, &scope: Scope!) -> Option[usize] {
+        let { connection: { raw }, id } = task;
+        let id = unsafe &scope.add_operation(raw, kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read);
+        task = ReadPlan!.{ connection: Connection!.{ raw }, id };
+        id
+    }
+
+    fn collect(task: ReadPlan!, &scope: Scope!) -> ReadOutcome! {
+        let { connection, id } = task;
+        match &scope.result(id) {
+            Resolution::Completed => unsafe read_result(connection),
+            Resolution::Cancelled => ReadOutcome!::Cancelled.(connection),
+            Resolution::Failed(status) => ReadOutcome!::Failed.(connection, status),
+            Resolution::First | Resolution::Second => ReadOutcome!::Failed.(connection, -1i32),
+        }
+    }
+}
+
+unsafe fn read_result(connection: Connection!) -> ReadOutcome! {
+    let { raw } = connection;
+    let data = unsafe alloca[*u8]();
+    let len = unsafe alloca[usize]();
+    let status = unsafe alloca[i32]();
+    let event = unsafe kable_tcp_read_result(raw, data, len, status);
+    let connection = Connection!.{ raw };
+    match event {
+        1u8 => {
+            let bytes = unsafe *data;
+            let length = unsafe *len;
+            ReadOutcome!::Bytes.(connection, unsafe Buffer!::new_with_cap(length).push_n(bytes, length))
+        },
+        3u8 => ReadOutcome!::End.(connection),
+        _ => ReadOutcome!::Failed.(connection, unsafe *status),
+    }
+}
 
 /// Plans a read of the next available chunk of bytes.
 fn read(connection: Connection!) -> Read! { Read!.{ connection, deadline: Option::None } }
@@ -40,7 +95,46 @@ exposed enum Event! {
 enum Action! {
     Wait(Read!),
     Write(Buffer!, Read!),
+    Scoped(Deferred!, Option[Buffer!]),
     Close(Connection!),
+}
+
+struct Deferred! {
+    scope: *u8,
+    root: usize,
+    plan: *u8,
+    finish: unsafe fn(*u8, *u8) -> i32,
+}
+
+forall Task, Output, Env.
+struct DeferredPlan! { prepared: Prepared![Task], resume: closure[Env](Output) -> Action! }
+
+/// Runs a plan on the connection's listener and resumes after it joins.
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+fn defer(task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
+    Action!::Scoped.(prepare_deferred(task, resume), Option::None)
+}
+
+/// Writes a chunk before starting the next scoped plan.
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+fn defer_write(bytes: Buffer!, task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
+    Action!::Scoped.(prepare_deferred(task, resume), Option::Some.(bytes))
+}
+
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+fn prepare_deferred(task: Task, resume: closure[Env](Output) -> Action!) -> Deferred! {
+    let prepared = prepare(task);
+    let (scope, root) = unsafe &prepared.native();
+    let plan = HeapAllocator::alloc(sizeof[DeferredPlan![Task, Output, Env]]()).into_raw();
+    unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env])) = DeferredPlan!.{ prepared, resume };
+    Deferred!.{ scope, root, plan, finish: finish_deferred[Task, Output, Env] }
+}
+
+forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+unsafe fn finish_deferred(plan: *u8, connection: *u8) -> i32 {
+    let { prepared, resume } = unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env]));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(plan));
+    unsafe apply(connection, resume(collect(prepared)))
 }
 
 fn wait(task: Read!) -> Action! { Action!::Wait.(task) }
@@ -55,6 +149,9 @@ fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
 impl Connection! {
     /// Plans a read of the next available chunk of bytes.
     fn read(self) -> Read! { read(self) }
+
+    /// Plans a read that composes with other tasks on the listener's loop.
+    fn read_plan(self) -> ReadPlan! { ReadPlan!.{ connection: self, id: Option::None } }
 
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { close(self) }
@@ -95,7 +192,7 @@ unsafe fn make_event(raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> E
 unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> i32 {
     let { handle } = unsafe *(unsafe (context as *Handler));
     let event = unsafe make_event(raw, kind, bytes, len, code);
-    unsafe apply(handle(event))
+    unsafe apply(raw, handle(event))
 }
 
 forall State.
@@ -125,19 +222,37 @@ unsafe fn dispatch_stateful(context: *u8, connection: *u8, kind: u8,
     // Native callbacks are serialized. Restore ownership before starting the
     // action, including actions whose scheduling can fail synchronously.
     unsafe *session = Session!.{ state, finish };
-    unsafe apply(action)
+    unsafe apply(connection, action)
 }
 
-unsafe fn apply(action: Action!) -> i32 {
+unsafe fn apply(connection: *u8, action: Action!) -> i32 {
     match action {
         Action!::Wait(next) => unsafe submit(next, Option::None),
         Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
+        Action!::Scoped(plan, bytes) => unsafe submit_deferred(connection, plan, bytes),
         Action!::Close(connection) => {
             let { raw } = connection;
             unsafe kable_tcp_close(raw);
             0i32
         },
     }
+}
+
+unsafe fn submit_deferred(connection: *u8, deferred: Deferred!, bytes: Option[Buffer!]) -> i32 {
+    let { scope, root, plan, finish } = deferred;
+    let status = match bytes {
+        Option::Some(buffer) => {
+            let ptr = unsafe &buffer.as_ptr();
+            let len = &buffer.len();
+            let status = unsafe kable_tcp_schedule(connection, scope, root, plan, finish, ptr, len);
+            buffer.destroy();
+            status
+        },
+        Option::None => unsafe kable_tcp_schedule(connection, scope, root, plan, finish, 0usize as *u8, 0usize),
+    };
+    if status < 0i32 {
+        unsafe finish(plan, connection)
+    } else { status }
 }
 
 unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {

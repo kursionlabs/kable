@@ -181,17 +181,20 @@ in argument order. Each file is limited to 64 KiB.
 ## Scoped TCP reads
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per
-connection. A handler receives an owned `Connection!` in each event. It can
-return `connection.read().timeout(1000u64).wait()` to start a timed read,
-`write(bytes, next_read)` to write before starting another read, or
-`connection.close()` to end the connection.
+connection. The echo handler moves its owned `Connection!` into
+`connection.read_plan().within(1000u64)` and returns a `tcp::defer` action.
+That action runs the plan on the connection’s listener loop.
+`tcp::defer_write` writes a chunk before starting the next plan.
 
-A read that gets bytes first stops reading and cancels its timer. If the
-deadline fires first, the timer stops the read. In both cases the handler
-gets the connection back after the timer closes and can read again or close
-it. EOF, transport failure, and shutdown end the connection. On SIGINT or
-SIGTERM the listener stops accepting and waits for pending operations to
-finish cancelling before returning.
+The read and its timer race in the same scope used by file plans. The read
+finishes or stops before the scope returns the connection, and the timer
+handle has closed by then. The handler can use the returned connection for
+another read or close it. On SIGINT or SIGTERM the listener stops accepting
+and waits for pending scopes to finish cancelling before returning.
+
+Handlers that work directly with TCP events can use
+`connection.read().timeout(1000u64).wait()`, `write(bytes, next_read)`, and
+`connection.close()`.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-echo -o bin/tcp-echo

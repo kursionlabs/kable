@@ -27,6 +27,14 @@ uint64_t kable_tcp_now(uint8_t *connection);
 uv_loop_t *kable_tcp_loop(uint8_t *connection);
 int32_t kable_tcp_read(uint8_t *connection, uint64_t ms, uint8_t timed);
 int32_t kable_tcp_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed);
+int32_t kable_tcp_start_scoped_read(uint8_t *connection, uint8_t *loop,
+    void (*ready)(uint8_t *), uint8_t *context);
+void kable_tcp_stop_scoped_read(uint8_t *connection);
+uint8_t kable_tcp_read_result(uint8_t *connection, uint8_t **bytes, size_t *len, int32_t *error);
+/* A successful submission owns plan until finish runs. Any bytes are copied
+   for a write, and the scope starts after that write completes. */
+int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
+    int32_t (*finish)(uint8_t *, uint8_t *), uint8_t *bytes, size_t len);
 /* An external operation holds the connection until it joins. While parked,
    incoming bytes are discarded, and a close or read error requests
    cancellation. Unpark returns whether the socket can reply. */

@@ -4,7 +4,7 @@
 
 #include <stdlib.h>
 
-enum { SLEEP, RACE, JOIN, READ_FILE };
+enum { SLEEP, RACE, JOIN, READ_FILE, OPERATION };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY };
 enum { SCOPE_COMPLETED = 1 };
@@ -18,6 +18,10 @@ typedef struct {
     Scope *scope;
     KableTimer *timer;
     KableFile *file;
+    uint8_t *operation;
+    KableOperationStart start;
+    KableOperationStop stop;
+    int active;
     size_t id;
     uint64_t ms;
     int kind;
@@ -95,12 +99,30 @@ size_t kable_scope_add_file(uint8_t *raw, uint8_t *path, size_t len, size_t limi
     return index;
 }
 
+size_t kable_scope_add_operation(uint8_t *raw, uint8_t *context,
+    KableOperationStart start, KableOperationStop stop) {
+    size_t id = kable_scope_add(raw, SLEEP, 0, 0, 0);
+    if (id != SIZE_MAX) {
+        Node *node = &((Scope *)raw)->nodes[id];
+        node->kind = OPERATION;
+        node->operation = context;
+        node->start = start;
+        node->stop = stop;
+    }
+    return id;
+}
+
 static void cancel_operations(Scope *scope) {
     size_t id;
     while ((id = report(scope, TAKE_CANCEL, 0)) != SIZE_MAX) {
         Node *node = &scope->nodes[id];
         if (node->kind == SLEEP) kable_timer_cancel(node->timer);
         else if (node->kind == READ_FILE) kable_file_cancel(node->file);
+        else if (node->kind == OPERATION && node->active) {
+            node->active = 0;
+            node->stop(node->operation);
+            report(scope, RETIRED, 0);
+        }
     }
 }
 
@@ -135,18 +157,29 @@ static void clear_timer(void *context, int fired) {
     joined(node->scope);
 }
 
-static void file_done(void *context) {
+static void leaf_done(void *context) {
     Node *node = context;
     task_ready(node);
     joined(node->scope);
 }
 
-void kable_scope_cancel(uint8_t *raw) {
-    Scope *scope = (Scope *)raw;
-    if (!scope || !report(scope, PENDING, 0)) return;
+static void operation_done(uint8_t *context) {
+    Node *node = (Node *)context;
+    node->active = 0;
+    leaf_done(node);
+}
+
+static void cancel_scope(Scope *scope) {
     report(scope, CANCEL, 0);
     cancel_operations(scope);
     kable_timer_cancel(scope->deadline);
+}
+
+void kable_scope_cancel(uint8_t *raw) {
+    Scope *scope = (Scope *)raw;
+    if (!scope || !report(scope, PENDING, 0)) return;
+    cancel_scope(scope);
+    if (!report(scope, PENDING, 0) && scope->done) scope->done(scope->context);
 }
 
 int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
@@ -180,11 +213,17 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
                 clear_timer, node, &node->timer);
             if (scope->status == 0) report(scope, STARTED, 0);
         } else if (node->kind == READ_FILE) {
-            scope->status = kable_file_start(node->file, loop, file_done, node);
+            scope->status = kable_file_start(node->file, loop, leaf_done, node);
             if (scope->status == 0) report(scope, STARTED, 0);
+        } else if (node->kind == OPERATION) {
+            scope->status = node->start(node->operation, (uint8_t *)loop, operation_done, (uint8_t *)node);
+            if (scope->status == 0) {
+                node->active = 1;
+                report(scope, STARTED, 0);
+            }
         }
     }
-    if (scope->status < 0) kable_scope_cancel(raw);
+    if (scope->status < 0) cancel_scope(scope);
     return report(scope, PENDING, 0) != 0;
 }
 

@@ -1,11 +1,43 @@
+use async::{PlanOutput, WithinOutcome};
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Event!, Listener!, write};
+use tcp::{Action!, Connection!, Event!, Listener!, ReadOutcome!, defer, defer_write};
+
+fn reclaim(outcome: ReadOutcome!) -> Connection! {
+    match outcome {
+        ReadOutcome!::Bytes(connection, bytes) => { bytes.destroy(); connection },
+        ReadOutcome!::End(connection) => connection,
+        ReadOutcome!::Cancelled(connection) => connection,
+        ReadOutcome!::Failed(connection, code) => connection,
+    }
+}
+
+fn read_finished(result: WithinOutcome[ReadOutcome!]) -> Action! {
+    match result {
+        WithinOutcome::Completed(outcome) => match outcome {
+            ReadOutcome!::Bytes(connection, bytes) =>
+                defer_write(bytes, connection.read_plan().within(1000u64), |result| read_finished(result)),
+            ReadOutcome!::End(connection) => connection.close(),
+            ReadOutcome!::Cancelled(connection) => connection.close(),
+            ReadOutcome!::Failed(connection, code) => connection.close(),
+        },
+        WithinOutcome::TimedOut(outcome) => {
+            eprint_buffer(f"Read deadline expired.\n");
+            reclaim(outcome).close()
+        },
+        WithinOutcome::Cancelled(outcome) => {
+            eprint_buffer(f"Cancelled connection on shutdown.\n");
+            reclaim(outcome).close()
+        },
+        WithinOutcome::Failed(outcome, code) => reclaim(outcome).close(),
+    }
+}
 
 fn echo(event: Event!) -> Action! {
     match event {
-        Event!::Connected(connection) => connection.read().timeout(1000u64).wait(),
-        Event!::Bytes(connection, bytes) => write(bytes, connection.read().timeout(1000u64)),
+        Event!::Connected(connection) =>
+            defer(connection.read_plan().within(1000u64), |result| read_finished(result)),
+        Event!::Bytes(connection, bytes) => { bytes.destroy(); connection.close() },
         Event!::TimedOut(connection) => {
             eprint_buffer(f"Read deadline expired.\n");
             connection.close()

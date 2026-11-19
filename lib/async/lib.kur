@@ -33,6 +33,9 @@ extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize)
     event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
 extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize) -> usize;
+extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
+    start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
+    stop: unsafe fn(*u8) -> ()) -> usize;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> ();
 extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
@@ -135,6 +138,17 @@ impl Scope! {
         let bytes = unsafe &path.as_ptr();
         let len = &path.len();
         let id = unsafe kable_scope_add_file(raw, bytes, len, limit);
+        self = Scope!.{ raw };
+        registered(id)
+    }
+
+    /// The context lives through collection. Start schedules an asynchronous
+    /// completion on the supplied loop. Stop retires it without a callback.
+    unsafe fn add_operation(&self, context: *u8,
+        start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
+        stop: unsafe fn(*u8) -> ()) -> Option[usize] {
+        let { raw } = self;
+        let id = unsafe kable_scope_add_operation(raw, context, start, stop);
         self = Scope!.{ raw };
         registered(id)
     }
