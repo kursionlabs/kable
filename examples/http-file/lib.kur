@@ -1,4 +1,4 @@
-use async::{FileOutcome!, WithinOutcome, read_file};
+use async::{FileOutcome!, read_file};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
 use server::{Action!, Plan, PlanOutput, Server!};
@@ -14,18 +14,7 @@ fn serve_file(timed: bool) -> Action! {
     let file = read_file(&access, "example.txt", FILE_LIMIT);
     if !timed { return file.defer(|outcome| file_response(outcome)); }
 
-    file.within(1000u64).defer(|outcome| match outcome {
-        WithinOutcome::Completed(file) => file_response(file),
-        WithinOutcome::TimedOut(file) => {
-            discard_file(file);
-            Response!::rejected(504u16)
-        },
-        WithinOutcome::Cancelled(file) => file_response(file),
-        WithinOutcome::Failed(file, code) => {
-            discard_file(file);
-            Response!::rejected(500u16)
-        },
-    })
+    file.defer_within(1000u64, file_response, discard_file)
 }
 
 fn file_response(outcome: FileOutcome!) -> Response! {

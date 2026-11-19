@@ -1,5 +1,5 @@
 //! Reads two independent files under one local deadline.
-use async::{FileOutcome!, JoinOutcome, WithinOutcome, join, read_file};
+use async::{FileOutcome!, JoinOutcome, join, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file};
 use server::{Action!, Plan, PlanOutput};
@@ -10,12 +10,7 @@ fn serve() -> Action! {
     let first = read_file(&access, "example.txt", FILE_LIMIT);
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
-    join(first, second).within(1000u64).defer(|outcome| match outcome {
-        WithinOutcome::Completed(files) => joined_response(files),
-        WithinOutcome::TimedOut(files) => reject_join(files, 504u16),
-        WithinOutcome::Cancelled(files) => reject_join(files, 408u16),
-        WithinOutcome::Failed(files, code) => reject_join(files, 500u16),
-    })
+    join(first, second).defer_within(1000u64, joined_response, discard_join)
 }
 
 fn joined_response(files: JoinOutcome[FileOutcome!, FileOutcome!]) -> Response! {
@@ -34,13 +29,14 @@ fn file_response(first: FileOutcome!, second: FileOutcome!) -> Response! {
     }
 }
 
-fn reject_join(files: JoinOutcome[FileOutcome!, FileOutcome!], status: u16) -> Response! {
+fn discard_join(files: JoinOutcome[FileOutcome!, FileOutcome!]) {
     let (first, second) = match files {
         JoinOutcome::Ready(first, second) => (first, second),
         JoinOutcome::Cancelled(first, second) => (first, second),
         JoinOutcome::Failed(first, second, code) => (first, second),
     };
-    reject_files(first, second, status)
+    discard_file(first);
+    discard_file(second);
 }
 
 fn reject_files(first: FileOutcome!, second: FileOutcome!, status: u16) -> Response! {

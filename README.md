@@ -96,36 +96,27 @@ the response.
 ```
 
 Request `/file-with-timeout` on the printed address to read the bundled
-`example.txt` with a 64 KiB limit and a one-second deadline. The handler
-builds the plan and maps its outcome to a response in one place.
+`example.txt` with a 64 KiB limit and a one-second deadline.
 
 ```kursal
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .within(1000u64)
-    .defer(|outcome| match outcome {
-        WithinOutcome::Completed(file) => file_response(file),
-        WithinOutcome::TimedOut(file) => {
-            discard_file(file);
-            Response!::rejected(504u16)
-        },
-        WithinOutcome::Cancelled(file) => file_response(file),
-        WithinOutcome::Failed(file, code) => {
-            discard_file(file);
-            Response!::rejected(500u16)
-        },
-    })
+    .defer_within(1000u64, file_response, discard_file)
 ```
 
-`file_response` moves the buffer into the response when the read succeeds.
-If the timer wins, the worker closes the file before the handler returns 504.
+`defer_within(ms, reply, discard)` gives the completed plan’s outcome to
+`reply` while the request is active. If the timer wins, it waits for the
+worker to close the file, calls `discard` with the outcome, and replies 504.
+If the request ends first, it calls `discard` after the worker joins.
+`file_response` moves a successful read’s buffer into the response.
 `/file` uses the request deadline alone, and `/health` remains available
 while a read is pending.
 
 ### Two independent file reads
 
 `/file-join` starts reads of `example.txt` and `footer.txt` together using
-`join(first, second).within(1000u64).defer(...)`. Both reads have a 64 KiB
+`join(first, second).defer_within(1000u64, joined_response, discard_join)`.
+Both reads have a 64 KiB
 limit and share the one-second deadline. The response appends the footer
 after the first file’s bytes regardless of which read finishes first.
 A timeout returns 504 after both workers retire, and the handler destroys

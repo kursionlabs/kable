@@ -288,17 +288,18 @@ def check_http_file(command, directory, check_request_timeout=False):
         process.terminate()
         assert process.wait(timeout=5) == 0, process.stderr.read()
 
-    with gated_file_server(command, directory, library) as (process, port, started, permit):
-        with connect(port) as client:
-            start_held_read(client, request, started)
-            process.terminate()
-            wait_for_listener_shutdown(port)
-            assert process.poll() is None, "shutdown returned before the worker joined"
-            assert not select.select([client], [], [], 0)[0], "request finished before the worker"
-            assert os.write(permit, b"R") == 1
-            assert client.recv(1) == b"", "shutdown sent a cancelled file response"
-            assert process.wait(timeout=5) == 0, process.stderr.read()
-            assert process.stderr.read().count(b"File request cancelled.") == 1
+    for pending, reply_calls in ((request, 1), (timed, 0)):
+        with gated_file_server(command, directory, library) as (process, port, started, permit):
+            with connect(port) as client:
+                start_held_read(client, pending, started)
+                process.terminate()
+                wait_for_listener_shutdown(port)
+                assert process.poll() is None, "shutdown returned before the worker joined"
+                assert not select.select([client], [], [], 0)[0], "request finished before the worker"
+                assert os.write(permit, b"R") == 1
+                assert client.recv(1) == b"", "shutdown sent a cancelled file response"
+                assert process.wait(timeout=5) == 0, process.stderr.read()
+                assert process.stderr.read().count(b"File request cancelled.") == reply_calls
 
     if check_request_timeout:
         with gated_file_server(command, directory, library) as (process, port, started, permit):

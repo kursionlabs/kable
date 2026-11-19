@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{Outcome, Prepared!, Scope!, collect, prepare, sleep};
+use async::{Outcome, Prepared!, Scope!, WithinOutcome, collect, prepare, sleep, within};
 use http::{Method, Request!, Response!};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
@@ -81,6 +81,29 @@ impl Task {
     forall Env.
     fn defer(self, reply: closure[Env](Output) -> Response!) -> Action! {
         defer(self, reply)
+    }
+
+    /// Replies with 504 if the local deadline wins. After the plan joins,
+    /// discard consumes every outcome that will not be passed to reply.
+    fn defer_within(self, ms: u64, reply: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Action! {
+        defer_plan(within(ms, self), |result: WithinOutcome[Output], active: bool| {
+            let (outcome, status) = match result {
+                WithinOutcome::Completed(outcome) => (outcome, Option::None),
+                WithinOutcome::TimedOut(outcome) => (outcome, Option::Some.(504u16)),
+                WithinOutcome::Cancelled(outcome) => (outcome, Option::Some.(408u16)),
+                WithinOutcome::Failed(outcome, code) => (outcome, Option::Some.(500u16)),
+            };
+            if active {
+                let response = match status {
+                    Option::None => reply(outcome),
+                    Option::Some(code) => { discard(outcome); Response!::rejected(code) },
+                };
+                Option::Some.(response.reply())
+            } else {
+                discard(outcome);
+                Option::None
+            }
+        })
     }
 }
 
