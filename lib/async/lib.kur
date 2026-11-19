@@ -71,13 +71,6 @@ struct NextFileChunk! { read: ReadChunk!, remaining: u64 }
 
 const FILE_CHUNK: u64 = 64 * 1024;
 
-/// Each variant records the bytes accepted by the file before the plan joined.
-exposed enum FileWriteOutcome {
-    Written(usize),
-    Cancelled(usize),
-    Failed(usize, i32),
-}
-
 /// Opens and measures a regular file.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn open_file(&cx: C, path: S) -> OpenFile! {
@@ -105,7 +98,7 @@ impl OutputFile! {
     }
 
     /// Writes the buffer at offset without advancing the sequential position.
-    /// The joined result returns the file, buffer, and confirmed byte count.
+    /// Returns (file, bytes, count, status). The count includes partial writes.
     fn write_chunk(self, offset: u64, bytes: Buffer!) -> WriteChunk! {
         WriteChunk!.{ file: self, offset, bytes, id: Option::None }
     }
@@ -118,17 +111,12 @@ impl OutputFile! {
 }
 
 instance Sink[OutputFile! -> Buffer!,
-    Map![WriteChunk!, (OutputFile!, Buffer!, FileWriteOutcome), (OutputFile!, Buffer!, Completion[()]), ()]] {
+    Map![WriteChunk!, (OutputFile!, Buffer!, usize, Completion[()]), (OutputFile!, Buffer!, Completion[()]), ()]] {
     fn write(file: OutputFile!, bytes: Buffer!)
-        -> Map![WriteChunk!, (OutputFile!, Buffer!, FileWriteOutcome), (OutputFile!, Buffer!, Completion[()]), ()] {
+        -> Map![WriteChunk!, (OutputFile!, Buffer!, usize, Completion[()]), (OutputFile!, Buffer!, Completion[()]), ()] {
         let offset = &file.position();
         file.write_chunk(offset, bytes).map(|result| {
-            let (file, bytes, outcome) = result;
-            let (count, status) = match outcome {
-                FileWriteOutcome::Written(count) => (count, Completion::Ready.(())),
-                FileWriteOutcome::Cancelled(count) => (count, Completion::Cancelled),
-                FileWriteOutcome::Failed(count, code) => (count, Completion::Failed.(code)),
-            };
+            let (file, bytes, count, status) = result;
             let { fd, position } = file;
             (OutputFile!.{ fd, position: position + count as u64 }, bytes, status)
         })
@@ -321,22 +309,22 @@ impl Scope! {
         Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
     }
 
-    fn write_result(&self, id: Option[usize]) -> FileWriteOutcome {
+    fn write_result(&self, id: Option[usize]) -> (usize, Completion[()]) {
         let resolution = &self.result(id);
         let { raw } = self;
         let size = unsafe alloca[usize]();
         let status = unsafe kable_scope_write_result(raw, id.unwrap_or(usize::MAX), size);
         let count = unsafe *size;
         self = Scope!.{ raw };
-        match resolution {
+        let completion = match resolution {
             Resolution::Completed => {
-                if status < 0 { FileWriteOutcome::Failed.(count, status) }
-                else { FileWriteOutcome::Written.(count) }
+                if status < 0 { Completion::Failed.(status) } else { Completion::Ready.(()) }
             },
-            Resolution::Cancelled => FileWriteOutcome::Cancelled.(count),
-            Resolution::Failed(code) => FileWriteOutcome::Failed.(count, code),
-            Resolution::First | Resolution::Second => FileWriteOutcome::Failed.(count, -1),
-        }
+            Resolution::Cancelled => Completion::Cancelled,
+            Resolution::Failed(code) => Completion::Failed.(code),
+            Resolution::First | Resolution::Second => Completion::Failed.(-1),
+        };
+        (count, completion)
     }
 
     forall File, Env where Copy[Env].
@@ -486,9 +474,9 @@ instance Plan[CreateFile!, Scope! -> Completion[OutputFile!]] {
     }
 }
 
-instance PlanOutput[WriteChunk! -> (OutputFile!, Buffer!, FileWriteOutcome)] {}
+instance PlanOutput[WriteChunk! -> (OutputFile!, Buffer!, usize, Completion[()])] {}
 
-instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, FileWriteOutcome)] {
+instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()])] {
     fn stage(&task: WriteChunk!, &scope: Scope!) -> Option[usize] {
         let { file, offset, bytes, id } = task;
         let id = &scope.add_write(&file, offset, &bytes);
@@ -496,9 +484,10 @@ instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, FileWriteOutcome)] {
         id
     }
 
-    fn collect(task: WriteChunk!, &scope: Scope!) -> (OutputFile!, Buffer!, FileWriteOutcome) {
+    fn collect(task: WriteChunk!, &scope: Scope!) -> (OutputFile!, Buffer!, usize, Completion[()]) {
         let { file, offset, bytes, id } = task;
-        (file, bytes, &scope.write_result(id))
+        let (count, status) = &scope.write_result(id);
+        (file, bytes, count, status)
     }
 }
 
