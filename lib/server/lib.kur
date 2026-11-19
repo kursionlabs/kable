@@ -1,5 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
+use async::Sleep!;
 use http::{Method, Request!, Response!};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
@@ -12,30 +13,26 @@ extern "C" fn kable_bind(port: u16,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
+extern "C" fn kable_defer(client: *u8, ms: u64,
+    resume: unsafe fn(*u8, *u8, u8) -> i32, response: *u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
 extern "C" fn kable_stop(server: *u8) -> ();
 
-struct Handler { call: fn(Request!) -> Response! }
+exposed enum Action! {
+    Reply(Response!),
+    After(Sleep![Response!]),
+}
 
-unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,
-    target: *u8, target_len: usize, body: *u8, body_len: usize) -> i32 {
-    let response = if status == 0u16 {
-        let { call } = unsafe *(unsafe (context as *Handler));
-        let method = match method {
-            1u8 => Method::Get,
-            2u8 => Method::Head,
-            3u8 => Method::Post,
-            _ => Method::Other,
-        };
-        call(Request!.{
-            method,
-            target: unsafe Buffer!::new_with_cap(target_len).push_n(target, target_len),
-            body: unsafe Buffer!::new_with_cap(body_len).push_n(body, body_len),
-        })
-    } else {
-        Response!::rejected(status)
-    };
-    let wire = response.encode(method == 2u8, http10 != 0u8);
+enum Handler {
+    Immediate(fn(Request!) -> Response!),
+    Deferred(fn(Request!) -> Action!),
+}
+
+struct Pending! { response: Response!, head: bool, http10: bool }
+
+unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
+    let { response, head, http10 } = pending;
+    let wire = response.encode(head, http10);
     let ptr = unsafe &wire.as_ptr();
     let len = &wire.len();
     let result = unsafe kable_write(client, ptr, len);
@@ -43,12 +40,73 @@ unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8
     result
 }
 
+unsafe fn reclaim(raw: *u8) -> Pending! {
+    let pending = unsafe *(unsafe (raw as *Pending!));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
+    pending
+}
+
+unsafe fn resume(raw: *u8, client: *u8, ready: u8) -> i32 {
+    let pending = unsafe reclaim(raw);
+    if ready != 0u8 {
+        unsafe write_response(client, pending)
+    } else {
+        let { response, head, http10 } = pending;
+        response.destroy();
+        0i32
+    }
+}
+
+unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,
+    target: *u8, target_len: usize, body: *u8, body_len: usize) -> i32 {
+    let head = method == 2u8;
+    let http10 = http10 != 0u8;
+    if status != 0u16 {
+        return unsafe write_response(client, Pending!.{ response: Response!::rejected(status), head, http10 });
+    }
+    let method = match method {
+        1u8 => Method::Get,
+        2u8 => Method::Head,
+        3u8 => Method::Post,
+        _ => Method::Other,
+    };
+    let request = Request!.{
+        method,
+        target: unsafe Buffer!::new_with_cap(target_len).push_n(target, target_len),
+        body: unsafe Buffer!::new_with_cap(body_len).push_n(body, body_len),
+    };
+    let action = match unsafe *(unsafe (context as *Handler)) {
+        Handler::Immediate(call) => Action!::Reply.(call(request)),
+        Handler::Deferred(call) => call(request),
+    };
+    match action {
+        Action!::Reply(response) => unsafe write_response(client, Pending!.{ response, head, http10 }),
+        Action!::After(task) => {
+            let (ms, response) = task.into_parts();
+            let raw = HeapAllocator::alloc(sizeof[Pending!]()).into_raw();
+            unsafe *(unsafe (raw as *Pending!)) = Pending!.{ response, head, http10 };
+            let result = unsafe kable_defer(client, ms, resume, raw);
+            if result != 0i32 { unsafe resume(raw, client, 0u8); }
+            result
+        },
+    }
+}
+
 struct Server! { raw: *u8, context: *u8 }
 
 impl Server! {
     fn bind_local(port: u16, call: fn(Request!) -> Response!) -> Result[Server!, i32] {
+        Server!::bind(port, Handler::Immediate.(call))
+    }
+
+    /// Binds handlers that can reply immediately or wait on an owned timer.
+    fn bind_async(port: u16, call: fn(Request!) -> Action!) -> Result[Server!, i32] {
+        Server!::bind(port, Handler::Deferred.(call))
+    }
+
+    fn bind(port: u16, handler: Handler) -> Result[Server!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
-        unsafe *(unsafe (context as *Handler)) = Handler.{ call };
+        unsafe *(unsafe (context as *Handler)) = handler;
 
         let scratch = Buffer!::new_zeroed(sizeof[i32]());
         let error = unsafe ((unsafe &scratch.as_ptr()) as *i32);

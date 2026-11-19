@@ -7,6 +7,8 @@
 #include <strings.h>
 #include <uv.h>
 
+#include "../../async/native/timer.h"
+
 enum {
     MAX_CLIENTS = 128,
     MAX_HEAD = 16 * 1024,
@@ -48,6 +50,9 @@ typedef struct {
     uv_tcp_t socket;
     uv_write_t write;
     uv_shutdown_t shutdown;
+    KableTimer *deferred;
+    int32_t (*resume)(uint8_t *, uint8_t *, uint8_t);
+    uint8_t *response;
     Server *server;
     llhttp_t parser;
     Bytes target;
@@ -59,6 +64,7 @@ typedef struct {
     int headers_done;
     int complete;
     int finishing;
+    int socket_closed;
     char field[6];
     size_t field_len;
     unsigned hosts;
@@ -199,8 +205,7 @@ static void release_request(Client *client) {
     client->body = (Bytes){0};
 }
 
-static void client_closed(uv_handle_t *handle) {
-    Client *client = handle->data;
+static void release_client(Client *client) {
     Server *server = client->server;
     release_request(client);
     free(client->output.base);
@@ -209,9 +214,17 @@ static void client_closed(uv_handle_t *handle) {
     finish_shutdown(server);
 }
 
+/* The socket and deferred timer can finish closing in either order. */
+static void client_closed(uv_handle_t *handle) {
+    Client *client = handle->data;
+    client->socket_closed = 1;
+    if (!client->deferred) release_client(client);
+}
+
 static void close_client(Client *client) {
     uv_handle_t *handle = (uv_handle_t *)&client->socket;
-    if (!uv_is_closing(handle)) uv_close(handle, client_closed);
+    kable_timer_cancel(client->deferred);
+    if (!client->socket_closed && !uv_is_closing(handle)) uv_close(handle, client_closed);
 }
 
 static void allocate_read(uv_handle_t *handle, size_t suggested, uv_buf_t *buffer) {
@@ -267,6 +280,30 @@ int32_t kable_write(uint8_t *raw, uint8_t *bytes, size_t len) {
     client->finishing = 1;
     client->deadline = uv_now(&client->server->loop) + WRITE_TIMEOUT;
     return 0;
+}
+
+static void deferred_closed(void *context, int fired) {
+    Client *client = context;
+    client->deferred = NULL;
+    int ready = fired && !client->socket_closed &&
+        !uv_is_closing((uv_handle_t *)&client->socket) && !client->server->stopping &&
+        uv_now(&client->server->loop) < client->deadline;
+    int status = client->resume(client->response, (uint8_t *)client, ready);
+    if (client->socket_closed) release_client(client);
+    else if (!ready || status < 0) close_client(client);
+}
+
+/* Owns response only on success. resume must consume it even on cancellation. */
+int32_t kable_defer(uint8_t *raw, uint64_t ms,
+    int32_t (*resume)(uint8_t *, uint8_t *, uint8_t), uint8_t *response) {
+    Client *client = (Client *)raw;
+    int status = kable_timer_start(&client->server->loop, ms, NULL, deferred_closed,
+        client, &client->deferred);
+    if (status == 0) {
+        client->resume = resume;
+        client->response = response;
+    }
+    return status;
 }
 
 static void reply(Client *client, uint16_t status) {
@@ -334,7 +371,7 @@ static void visit_client(uv_handle_t *handle, void *context) {
     if (server->stopping && !client->finishing) {
         close_client(client);
     } else if (client->deadline <= uv_now(&server->loop)) {
-        if (client->finishing) close_client(client);
+        if (client->finishing || client->deferred) close_client(client);
         else reply(client, 408);
     }
 }

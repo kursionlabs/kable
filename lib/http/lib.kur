@@ -34,6 +34,11 @@ fn reason(status: u16) -> Slice[u8, 'static] {
 }
 
 impl Response! {
+    fn destroy(self) {
+        let { status, content_type, allow, body } = self;
+        body.destroy();
+    }
+
     fn ok(body: Buffer!) -> Response! {
         Response!.{ status: 200u16, content_type: "application/octet-stream", allow: "", body }
     }

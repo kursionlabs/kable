@@ -1,5 +1,6 @@
+use async::sleep;
 use http::{Method, Request!, Response!};
-use server::Server!;
+use server::{Action!, Server!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -7,7 +8,7 @@ use std::process::Args;
 use std::raw::Span;
 use std::slice::{ReadBytes, Slice, StaticRead};
 
-fn handle(request: Request!) -> Response! {
+fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
     let exists 'k. (access, bytes, restore) = target.open();
     let target = Span::from_slice(bytes);
@@ -18,26 +19,33 @@ fn handle(request: Request!) -> Response! {
     let home = path.is(&access, "/");
     let health = path.is(&access, "/health");
     let echo = path.is(&access, "/echo");
+    let delay = path.is(&access, "/delay");
     restore.restore(access).destroy();
 
     if echo {
         match method {
-            Method::Post => return Response!::ok(body),
-            _ => { body.destroy(); return Response!::method_not_allowed("POST"); },
+            Method::Post => return Action!::Reply.(Response!::ok(body)),
+            _ => {
+                body.destroy();
+                return Action!::Reply.(Response!::method_not_allowed("POST"));
+            },
         }
     }
 
     body.destroy();
-    if home || health {
+    if home || health || delay {
         match method {
             Method::Get | Method::Head => {
+                if delay {
+                    return Action!::After.(sleep(1000u64, Response!::text(200u16, "done\n")));
+                }
                 let message = if home { "Kable\n" } else { "ok\n" };
-                Response!::text(200u16, message)
+                Action!::Reply.(Response!::text(200u16, message))
             },
-            _ => Response!::method_not_allowed("GET, HEAD"),
+            _ => Action!::Reply.(Response!::method_not_allowed("GET, HEAD")),
         }
     } else {
-        Response!::text(404u16, "Not Found\n")
+        Action!::Reply.(Response!::text(404u16, "Not Found\n"))
     }
 }
 
@@ -73,7 +81,7 @@ fn main(args: Args) -> i32 {
             Option::None => return usage(),
         },
     };
-    let server = match Server!::bind_local(port, handle) {
+    let server = match Server!::bind_async(port, handle) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"kable: cannot listen (libuv error {code})\n");

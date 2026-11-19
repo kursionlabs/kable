@@ -22,10 +22,13 @@ OS choose a port. Kable prints the listening address at startup.
 curl http://127.0.0.1:8080/
 curl -I http://127.0.0.1:8080/health
 curl --data-binary 'hello' http://127.0.0.1:8080/echo
+curl http://127.0.0.1:8080/delay
 ```
 
-`GET` and `HEAD` are available at `/` and `/health`. `POST /echo` returns the
-request body as `application/octet-stream`. Kable accepts HTTP/1.0 and
+`GET` and `HEAD` are available at `/`, `/health`, and `/delay`.
+`/delay` waits one second on the event loop while other requests can proceed.
+`POST /echo` returns the request body as `application/octet-stream`.
+Kable accepts HTTP/1.0 and
 HTTP/1.1 origin-form requests, including content-length and chunked bodies,
 and serves one request per connection. An `Expect` header receives a 417.
 The limits are 128 active connections, 16 KiB for the request line and
@@ -40,18 +43,42 @@ A request has ten seconds to complete. After queuing a response, the
 connection has five seconds to write it, half-close, and drain peer input.
 
 On SIGINT or SIGTERM the server stops accepting, cancels connections still
-reading their request, and lets connections with queued responses finish
-within their existing deadlines. The loop drains pending callbacks and
-closes all handles before `Server!.run()` releases the Kursal handler.
+reading or waiting on a timer, and lets connections with queued responses
+finish within their existing deadlines. Shutdown releases any response held
+by a cancelled timer. The loop drains pending callbacks and closes all handles
+before `Server!.run()` releases the Kursal handler.
 
 Handlers run synchronously on the event loop and should return promptly.
+`Server!::bind_async` takes a handler that can return `Action!::After` with
+a `sleep` plan. The server schedules the plan on its own loop, and the
+connection owns the wait until the response is sent or the wait is cancelled.
+
+## Scoped timers
+
+`lib/async/` lets any Kursal program build a wait with `sleep(ms, value)` and
+drive it with `run`. `race` runs two waits in one scope, cancelling the loser
+when the first timer fires. `timeout` adds a parent deadline that cancels every
+pending child. The scope closes all timer handles before returning. The
+outcome hands ownership of the values back to the caller on readiness,
+cancellation, or startup failure.
+
+```sh
+../kursal/bin/kursal build examples/timer-race -o bin/timer-race
+bin/timer-race
+```
+
+The example reclaims an owned `Buffer!` from the losing timer, then sets a
+parent deadline that cancels both timers. The public task API currently
+supports single waits and two-way races.
 
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
+- `lib/async/` — scoped timer plans and cancellation
 - `lib/http/` — owned request and response types and response encoding
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `examples/hello-server/` — standalone server with a custom handler
+- `examples/timer-race/` — race and parent cancellation with linear payloads
 
 Build the example with `../kursal/bin/kursal build examples/hello-server -o bin/hello-server`.
 Run `bin/hello-server` and request the address it prints.
@@ -60,10 +87,10 @@ Run `bin/hello-server` and request the address it prints.
 python3 tests/integration.py --check-timeout
 ```
 
-The integration suite builds Kable with the adjacent Kursal compiler and checks
-HTTP framing, binary bodies, request limits, concurrent clients, and signal
-shutdown over loopback. Omit `--check-timeout` to skip the ten-second request
-deadline check.
+The integration suite builds Kable and the timer example with the adjacent
+Kursal compiler. It checks the timer race, HTTP framing, request limits,
+concurrent clients, and cancellation on server shutdown. Omit
+`--check-timeout` to skip the ten-second request deadline check.
 
 ## License
 

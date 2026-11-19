@@ -1,0 +1,37 @@
+use async::{Outcome, RaceOutcome, race, run, sleep, timeout};
+use std::bytes::buffer::Buffer!;
+use std::io::print_buffer;
+
+fn main() -> i32 {
+    let ready: Outcome[u32] = run(sleep(0u64, 7u32));
+    match ready {
+        Outcome::Ready(value) => { if value != 7u32 { return 1i32; } },
+        _ => return 1i32,
+    }
+
+    let owned = Buffer!::new().push_static("owned by the slower task");
+    let result: RaceOutcome[(), Buffer!] = run(race(sleep(20u64, ()), sleep(100u64, owned)));
+    match result {
+        RaceOutcome::First(unit, cancelled) => {
+            cancelled.destroy();
+            print_buffer(f"First timer won. Reclaimed the slower task's buffer.\n");
+        },
+        RaceOutcome::Second(unit, ready) => { ready.destroy(); return 1i32; },
+        RaceOutcome::Cancelled(unit, cancelled) => { cancelled.destroy(); return 1i32; },
+        RaceOutcome::Failed(unit, recovered, code) => { recovered.destroy(); return 1i32; },
+    }
+
+    let owned = Buffer!::new().push_static("owned by the first task");
+    let waiting = race(sleep(30_000u64, owned), sleep(60_000u64, ()));
+    let result: RaceOutcome[Buffer!, ()] = timeout(10u64, waiting);
+    match result {
+        RaceOutcome::Cancelled(cancelled, unit) => {
+            cancelled.destroy();
+            print_buffer(f"Parent deadline cancelled both timers.\n");
+            0i32
+        },
+        RaceOutcome::First(ready, unit) => { ready.destroy(); 1i32 },
+        RaceOutcome::Second(cancelled, unit) => { cancelled.destroy(); 1i32 },
+        RaceOutcome::Failed(recovered, unit, code) => { recovered.destroy(); 1i32 },
+    }
+}

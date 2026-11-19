@@ -1,0 +1,93 @@
+//! Scoped, asynchronous waits backed by libuv timers.
+use std::option::Option;
+
+extern "C" fn kable_async_drive(first: u64, second: u64, has_second: u8,
+    deadline: u64, has_deadline: u8) -> i32;
+
+forall T.
+struct Sleep! { ms: u64, value: T }
+
+forall T.
+impl Sleep![T] {
+    /// Consumes a wait plan to schedule it on a host event loop.
+    fn into_parts(self) -> (u64, T) {
+        let { ms, value } = self;
+        (ms, value)
+    }
+}
+
+forall T.
+fn sleep(ms: u64, value: T) -> Sleep![T] { Sleep!.{ ms, value } }
+
+forall A, B.
+struct Race! { first: Sleep![A], second: Sleep![B] }
+
+forall A, B.
+fn race(first: Sleep![A], second: Sleep![B]) -> Race![A, B] { Race!.{ first, second } }
+
+forall T.
+exposed enum Outcome {
+    Ready(T),
+    Cancelled(T),
+    Failed(T, i32),
+}
+
+/// Each branch hands ownership of both inputs back after the scope closes.
+forall A, B.
+exposed enum RaceOutcome {
+    First(A, B),
+    Second(A, B),
+    Cancelled(A, B),
+    Failed(A, B, i32),
+}
+
+forall Task, Output.
+trait Runnable {
+    fn drive(task: Task, deadline: Option[u64]) -> Output;
+}
+
+fn drive_timers(first: u64, second: u64, has_second: u8, deadline: Option[u64]) -> i32 {
+    match deadline {
+        Option::Some(ms) => unsafe kable_async_drive(first, second, has_second, ms, 1u8),
+        Option::None => unsafe kable_async_drive(first, second, has_second, 0u64, 0u8),
+    }
+}
+
+forall T.
+instance Runnable[Sleep![T], Outcome[T]] {
+    fn drive(task: Sleep![T], deadline: Option[u64]) -> Outcome[T] {
+        let (ms, value) = task.into_parts();
+        let code = drive_timers(ms, 0u64, 0u8, deadline);
+        match code {
+            1i32 => Outcome::Ready.(value),
+            0i32 => Outcome::Cancelled.(value),
+            _ => Outcome::Failed.(value, code),
+        }
+    }
+}
+
+forall A, B.
+instance Runnable[Race![A, B], RaceOutcome[A, B]] {
+    fn drive(task: Race![A, B], deadline: Option[u64]) -> RaceOutcome[A, B] {
+        let { first, second } = task;
+        let (first_ms, first_value) = first.into_parts();
+        let (second_ms, second_value) = second.into_parts();
+        let code = drive_timers(first_ms, second_ms, 1u8, deadline);
+        match code {
+            1i32 => RaceOutcome::First.(first_value, second_value),
+            2i32 => RaceOutcome::Second.(first_value, second_value),
+            0i32 => RaceOutcome::Cancelled.(first_value, second_value),
+            _ => RaceOutcome::Failed.(first_value, second_value, code),
+        }
+    }
+}
+
+/// Drives the plan to completion and joins its children before returning.
+forall Task, Output where Runnable[Task, Output].
+fn run(task: Task) -> Output { Runnable[Task, Output]::drive(task, Option::None) }
+
+/// Cancels unfinished children when the parent deadline expires, then joins them.
+forall Task, Output where Runnable[Task, Output].
+fn timeout(ms: u64, task: Task) -> Output {
+    Runnable[Task, Output]::drive(task, Option::Some.(ms))
+}

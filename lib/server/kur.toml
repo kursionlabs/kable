@@ -9,3 +9,6 @@ path="../../../kursal/lib/std"
 
 [dependencies.http]
 path="../http"
+
+[dependencies.async]
+path="../async"

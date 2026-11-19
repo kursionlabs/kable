@@ -1,0 +1,8 @@
+[package]
+name="async"
+source_root="."
+c_sources=["native/timer.c"]
+link_flags=["-luv"]
+
+[dependencies.std]
+path="../../../kursal/lib/std"

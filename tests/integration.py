@@ -10,6 +10,8 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DELAY = b"GET /delay HTTP/1.1\r\nHost: localhost\r\n\r\n"
+HEALTH = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n"
 
 
 def connect(port):
@@ -100,17 +102,31 @@ def check_concurrency(port, process):
             assert client.recv(1, socket.MSG_PEEK) == b"H"
 
         def health(_):
-            response = exchange(port, b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            response = exchange(port, HEALTH)
             assert_response(response, 200, b"ok\n")
 
         with ThreadPoolExecutor(max_workers=8) as workers:
             list(workers.map(health, range(24)))
 
-        process.terminate()
-        assert partial.recv(1) == b""
-        assert_response(read_response(output), 200, body)
-        # The peer that never consumes its response must not hold up shutdown.
-        assert process.wait(timeout=8) == 0
+        with connect(port) as delayed:
+            delayed.sendall(DELAY)
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert not select.select([delayed], [], [], 0.05)[0], "delayed reply already readable"
+            process.terminate()
+            assert delayed.recv(1) == b"", "shutdown sent a cancelled reply"
+            assert partial.recv(1) == b""
+            assert_response(read_response(output), 200, body)
+            # The peer that never consumes its response must not hold up shutdown.
+            assert process.wait(timeout=8) == 0
+
+
+def check_delayed_handler(port):
+    with connect(port) as delayed:
+        delayed.sendall(DELAY)
+        assert not select.select([delayed], [], [], 0.05)[0], "delay replied immediately"
+        assert_response(exchange(port, HEALTH), 200, b"ok\n")
+        assert not select.select([delayed], [], [], 0)[0], "health was blocked by the timer"
+        assert_response(read_response(delayed), 200, b"done\n")
 
 
 def check_timeout(port):
@@ -130,6 +146,7 @@ def run_checks(command, check_request_timeout):
             conflict = subprocess.run([*command, str(port)], capture_output=True, timeout=15)
             assert conflict.returncode == 1 and b"cannot listen" in conflict.stderr, conflict
             check_http(port)
+            check_delayed_handler(port)
             if check_request_timeout:
                 check_timeout(port)
             check_concurrency(port, process)
@@ -148,13 +165,20 @@ def main():
         run_checks(args.command, args.check_timeout)
     else:
         with tempfile.TemporaryDirectory() as directory:
-            binary = Path(directory) / "kable"
-            subprocess.run(
-                [str(ROOT / "../kursal/bin/kursal"), "build", "kable", "-o", str(binary)],
-                cwd=ROOT,
-                check=True,
-            )
+            binary = build("kable", Path(directory) / "kable")
+            example = build("examples/timer-race", Path(directory) / "timer-race")
+            result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
+            assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
             run_checks([str(binary)], args.check_timeout)
+
+
+def build(package, binary):
+    subprocess.run(
+        [str(ROOT / "../kursal/bin/kursal"), "build", package, "-o", str(binary)],
+        cwd=ROOT,
+        check=True,
+    )
+    return binary
 
 
 if __name__ == "__main__":
