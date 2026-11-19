@@ -135,6 +135,9 @@ consumes the state and any available outcome.
 Its optional millisecond budget applies to the whole chain. It returns
 `None` when the last stage was never constructed and `Some(outcome)` when
 that stage produced an outcome, including cancellation during the stage.
+The standalone runner and HTTP host use the same rules to advance, stop, or
+cancel a handoff. Standalone handoffs stay in typed values. The HTTP host
+keeps a continuation alive between listener callbacks.
 
 `map(plan, transform)` converts a plan's result without scheduling an
 extra operation. Its closure can capture owned state. It receives the full

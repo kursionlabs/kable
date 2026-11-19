@@ -161,7 +161,7 @@ instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
     }
 }
 
-use package::sequence::{Chain, Clock, Continuation!, HostedChain, Sequence!, SequenceOutput, StageDriver, StageHost,
+use package::sequence::{Chain, Clock, Continuation!, HostedChain, Sequence!, SequenceOutput, StageDriver, StageHost, StageResult,
     continuation, drive_sequence, host_sequence, remaining_budget, sequence};
 
 export Chain;
@@ -172,6 +172,7 @@ export Sequence!;
 export SequenceOutput;
 export StageDriver;
 export StageHost;
+export StageResult;
 export continuation;
 export drive_sequence;
 export host_sequence;

@@ -7,7 +7,7 @@ use std::bytes::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::{Option, Result};
 use std::ptr::is_null;
-use task::{Continuation!, HostedChain, Plan, PlanOutput, Sequence!, StageHost, continuation, host_sequence};
+use task::{Continuation!, HostedChain, Plan, PlanOutput, Sequence!, StageHost, StageResult, continuation, host_sequence};
 
 // Callers import these traits to bring the plan extension methods into scope.
 export Plan;
@@ -76,13 +76,12 @@ forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Outpu
 instance StageHost[Task, RequestHost, Action! -> Output] {
     fn schedule(task: Task, next: Continuation![Output, Action!]) -> Action! {
         defer_plan(task, |outcome: Output, active: bool| {
-            let result = Option::Some.(outcome);
-            if active {
-                Option::Some.(next.resume(result))
+            let result = if active {
+                StageResult::Joined.(outcome)
             } else {
-                next.cancel(result);
-                Option::None
-            }
+                StageResult::Cancelled.(Option::Some.(outcome))
+            };
+            next.finish(result)
         })
     }
 }

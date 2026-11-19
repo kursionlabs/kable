@@ -623,7 +623,8 @@ def check_timer_engines(directory):
     expected = output(chain)
     assert b"The second stage used the original deadline" in expected
     assert b"Stopped after the first result and reclaimed both buffers" in expected
-    assert b"Deadline reclaimed the first result and the pending state" in expected
+    assert expected.count(b"Deadline reclaimed the first result and the pending state") == 1
+    assert expected.count(b"Reclaimed the last adapter's state without starting it") == 2
     assert output(virtual_chain) == expected
     print("Kable libuv and virtual sequence checks passed")
     check_virtual_file_rejected(directory)

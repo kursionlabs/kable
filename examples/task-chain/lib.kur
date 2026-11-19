@@ -90,6 +90,7 @@ fn main() -> i32 {
     expect_stop(result);
 
     let plan = sequence(sleep(30_000u64, Buffer!::new()))
+        .then_owned(Buffer!::new(), append, discard)
         .then_owned(Buffer!::new(), append, discard);
     let result = run_sequence(plan, Option::Some.(10u64));
     expect_stop(result);
