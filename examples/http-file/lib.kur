@@ -1,7 +1,8 @@
 use async::{FileOutcome!, WithinOutcome, read_file};
 use http::{Method, Request!, Response!};
-use package::file_sequence;
+use package::{file_join, file_sequence};
 use server::{Action!, Plan, PlanOutput, Server!};
+use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::slice::StaticRead;
@@ -46,11 +47,20 @@ fn discard_file(outcome: FileOutcome!) {
     }
 }
 
-enum Route { File, TimedFile, FileSequence, Health, Missing }
+fn append_file(first: Buffer!, second: FileOutcome!) -> Response! {
+    match second {
+        FileOutcome!::Read(bytes) => Response!::ok(first.push_buffer(bytes)),
+        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
+        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500u16) },
+    }
+}
+
+enum Route { File, TimedFile, FileJoin, FileSequence, Health, Missing }
 
 fn route(&request: Request!) -> Route {
     if &request.path_is("/file") { return Route::File; }
     if &request.path_is("/file-with-timeout") { return Route::TimedFile; }
+    if &request.path_is("/file-join") { return Route::FileJoin; }
     if &request.path_is("/file-sequence") { return Route::FileSequence; }
     if &request.path_is("/health") { return Route::Health; }
     Route::Missing
@@ -69,6 +79,7 @@ fn handle(request: Request!) -> Action! {
     match route {
         Route::File => serve_file(false),
         Route::TimedFile => serve_file(true),
+        Route::FileJoin => file_join::serve(),
         Route::FileSequence => file_sequence::serve(),
         Route::Health => Response!::text(200u16, "ok\n").reply(),
         Route::Missing => Response!::rejected(404u16).reply(),

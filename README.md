@@ -122,6 +122,15 @@ If the timer wins, the worker closes the file before the handler returns 504.
 `/file` uses the request deadline alone, and `/health` remains available
 while a read is pending.
 
+### Two independent file reads
+
+`/file-join` starts reads of `example.txt` and `footer.txt` together using
+`join(first, second).within(1000u64).defer(...)`. Both reads have a 64 KiB
+limit and share the one-second deadline. The response appends the footer
+after the first file’s bytes regardless of which read finishes first.
+A timeout returns 504 after both workers retire, and the handler destroys
+any buffer it received. [Parallel file handler](examples/http-file/file_join.kur)
+
 An HTTP handler can use `sequence.defer(state, resume, cancel)` to drive a
 portable sequence under the original request deadline. The listener delivers
 request cancellation after the active plan joins. The example’s
@@ -284,7 +293,7 @@ buffer.
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — immediate and delayed replies in one handler
-- `examples/http-file/` — file plan and an owned continuation in an HTTP request
+- `examples/http-file/` — bounded file replies, parallel reads, and an owned continuation
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
 - `examples/task-chain/` — explicit sequential adapters and owned state on both engines

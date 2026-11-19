@@ -201,6 +201,7 @@ def gated_file_server(command, directory, library, gates=1, reset_notify=None):
         "KABLE_TEST_FILE_STARTED": str(notify),
         "KABLE_TEST_FILE_RELEASE": str(release),
         "KABLE_TEST_FILE_GATES": str(gates),
+        "UV_THREADPOOL_SIZE": "2",
     }
     fds = (notify, release)
     if reset_notify is not None:
@@ -222,7 +223,10 @@ def gated_file_server(command, directory, library, gates=1, reset_notify=None):
 
 def wait_for_held_read(started, expected=b"A"):
     assert select.select([started], [], [], 5)[0], "file worker did not start"
-    assert os.read(started, 1) == expected
+    token = os.read(started, 1)
+    if expected is not None:
+        assert token == expected
+    return token
 
 
 def start_held_read(client, request, started):
@@ -307,9 +311,49 @@ def check_http_file(command, directory, check_request_timeout=False):
                 read_log_until(process.stderr, b"File request cancelled.")
             process.terminate()
             assert process.wait(timeout=5) == 0, process.stderr.read()
+    check_http_join(command, directory, library, payload)
     check_http_sequence(command, directory, library, payload, check_request_timeout)
     check_http_reset(command, directory, library)
     print("Kable HTTP file checks passed")
+
+
+def check_http_join(command, directory, library, payload):
+    suffix = b"\x00joined footer\n"
+    files = (directory / "example.txt", directory / "footer.txt")
+    files[1].write_bytes(suffix)
+    request = b"GET /file-join HTTP/1.1\r\nHost: localhost\r\n\r\n"
+
+    def start_both_reads(client, started):
+        client.sendall(request)
+        workers = {wait_for_held_read(started, None) for _ in range(2)}
+        assert workers == {b"A", b"B"}, workers
+
+    with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+        with connect(port) as client:
+            start_both_reads(client, started)
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert os.write(permit, b"R") == 1
+            assert not select.select([client], [], [], 0.05)[0], "join replied after only one read"
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 200, payload + suffix)
+        for path in files:
+            data = path.read_bytes()
+            path.unlink()
+            assert_response(exchange(port, request), 500, b"Internal Server Error\n")
+            path.write_bytes(data)
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
+
+    with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+        with connect(port) as client:
+            start_both_reads(client, started)
+            assert os.write(permit, b"R") == 1
+            assert not select.select([client], [], [], 1.25)[0], "deadline replied before both reads joined"
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 504, b"Gateway Timeout\n")
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
 
 
 def check_http_sequence(command, directory, library, payload, check_request_timeout):

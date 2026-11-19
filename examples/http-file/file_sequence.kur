@@ -1,7 +1,7 @@
 //! Reads a second file while retaining ownership of the first file's buffer.
 use async::{FileOutcome!, ReadFile!, read_file};
 use http::Response!;
-use package::{FILE_LIMIT, discard_file};
+use package::{FILE_LIMIT, append_file, discard_file};
 use server::{Action!, PlanOutput};
 use std::bytes::buffer::Buffer!;
 use std::io::eprint_buffer;
@@ -43,12 +43,7 @@ fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action!
         Option::Some(files) => files,
         Option::None => return Response!::rejected(500u16).reply(),
     };
-    let response = match outcome {
-        FileOutcome!::Read(second) => Response!::ok(first.push_buffer(second)),
-        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
-        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500u16) },
-    };
-    response.reply()
+    append_file(first, outcome).reply()
 }
 
 fn next_file(unit: (), outcome: FileOutcome!)
