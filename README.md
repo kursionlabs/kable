@@ -37,10 +37,12 @@ wire.
 
 ## Connection lifetimes
 
-The linear `Server!` in `lib/server/` owns the loop and the handler. The loop
-multiplexes connections, each with its own parser, buffers, and deadline.
-A request has ten seconds to complete. After queuing a response, the
-connection has five seconds to write it, half-close, and drain peer input.
+The linear `Server!` in `lib/server/` owns the handler and its TCP listener
+scope. The same transport runs HTTP and the TCP echo example. Each HTTP
+connection attaches its own parser and request buffers to the transport.
+A request has ten seconds to complete across all reads. After queuing a
+response, the connection has five seconds to write it, half-close, and
+drain peer input.
 
 On SIGINT or SIGTERM the server stops accepting, cancels connections still
 reading or waiting on a timer, and lets connections with queued responses

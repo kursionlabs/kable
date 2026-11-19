@@ -6,19 +6,17 @@
 #include <uv.h>
 
 #include "../../async/native/timer.h"
+#include "transport.h"
 
-enum { CONNECTED, BYTES, TIMED_OUT, END, CANCELLED, FAILED };
-enum { IDLE, READING, JOINING, WRITING, TERMINAL };
+enum { IDLE, READING, JOINING, WRITING, WAITING, FINISHING, TERMINAL };
 enum { MAX_CONNECTIONS = 128, READ_SIZE = 16384 };
-
-typedef int32_t (*on_event)(uint8_t *, uint8_t *, uint8_t, uint8_t *, size_t, int32_t);
 
 typedef struct {
     uv_loop_t loop;
     uv_tcp_t socket;
     uv_signal_t interrupt;
     uv_signal_t terminate;
-    on_event handler;
+    KableTcpHandler handler;
     uint8_t *context;
     unsigned connections;
     int stopping;
@@ -29,12 +27,16 @@ typedef struct {
 typedef struct {
     uv_tcp_t socket;
     uv_write_t write;
+    uv_shutdown_t shutdown;
     uv_buf_t output;
     Listener *listener;
     KableTimer *timer;
+    void *attachment;
+    void (*destroy_attachment)(void *);
     uint64_t next_ms;
     uint8_t next_timed;
     int phase;
+    int socket_closed;
     uint8_t event;
     int error;
     size_t length;
@@ -52,39 +54,66 @@ static void finish_shutdown(Listener *listener) {
     }
 }
 
-static void connection_closed(uv_handle_t *handle) {
-    Connection *connection = handle->data;
+static void release_connection(Connection *connection) {
     Listener *listener = connection->listener;
+    if (connection->destroy_attachment) connection->destroy_attachment(connection->attachment);
     free(connection);
     listener->connections--;
     finish_shutdown(listener);
 }
 
+/* A socket and its timer can close in either order. */
+static void connection_closed(uv_handle_t *handle) {
+    Connection *connection = handle->data;
+    connection->socket_closed = 1;
+    if (!connection->timer) release_connection(connection);
+}
+
 static void close_connection(Connection *connection) {
     uv_handle_t *handle = (uv_handle_t *)&connection->socket;
-    if (!uv_is_closing(handle)) uv_close(handle, connection_closed);
+    kable_timer_cancel(connection->timer);
+    if (!connection->socket_closed && !uv_is_closing(handle)) {
+        uv_close(handle, connection_closed);
+    }
 }
 
 void kable_tcp_close(uint8_t *raw) {
     close_connection((Connection *)raw);
 }
 
+void kable_tcp_attach(uint8_t *raw, void *attachment, void (*destroy)(void *)) {
+    Connection *connection = (Connection *)raw;
+    connection->attachment = attachment;
+    connection->destroy_attachment = destroy;
+}
+
+void *kable_tcp_attachment(uint8_t *raw) {
+    return ((Connection *)raw)->attachment;
+}
+
+uint64_t kable_tcp_now(uint8_t *raw) {
+    uv_loop_t *loop = &((Connection *)raw)->listener->loop;
+    uv_update_time(loop);
+    return uv_now(loop);
+}
+
 static void notify(Connection *connection, uint8_t event, size_t length, int error) {
     Listener *listener = connection->listener;
-    int terminal = event == END || event == CANCELLED || event == FAILED;
+    int terminal = event == KABLE_TCP_END || event == KABLE_TCP_CANCELLED || event == KABLE_TCP_FAILED;
     connection->phase = terminal ? TERMINAL : IDLE;
+    connection->event = event;
     int status = listener->handler(listener->context, (uint8_t *)connection, event,
         (uint8_t *)connection->input, length, error);
-    if (terminal) {
+    if (connection->phase == TERMINAL) {
         close_connection(connection);
     } else if (status < 0) {
-        notify(connection, FAILED, 0, status);
+        notify(connection, KABLE_TCP_FAILED, 0, status);
     }
 }
 
 static void report_read(Connection *connection) {
     if (connection->listener->stopping) {
-        notify(connection, CANCELLED, 0, 0);
+        notify(connection, KABLE_TCP_CANCELLED, 0, 0);
     } else {
         notify(connection, connection->event, connection->length, connection->error);
     }
@@ -104,14 +133,15 @@ static void complete_read(Connection *connection, uint8_t event, size_t length, 
 }
 
 static void timer_ready(void *context) {
-    complete_read(context, TIMED_OUT, 0, 0);
+    complete_read(context, KABLE_TCP_TIMED_OUT, 0, 0);
 }
 
 static void timer_closed(void *context, int fired) {
     (void)fired;
     Connection *connection = context;
     connection->timer = NULL;
-    report_read(connection);
+    if (connection->socket_closed) release_connection(connection);
+    else report_read(connection);
 }
 
 static void allocate_read(uv_handle_t *handle, size_t suggested, uv_buf_t *buffer) {
@@ -123,9 +153,9 @@ static void allocate_read(uv_handle_t *handle, size_t suggested, uv_buf_t *buffe
 static void read_done(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer) {
     (void)buffer;
     Connection *connection = stream->data;
-    if (count > 0) complete_read(connection, BYTES, (size_t)count, 0);
-    else if (count == UV_EOF) complete_read(connection, END, 0, 0);
-    else if (count < 0) complete_read(connection, FAILED, 0, (int)count);
+    if (count > 0) complete_read(connection, KABLE_TCP_BYTES, (size_t)count, 0);
+    else if (count == UV_EOF) complete_read(connection, KABLE_TCP_END, 0, 0);
+    else if (count < 0) complete_read(connection, KABLE_TCP_FAILED, 0, (int)count);
 }
 
 static int start_read(Connection *connection, uint64_t ms, uint8_t timed) {
@@ -152,23 +182,40 @@ int32_t kable_tcp_read(uint8_t *raw, uint64_t ms, uint8_t timed) {
     return start_read(connection, ms, timed);
 }
 
+static void discard_input(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buffer) {
+    (void)buffer;
+    if (nread < 0) close_connection(stream->data);
+}
+
+static void shutdown_done(uv_shutdown_t *shutdown, int status) {
+    Connection *connection = shutdown->data;
+    if (status < 0 || uv_read_start((uv_stream_t *)&connection->socket,
+        allocate_read, discard_input) < 0) {
+        close_connection(connection);
+    }
+}
+
 static void write_done(uv_write_t *write, int status) {
     Connection *connection = write->data;
     free(connection->output.base);
     connection->output.base = NULL;
-    if (connection->listener->stopping) {
-        notify(connection, CANCELLED, 0, 0);
+    if (connection->phase == FINISHING) {
+        /* Send FIN before discarding unread input so the peer can read the reply. */
+        connection->shutdown.data = connection;
+        if (status < 0 || uv_shutdown(&connection->shutdown, (uv_stream_t *)&connection->socket,
+            shutdown_done) < 0) {
+            close_connection(connection);
+        }
+    } else if (connection->listener->stopping) {
+        notify(connection, KABLE_TCP_CANCELLED, 0, 0);
     } else {
         if (status == 0) status = start_read(connection, connection->next_ms, connection->next_timed);
-        if (status < 0) notify(connection, FAILED, 0, status);
+        if (status < 0) notify(connection, KABLE_TCP_FAILED, 0, status);
     }
 }
 
-int32_t kable_tcp_write(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
-    if (!len) return start_read(connection, ms, timed);
-    if (len > UINT32_MAX) return UV_EINVAL;
+static int queue_write(Connection *connection, uint8_t *bytes, size_t len) {
+    if (!len || len > UINT32_MAX) return UV_EINVAL;
 
     char *copy = malloc(len);
     if (!copy) return UV_ENOMEM;
@@ -180,11 +227,68 @@ int32_t kable_tcp_write(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms, u
     if (status < 0) {
         free(copy);
         connection->output.base = NULL;
+    }
+    return status;
+}
+
+int32_t kable_tcp_write(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed) {
+    Connection *connection = (Connection *)raw;
+    if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
+    if (!len) return start_read(connection, ms, timed);
+    int status = queue_write(connection, bytes, len);
+    if (status == 0) {
+        connection->next_ms = ms;
+        connection->next_timed = timed;
+        connection->phase = WRITING;
+    }
+    return status;
+}
+
+static void delay_closed(void *context, int fired) {
+    Connection *connection = context;
+    connection->timer = NULL;
+    if (connection->socket_closed) release_connection(connection);
+    else notify(connection, fired && !connection->listener->stopping
+        ? KABLE_TCP_WAKE : KABLE_TCP_CANCELLED, 0, 0);
+}
+
+int32_t kable_tcp_delay(uint8_t *raw, uint64_t ms) {
+    Connection *connection = (Connection *)raw;
+    if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
+    kable_tcp_now(raw);
+    int status = kable_timer_start(&connection->listener->loop, ms, NULL,
+        delay_closed, connection, &connection->timer);
+    if (status == 0) connection->phase = WAITING;
+    return status;
+}
+
+static void finish_expired(void *context) {
+    close_connection(context);
+}
+
+static void finish_closed(void *context, int fired) {
+    (void)fired;
+    Connection *connection = context;
+    connection->timer = NULL;
+    if (connection->socket_closed) release_connection(connection);
+}
+
+int32_t kable_tcp_finish(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms) {
+    Connection *connection = (Connection *)raw;
+    int peer_eof = connection->phase == TERMINAL && connection->event == KABLE_TCP_END;
+    if ((!peer_eof && connection->phase != IDLE) || connection->listener->stopping) {
+        return UV_ECANCELED;
+    }
+    kable_tcp_now(raw);
+    int status = kable_timer_start(&connection->listener->loop, ms, finish_expired,
+        finish_closed, connection, &connection->timer);
+    if (status < 0) return status;
+    status = queue_write(connection, bytes, len);
+    if (status < 0) {
+        kable_timer_cancel(connection->timer);
         return status;
     }
-    connection->next_ms = ms;
-    connection->next_timed = timed;
-    connection->phase = WRITING;
+    connection->phase = FINISHING;
     return 0;
 }
 
@@ -194,8 +298,11 @@ static void cancel_connection(uv_handle_t *handle, void *context) {
         uv_is_closing(handle)) return;
 
     Connection *connection = handle->data;
-    if (connection->phase == READING) complete_read(connection, CANCELLED, 0, 0);
-    else if (connection->phase != JOINING) close_connection(connection);
+    if (connection->phase == READING) complete_read(connection, KABLE_TCP_CANCELLED, 0, 0);
+    else if (connection->phase == WAITING) kable_timer_cancel(connection->timer);
+    else if (connection->phase != JOINING && connection->phase != FINISHING) {
+        close_connection(connection);
+    }
 }
 
 static void stop_listener(Listener *listener, int status) {
@@ -235,7 +342,7 @@ static void accept_connection(uv_stream_t *stream, int status) {
     listener->connections++;
     status = uv_accept(stream, (uv_stream_t *)&connection->socket);
     if (status < 0 || listener->connections > MAX_CONNECTIONS) close_connection(connection);
-    else notify(connection, CONNECTED, 0, 0);
+    else notify(connection, KABLE_TCP_CONNECTED, 0, 0);
 }
 
 static int watch_signal(Listener *listener, uv_signal_t *signal, int signum) {
@@ -270,7 +377,7 @@ static int run_and_free(Listener *listener) {
     return status;
 }
 
-uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, on_event handler, int32_t *error) {
+uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpHandler handler, int32_t *error) {
     Listener *listener = calloc(1, sizeof *listener);
     if (!listener) {
         *error = UV_ENOMEM;

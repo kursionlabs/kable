@@ -132,6 +132,9 @@ def check_delayed_handler(port):
 def check_timeout(port):
     with connect(port) as stalled:
         stalled.sendall(b"GET /health HTTP/1.1\r\nHost: local")
+        assert not select.select([stalled], [], [], 5)[0], "request expired too early"
+        stalled.sendall(b"host\r\n")
+        assert select.select([stalled], [], [], 7)[0], "another read reset the request deadline"
         assert_response(read_response(stalled), 408, b"Request Timeout\n")
 
 

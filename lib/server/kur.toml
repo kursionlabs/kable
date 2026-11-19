@@ -2,7 +2,7 @@
 name="server"
 source_root="."
 c_sources=["native/server.c"]
-link_flags=["-luv", "-lllhttp"]
+link_flags=["-lllhttp"]
 
 [dependencies.std]
 path="../../../kursal/lib/std"
@@ -12,3 +12,6 @@ path="../http"
 
 [dependencies.async]
 path="../async"
+
+[dependencies.tcp]
+path="../tcp"
