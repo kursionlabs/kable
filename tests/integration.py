@@ -196,33 +196,51 @@ def gated_file_server(command, directory, library):
             os.close(fd)
 
 
+def start_held_read(client, request, started):
+    client.sendall(request)
+    assert select.select([started], [], [], 5)[0], "file worker did not start"
+    assert os.read(started, 1) == b"R"
+
+
 def check_http_file(command, directory, check_request_timeout=False):
     library = directory / "hold-file-read.so"
     subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "tests/hold_file_read.c"),
                     "-ldl", "-pthread", "-o", str(library)], check=True)
     payload = b"Kable\x00hosted file read\n"
-    (directory / "example.txt").write_bytes(payload)
+    document = directory / "example.txt"
+    document.write_bytes(payload)
     request = b"GET /file HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    timed = b"GET /file-with-timeout HTTP/1.1\r\nHost: localhost\r\n\r\n"
 
     with gated_file_server(command, directory, library) as (process, port, started, permit):
         with connect(port) as client:
-            client.sendall(request)
-            assert select.select([started], [], [], 5)[0], "file worker did not start"
-            assert os.read(started, 1) == b"R"
+            start_held_read(client, request, started)
             assert_response(exchange(port, HEALTH), 200, b"ok\n")
             assert not select.select([client], [], [], 0)[0], "file reply arrived before the read"
             assert os.write(permit, b"R") == 1
             assert_response(read_response(client), 200, payload)
         head = b"HEAD /file HTTP/1.1\r\nHost: localhost\r\n\r\n"
         assert_response(exchange(port, head), 200, payload, head=True)
+        assert_response(exchange(port, timed), 200, payload)
+        document.unlink()
+        assert_response(exchange(port, timed), 500, b"Internal Server Error\n")
+        document.write_bytes(payload)
         process.terminate()
         assert process.wait(timeout=5) == 0, process.stderr.read()
 
     with gated_file_server(command, directory, library) as (process, port, started, permit):
         with connect(port) as client:
-            client.sendall(request)
-            assert select.select([started], [], [], 5)[0], "file worker did not start"
-            assert os.read(started, 1) == b"R"
+            start_held_read(client, timed, started)
+            assert not select.select([client], [], [], 1.25)[0], "timeout replied before the worker joined"
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 504, b"Gateway Timeout\n")
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
+
+    with gated_file_server(command, directory, library) as (process, port, started, permit):
+        with connect(port) as client:
+            start_held_read(client, request, started)
             process.terminate()
             deadline = time.monotonic() + 5
             while True:
@@ -243,9 +261,7 @@ def check_http_file(command, directory, check_request_timeout=False):
     if check_request_timeout:
         with gated_file_server(command, directory, library) as (process, port, started, permit):
             with connect(port) as client:
-                client.sendall(request)
-                assert select.select([started], [], [], 5)[0], "file worker did not start"
-                assert os.read(started, 1) == b"R"
+                start_held_read(client, request, started)
                 assert not select.select([client], [], [], 10.25)[0], "deadline returned before the worker joined"
                 assert_response(exchange(port, HEALTH), 200, b"ok\n")
                 assert os.write(permit, b"R") == 1
@@ -403,6 +419,7 @@ def main():
             result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
             assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
             assert b"Join waited" in result.stdout and b"cancelled the nested waits" in result.stdout
+            assert b"Select cancelled the unfinished part of a losing join" in result.stdout
             check_async_read([str(async_read)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])

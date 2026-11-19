@@ -28,6 +28,7 @@ fn reason(status: u16) -> Slice[u8, 'static] {
         417u16 => "Expectation Failed",
         431u16 => "Request Header Fields Too Large",
         501u16 => "Not Implemented",
+        504u16 => "Gateway Timeout",
         505u16 => "HTTP Version Not Supported",
         _ => "Internal Server Error",
     }

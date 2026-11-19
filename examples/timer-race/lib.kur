@@ -1,4 +1,4 @@
-use async::{JoinOutcome, Outcome, RaceOutcome, join, race, run, sleep, timeout};
+use async::{JoinOutcome, Outcome, RaceOutcome, join, race, run, select, sleep, timeout};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
 
@@ -33,8 +33,32 @@ fn main() -> i32 {
         RaceOutcome::Second(cancelled, unit) => { cancelled.destroy(); return 1i32; },
         RaceOutcome::Failed(recovered, unit, code) => { recovered.destroy(); return 1i32; },
     }
-    if !check_join() || !check_nested_deadline() { return 1i32; }
+    if !check_join() || !check_nested_deadline() || !check_select() { return 1i32; }
     0i32
+}
+
+fn check_select() -> bool {
+    let slow = join(sleep(0u64, 1u8), sleep(30_000u64, 2u8));
+    let result: RaceOutcome[JoinOutcome[Outcome[u8], Outcome[u8]], Outcome[u8]] =
+        run(select(slow, sleep(10u64, 3u8)));
+    match result {
+        RaceOutcome::Second(loser, winner) => {
+            let reclaimed = match loser {
+                JoinOutcome::Cancelled(ready, pending) => {
+                    let cancelled = match pending {
+                        Outcome::Cancelled(value) => value == 2u8,
+                        _ => false,
+                    };
+                    is_ready(ready, 1u8) && cancelled
+                },
+                _ => false,
+            };
+            if !reclaimed || !is_ready(winner, 3u8) { return false; }
+            print_buffer(f"Select cancelled the unfinished part of a losing join.\n");
+            true
+        },
+        _ => false,
+    }
 }
 
 fn check_join() -> bool {

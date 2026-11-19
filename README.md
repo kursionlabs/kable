@@ -64,13 +64,16 @@ When cancellation ends the request, the connection closes after cleanup.
 
 Request `/file` on the printed address to read the bundled `example.txt`.
 `/health` remains available while the read is pending.
+`/file-with-timeout` races the same read against a one-second timer. If the
+timer wins, the handler returns 504 after the worker closes the file and returns.
 
 ## Scoped task plans
 
 `lib/async/` lets any Kursal program build a wait with `sleep(ms, value)` and
-drive it with `run`. `race` runs two waits in one scope and cancels the
-loser when the first timer fires. `join` starts two plans together and waits for
-both. A join can contain waits, timer races, file reads, or other joins.
+drive it with `run`. `race` runs two waits in one scope and cancels the loser
+when the first timer fires. `join` waits for both child plans. `select` takes the
+first child to complete, which may report an error, then cancels and joins the
+loser. Both combinators accept waits, file reads, and nested plans.
 
 `timeout` adds a parent deadline that cancels every pending child, including
 children of nested joins. The scope closes all timer handles before returning.
@@ -84,8 +87,9 @@ bin/timer-race
 ```
 
 The example reclaims an owned `Buffer!` from the losing timer, then joins
-a timer race with another wait. It also demonstrates a parent deadline that
-preserves a completed child and cancels nested waits.
+a timer race with another wait. It also shows a parent deadline and a
+winning branch preserving completed child results while cancelling pending
+nested waits.
 
 ### Bounded file reads
 

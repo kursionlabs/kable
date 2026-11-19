@@ -34,6 +34,14 @@ forall A, B.
 fn race(first: Sleep![A], second: Sleep![B]) -> Race![A, B] { Race!.{ first, second } }
 
 forall First, Second.
+struct Select! { first: First, second: Second }
+
+/// Starts both plans and selects the first to complete, including a plan
+/// whose operation reports an error. The losing plan is cancelled and joined.
+forall First, Second.
+fn select(first: First, second: Second) -> Select![First, Second] { Select!.{ first, second } }
+
+forall First, Second.
 struct Join! { first: First, second: Second }
 
 /// Starts both plans in the same scope and waits for both to complete.
@@ -61,7 +69,7 @@ exposed enum Outcome {
     Failed(T, i32),
 }
 
-/// Each branch hands ownership of both inputs back after the scope closes.
+/// Each branch returns both values in input order after the scope closes.
 forall A, B.
 exposed enum RaceOutcome {
     First(A, B),
@@ -206,12 +214,48 @@ instance Plan[Race![A, B], RaceOutcome[A, B]] {
         let first_code = &scope.next();
         let second_code = &scope.next();
         let code = &scope.next();
-        match code {
-            1i32 => RaceOutcome::First.(a, b),
-            2i32 => RaceOutcome::Second.(a, b),
-            0i32 => RaceOutcome::Cancelled.(a, b),
-            _ => RaceOutcome::Failed.(a, b, code),
-        }
+        race_outcome(a, b, code)
+    }
+}
+
+forall First, Second, A, B where Plan[First, A], Plan[Second, B].
+fn stage_pair(&first: First, &second: Second, &scope: Scope!, kind: u8) -> usize {
+    let a = Plan[First, A]::stage(&first, &scope);
+    let b = Plan[Second, B]::stage(&second, &scope);
+    &scope.add(kind, 0u64, a, b)
+}
+
+forall First, Second, A, B where Plan[First, A], Plan[Second, B].
+fn collect_pair(first: First, second: Second, &scope: Scope!) -> (A, B, i32) {
+    let a = Plan[First, A]::collect(first, &scope);
+    let b = Plan[Second, B]::collect(second, &scope);
+    let code = &scope.next();
+    (a, b, code)
+}
+
+forall First, Second, A, B where Plan[First, A], Plan[Second, B].
+instance Plan[Select![First, Second], RaceOutcome[A, B]] {
+    fn stage(&task: Select![First, Second], &scope: Scope!) -> usize {
+        let { first, second } = task;
+        let id = stage_pair[First, Second, A, B](&first, &second, &scope, 1u8);
+        task = Select!.{ first, second };
+        id
+    }
+
+    fn collect(task: Select![First, Second], &scope: Scope!) -> RaceOutcome[A, B] {
+        let { first, second } = task;
+        let (a, b, code) = collect_pair[First, Second, A, B](first, second, &scope);
+        race_outcome(a, b, code)
+    }
+}
+
+forall A, B.
+fn race_outcome(a: A, b: B, code: i32) -> RaceOutcome[A, B] {
+    match code {
+        1i32 => RaceOutcome::First.(a, b),
+        2i32 => RaceOutcome::Second.(a, b),
+        0i32 => RaceOutcome::Cancelled.(a, b),
+        _ => RaceOutcome::Failed.(a, b, code),
     }
 }
 
@@ -219,18 +263,14 @@ forall First, Second, A, B where Plan[First, A], Plan[Second, B].
 instance Plan[Join![First, Second], JoinOutcome[A, B]] {
     fn stage(&task: Join![First, Second], &scope: Scope!) -> usize {
         let { first, second } = task;
-        let a = Plan[First, A]::stage(&first, &scope);
-        let b = Plan[Second, B]::stage(&second, &scope);
-        let id = &scope.add(2u8, 0u64, a, b);
+        let id = stage_pair[First, Second, A, B](&first, &second, &scope, 2u8);
         task = Join!.{ first, second };
         id
     }
 
     fn collect(task: Join![First, Second], &scope: Scope!) -> JoinOutcome[A, B] {
         let { first, second } = task;
-        let a = Plan[First, A]::collect(first, &scope);
-        let b = Plan[Second, B]::collect(second, &scope);
-        let code = &scope.next();
+        let (a, b, code) = collect_pair[First, Second, A, B](first, second, &scope);
         match code {
             1i32 => JoinOutcome::Ready.(a, b),
             0i32 => JoinOutcome::Cancelled.(a, b),
@@ -287,6 +327,13 @@ instance Runnable[ReadFile!, FileOutcome!] {
 forall A, B.
 instance Runnable[Race![A, B], RaceOutcome[A, B]] {
     fn drive(task: Race![A, B], deadline: Option[u64]) -> RaceOutcome[A, B] { drive_plan(task, deadline) }
+}
+
+forall First, Second, A, B where Plan[First, A], Plan[Second, B].
+instance Runnable[Select![First, Second], RaceOutcome[A, B]] {
+    fn drive(task: Select![First, Second], deadline: Option[u64]) -> RaceOutcome[A, B] {
+        drive_plan(task, deadline)
+    }
 }
 
 forall First, Second, A, B where Plan[First, A], Plan[Second, B].

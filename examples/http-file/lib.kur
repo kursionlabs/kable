@@ -1,10 +1,44 @@
-use async::{FileOutcome!, read_file};
+use async::{FileOutcome!, Outcome, RaceOutcome, read_file, select, sleep};
 use http::{Method, Request!, Response!};
 use server::{Action!, Server!, defer};
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::raw::Span;
 use std::slice::StaticRead;
+
+fn file_response(outcome: FileOutcome!) -> Response! {
+    match outcome {
+        FileOutcome!::Read(bytes) => Response!::ok(bytes),
+        FileOutcome!::Cancelled => {
+            eprint_buffer(f"File request cancelled.\n");
+            Response!::rejected(408u16)
+        },
+        FileOutcome!::Failed(code) => Response!::rejected(500u16),
+    }
+}
+
+fn discard_file(outcome: FileOutcome!) {
+    match outcome {
+        FileOutcome!::Read(bytes) => bytes.destroy(),
+        FileOutcome!::Cancelled => (),
+        FileOutcome!::Failed(code) => (),
+    }
+}
+
+fn timed_response(outcome: RaceOutcome[FileOutcome!, Outcome[()]]) -> Response! {
+    match outcome {
+        RaceOutcome::First(file, timer) => file_response(file),
+        RaceOutcome::Second(file, timer) => {
+            discard_file(file);
+            Response!::rejected(504u16)
+        },
+        RaceOutcome::Cancelled(file, timer) => file_response(file),
+        RaceOutcome::Failed(file, timer, code) => {
+            discard_file(file);
+            Response!::rejected(500u16)
+        },
+    }
+}
 
 fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
@@ -13,6 +47,7 @@ fn handle(request: Request!) -> Action! {
     let path = Span::from_slice(bytes);
     let health = path.is(&access, "/health");
     let file = path.is(&access, "/file");
+    let timed = path.is(&access, "/file-with-timeout");
     let target = restore.restore(access);
     match method {
         Method::Get | Method::Head => (),
@@ -21,18 +56,19 @@ fn handle(request: Request!) -> Action! {
             return Action!::Reply.(Response!::method_not_allowed("GET, HEAD"));
         },
     }
-    if file {
+    if file || timed {
         let access = StaticRead::new();
-        return defer(read_file(&access, "example.txt", 65_536usize), |outcome: FileOutcome!| {
+        let task = read_file(&access, "example.txt", 65_536usize);
+        if timed {
+            return defer(select(task, sleep(1000u64, ())),
+                |outcome: RaceOutcome[FileOutcome!, Outcome[()]]| {
+                    target.destroy();
+                    timed_response(outcome)
+                });
+        }
+        return defer(task, |outcome: FileOutcome!| {
             target.destroy();
-            match outcome {
-                FileOutcome!::Read(bytes) => Response!::ok(bytes),
-                FileOutcome!::Cancelled => {
-                    eprint_buffer(f"File request cancelled.\n");
-                    Response!::rejected(408u16)
-                },
-                FileOutcome!::Failed(code) => Response!::rejected(500u16),
-            }
+            file_response(outcome)
         });
     }
     target.destroy();
