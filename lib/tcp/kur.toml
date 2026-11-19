@@ -1,0 +1,11 @@
+[package]
+name="tcp"
+source_root="."
+c_sources=["native/tcp.c"]
+link_flags=["-luv"]
+
+[dependencies.std]
+path="../../../kursal/lib/std"
+
+[dependencies.async]
+path="../async"

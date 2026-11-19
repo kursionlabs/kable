@@ -71,14 +71,39 @@ The example reclaims an owned `Buffer!` from the losing timer, then sets a
 parent deadline that cancels both timers. The public task API currently
 supports single waits and two-way races.
 
+## Scoped TCP reads
+
+`lib/tcp/` runs a loopback listener with one in-flight operation per
+connection. A handler receives an owned `Connection!` in each event. It can
+return `wait(timeout(1000u64, read(connection)))` to start a timed read, or
+`write(bytes, next_read)` to write the bytes before starting another read.
+
+A read that gets bytes first stops reading and cancels its timer. If the
+deadline fires first, the timer stops the read. In both cases the handler
+gets the connection back after the timer closes and can read again or close
+it. EOF, transport failure, and shutdown end the connection. On SIGINT or
+SIGTERM the listener stops accepting and waits for pending operations to
+finish cancelling before returning.
+
+```sh
+../kursal/bin/kursal build examples/tcp-echo -o bin/tcp-echo
+bin/tcp-echo
+```
+
+Connect to the printed address with a TCP client such as `nc 127.0.0.1 PORT`.
+The example echoes binary data and closes connections after one second of
+read inactivity. Other connections can continue sending data during that wait.
+
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
 - `lib/async/` — scoped timer plans and cancellation
 - `lib/http/` — owned request and response types and response encoding
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
+- `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — standalone server with a custom handler
 - `examples/timer-race/` — race and parent cancellation with linear payloads
+- `examples/tcp-echo/` — TCP echo with an idle read deadline
 
 Build the example with `../kursal/bin/kursal build examples/hello-server -o bin/hello-server`.
 Run `bin/hello-server` and request the address it prints.
@@ -87,9 +112,9 @@ Run `bin/hello-server` and request the address it prints.
 python3 tests/integration.py --check-timeout
 ```
 
-The integration suite builds Kable and the timer example with the adjacent
-Kursal compiler. It checks the timer race, HTTP framing, request limits,
-concurrent clients, and cancellation on server shutdown. Omit
+The integration suite builds Kable and the timer and TCP echo examples with
+the adjacent Kursal compiler. It checks the timer race, HTTP framing, request
+limits, concurrent clients, idle read deadlines, and shutdown cancellation. Omit
 `--check-timeout` to skip the ten-second request deadline check.
 
 ## License

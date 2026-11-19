@@ -135,6 +135,50 @@ def check_timeout(port):
         assert_response(read_response(stalled), 408, b"Request Timeout\n")
 
 
+def assert_echo(client, data):
+    client.sendall(data)
+    received = bytearray()
+    while len(received) < len(data):
+        chunk = client.recv(len(data) - len(received))
+        assert chunk, "connection closed before the full echo"
+        received.extend(chunk)
+    assert received == data
+
+
+def check_tcp_echo(command):
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        try:
+            ready, _, _ = select.select([process.stdout], [], [], 15)
+            assert ready, "TCP echo did not announce its port"
+            address = process.stdout.readline()
+            assert address.startswith(b"Listening on 127.0.0.1:"), address
+            port = int(address.rsplit(b":", 1)[1])
+
+            with connect(port) as stalled, connect(port) as active:
+                assert not select.select([stalled], [], [], 0.05)[0], "idle read closed immediately"
+                assert_echo(active, bytes(range(256)) * 257)
+                assert not select.select([stalled], [], [], 0)[0], "stalled read blocked the echo"
+                assert_echo(active, b"another read on the same connection")
+                active.shutdown(socket.SHUT_WR)
+                assert active.recv(1) == b""
+                assert stalled.recv(1) == b"", "idle deadline did not close the echo connection"
+
+            with connect(port) as first, connect(port) as second:
+                assert_echo(first, b"first")
+                assert_echo(second, b"second")
+                assert not select.select([first, second], [], [], 0.05)[0]
+                process.terminate()
+                assert first.recv(1) == second.recv(1) == b""
+                assert process.wait(timeout=5) == 0
+                output = process.stderr.read()
+                assert output.count(b"Read deadline expired.") == 1, output
+                assert output.count(b"Cancelled connection on shutdown.") == 2, output
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable TCP echo checks passed")
+
+
 def run_checks(command, check_request_timeout):
     with subprocess.Popen([*command, "0"], stdout=subprocess.PIPE) as process:
         try:
@@ -159,16 +203,23 @@ def run_checks(command, check_request_timeout):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-timeout", action="store_true", help="also wait for the request deadline")
+    parser.add_argument("--tcp-echo", action="store_true", help="run TCP checks against the given command")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="use a prebuilt server with an optional runner")
     args = parser.parse_args()
-    if args.command:
+    if args.tcp_echo:
+        if not args.command:
+            parser.error("--tcp-echo requires a server command")
+        check_tcp_echo(args.command)
+    elif args.command:
         run_checks(args.command, args.check_timeout)
     else:
         with tempfile.TemporaryDirectory() as directory:
             binary = build("kable", Path(directory) / "kable")
             example = build("examples/timer-race", Path(directory) / "timer-race")
+            tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
             assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
+            check_tcp_echo([str(tcp_echo)])
             run_checks([str(binary)], args.check_timeout)
 
 

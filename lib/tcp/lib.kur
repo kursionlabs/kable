@@ -1,0 +1,136 @@
+//! Scoped TCP reads and writes on a listener's event loop.
+use std::alloc::heap::HeapAllocator;
+use std::bytes::buffer::Buffer!;
+use std::mem::sizeof;
+use std::option::{Option, Result};
+use std::ptr::is_null;
+
+extern "C" fn kable_tcp_bind(port: u16, context: *u8,
+    callback: unsafe fn(*u8, *u8, u8, *u8, usize, i32) -> i32, error: *i32) -> *u8;
+extern "C" fn kable_tcp_port(listener: *u8) -> u16;
+extern "C" fn kable_tcp_run(listener: *u8) -> i32;
+extern "C" fn kable_tcp_stop(listener: *u8) -> ();
+extern "C" fn kable_tcp_read(connection: *u8, ms: u64, timed: u8) -> i32;
+extern "C" fn kable_tcp_write(connection: *u8, bytes: *u8, len: usize, ms: u64, timed: u8) -> i32;
+extern "C" fn kable_tcp_close(connection: *u8) -> ();
+
+struct Connection! { raw: *u8 }
+struct Read! { connection: Connection!, deadline: Option[u64] }
+
+/// Plans a read of the next available chunk of bytes.
+fn read(connection: Connection!) -> Read! { Read!.{ connection, deadline: Option::None } }
+
+/// Sets the read deadline relative to the time the read begins.
+fn timeout(ms: u64, task: Read!) -> Read! {
+    let { connection, deadline } = task;
+    Read!.{ connection, deadline: Option::Some.(ms) }
+}
+
+exposed enum Event! {
+    Connected(Connection!),
+    Bytes(Connection!, Buffer!),
+    TimedOut(Connection!),
+    End(Connection!),
+    Cancelled(Connection!),
+    Failed(Connection!, i32),
+}
+
+enum Action! {
+    Wait(Read!),
+    Write(Buffer!, Read!),
+    Close(Connection!),
+}
+
+fn wait(task: Read!) -> Action! { Action!::Wait.(task) }
+
+/// Writes one chunk, then starts the next read on the same connection.
+fn write(bytes: Buffer!, next: Read!) -> Action! {
+    Action!::Write.(bytes, next)
+}
+
+fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
+
+struct Handler { handle: fn(Event!) -> Action! }
+
+unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> i32 {
+    let { handle } = unsafe *(unsafe (context as *Handler));
+    let connection = Connection!.{ raw };
+    let event = match kind {
+        0u8 => Event!::Connected.(connection),
+        1u8 => Event!::Bytes.(connection, unsafe Buffer!::new_with_cap(len).push_n(bytes, len)),
+        2u8 => Event!::TimedOut.(connection),
+        3u8 => Event!::End.(connection),
+        4u8 => Event!::Cancelled.(connection),
+        _ => Event!::Failed.(connection, code),
+    };
+    match handle(event) {
+        Action!::Wait(next) => unsafe submit(next, Option::None),
+        Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
+        Action!::Close(connection) => {
+            let { raw } = connection;
+            unsafe kable_tcp_close(raw);
+            0i32
+        },
+    }
+}
+
+unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {
+    let { connection, deadline } = next;
+    let { raw } = connection;
+    let (ms, timed) = match deadline {
+        Option::Some(ms) => (ms, 1u8),
+        Option::None => (0u64, 0u8),
+    };
+    match output {
+        Option::None => unsafe kable_tcp_read(raw, ms, timed),
+        Option::Some(bytes) => {
+            let ptr = unsafe &bytes.as_ptr();
+            let len = &bytes.len();
+            let status = unsafe kable_tcp_write(raw, ptr, len, ms, timed);
+            bytes.destroy();
+            status
+        },
+    }
+}
+
+struct Listener! { raw: *u8, context: *u8 }
+
+impl Listener! {
+    fn bind_local(port: u16, handle: fn(Event!) -> Action!) -> Result[Listener!, i32] {
+        let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
+        unsafe *(unsafe (context as *Handler)) = Handler.{ handle };
+        let scratch = Buffer!::new_zeroed(sizeof[i32]());
+        let error = unsafe ((unsafe &scratch.as_ptr()) as *i32);
+        let raw = unsafe kable_tcp_bind(port, context, dispatch, error);
+        let status = unsafe *error;
+        scratch.destroy();
+        if is_null(raw) {
+            HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+            Result::Err.(status)
+        } else {
+            Result::Ok.(Listener!.{ raw, context })
+        }
+    }
+
+    fn port(&self) -> u16 {
+        let { raw, context } = self;
+        let port = unsafe kable_tcp_port(raw);
+        self = Listener!.{ raw, context };
+        port
+    }
+
+    /// Closes a listener before entering the event loop.
+    fn stop(self) {
+        let { raw, context } = self;
+        unsafe kable_tcp_stop(raw);
+        HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+    }
+
+    /// Runs until shutdown, joining all connections before releasing the handler.
+    fn run(self) -> Result[(), i32] {
+        let { raw, context } = self;
+        let status = unsafe kable_tcp_run(raw);
+        HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+        if status == 0i32 { Result::Ok.(()) } else { Result::Err.(status) }
+    }
+}

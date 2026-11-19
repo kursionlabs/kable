@@ -1,0 +1,42 @@
+use std::io::{eprint_buffer, print_buffer};
+use std::option::Result;
+use tcp::{Action!, Event!, Listener!, close, read, timeout, wait, write};
+
+fn echo(event: Event!) -> Action! {
+    match event {
+        Event!::Connected(connection) => wait(timeout(1000u64, read(connection))),
+        Event!::Bytes(connection, bytes) => write(bytes, timeout(1000u64, read(connection))),
+        Event!::TimedOut(connection) => {
+            eprint_buffer(f"Read deadline expired.\n");
+            close(connection)
+        },
+        Event!::End(connection) => close(connection),
+        Event!::Cancelled(connection) => {
+            eprint_buffer(f"Cancelled connection on shutdown.\n");
+            close(connection)
+        },
+        Event!::Failed(connection, code) => close(connection),
+    }
+}
+
+fn main() -> i32 {
+    let listener = match Listener!::bind_local(0u16, echo) {
+        Result::Ok(listener) => listener,
+        Result::Err(code) => {
+            eprint_buffer(f"tcp-echo: cannot listen (libuv error {code})\n");
+            return 1i32;
+        },
+    };
+    let port = &listener.port();
+    if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {
+        listener.stop();
+        return 1i32;
+    }
+    match listener.run() {
+        Result::Ok(unit) => 0i32,
+        Result::Err(code) => {
+            eprint_buffer(f"tcp-echo: listener stopped (libuv error {code})\n");
+            1i32
+        },
+    }
+}
