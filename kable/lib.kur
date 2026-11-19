@@ -11,7 +11,7 @@ fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
     let exists 'k. (access, bytes, restore) = target.open();
     let target = Span::from_slice(bytes);
-    let path = match target.find_byte(&access, b'?', 0usize) {
+    let path = match target.find_byte(&access, b'?', 0) {
         Option::Some(end) => target.take(end),
         Option::None => target,
     };
@@ -36,15 +36,15 @@ fn handle(request: Request!) -> Action! {
         match method {
             Method::Get | Method::Head => {
                 if delay {
-                    return Response!::text(200u16, "done\n").after(1000u64);
+                    return Response!::text(200, "done\n").after(1000);
                 }
                 let message = if home { "Kable\n" } else { "ok\n" };
-                Response!::text(200u16, message).reply()
+                Response!::text(200, message).reply()
             },
             _ => Response!::method_not_allowed("GET, HEAD").reply(),
         }
     } else {
-        Response!::text(404u16, "Not Found\n").reply()
+        Response!::text(404, "Not Found\n").reply()
     }
 }
 

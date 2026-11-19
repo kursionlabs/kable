@@ -36,8 +36,8 @@ impl Response! {
     fn after(self, ms: u64) -> Action! {
         defer(sleep(ms, self), |outcome| match outcome {
             Outcome::Ready(response) => response,
-            Outcome::Cancelled(response) => { response.destroy(); Response!::rejected(408u16) },
-            Outcome::Failed(response, code) => { response.destroy(); Response!::rejected(500u16) },
+            Outcome::Cancelled(response) => { response.destroy(); Response!::rejected(408) },
+            Outcome::Failed(response, code) => { response.destroy(); Response!::rejected(500) },
         })
     }
 }
@@ -89,9 +89,9 @@ impl Task {
         defer_plan(within(ms, self), |result: WithinOutcome[Output], active: bool| {
             let (outcome, status) = match result {
                 WithinOutcome::Completed(outcome) => (outcome, Option::None),
-                WithinOutcome::TimedOut(outcome) => (outcome, Option::Some.(504u16)),
-                WithinOutcome::Cancelled(outcome) => (outcome, Option::Some.(408u16)),
-                WithinOutcome::Failed(outcome, code) => (outcome, Option::Some.(500u16)),
+                WithinOutcome::TimedOut(outcome) => (outcome, Option::Some.(504)),
+                WithinOutcome::Cancelled(outcome) => (outcome, Option::Some.(408)),
+                WithinOutcome::Failed(outcome, code) => (outcome, Option::Some.(500)),
             };
             if active {
                 let response = match status {

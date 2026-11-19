@@ -47,9 +47,9 @@ fn hello(request: Request!) -> Action! {
     request.destroy();
 
     if delayed {
-        Response!::text(200u16, "done\n").after(1000u64)
+        Response!::text(200, "done\n").after(1000)
     } else {
-        Response!::text(200u16, "Hello from Kable!\n").reply()
+        Response!::text(200, "Hello from Kable!\n").reply()
     }
 }
 ```
@@ -101,7 +101,7 @@ Request `/file-with-timeout` on the printed address to read the bundled
 ```kursal
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .defer_within(1000u64, file_response, discard_file)
+    .defer_within(1000, file_response, discard_file)
 ```
 
 `defer_within(ms, reply, discard)` gives the completed plan’s outcome to
@@ -115,7 +115,7 @@ while a read is pending.
 ### Two independent file reads
 
 `/file-join` starts reads of `example.txt` and `footer.txt` together using
-`join(first, second).defer_within(1000u64, joined_response, discard_join)`.
+`join(first, second).defer_within(1000, joined_response, discard_join)`.
 Both reads have a 64 KiB
 limit and share the one-second deadline. The response appends the footer
 after the first file’s bytes regardless of which read finishes first.

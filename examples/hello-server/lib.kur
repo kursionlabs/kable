@@ -8,30 +8,30 @@ fn hello(request: Request!) -> Action! {
     request.destroy();
 
     if delayed {
-        Response!::text(200u16, "done\n").after(1000u64)
+        Response!::text(200, "done\n").after(1000)
     } else {
-        Response!::text(200u16, "Hello from Kable!\n").reply()
+        Response!::text(200, "Hello from Kable!\n").reply()
     }
 }
 
 fn main() -> i32 {
-    let server = match Server!::bind_async(0u16, hello) {
+    let server = match Server!::bind_async(0, hello) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"hello-server: cannot listen (libuv error {code})\n");
-            return 1i32;
+            return 1;
         },
     };
     let port = &server.port();
     if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
-        return 1i32;
+        return 1;
     }
     match server.run() {
-        Result::Ok(unit) => 0i32,
+        Result::Ok(unit) => 0,
         Result::Err(code) => {
             eprint_buffer(f"hello-server: server stopped (libuv error {code})\n");
-            1i32
+            1
         },
     }
 }

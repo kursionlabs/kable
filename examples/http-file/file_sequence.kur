@@ -42,7 +42,7 @@ fn cancel_sequence(unit: (), outcome: Option[(Buffer!, FileOutcome!)]) {
 fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action! {
     let (first, outcome) = match result {
         Option::Some(files) => files,
-        Option::None => return Response!::rejected(500u16).reply(),
+        Option::None => return Response!::rejected(500).reply(),
     };
     append_file(first, outcome).reply()
 }
@@ -64,7 +64,7 @@ fn next_file(unit: (), outcome: FileOutcome!)
 fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {
     let exists 'k. (access, bytes, restore) = first.open();
     let text = Span::from_slice(bytes);
-    let line = match text.find_byte(&access, b'\n', 0usize) {
+    let line = match text.find_byte(&access, b'\n', 0) {
         Option::Some(end) => text.take(end),
         Option::None => text,
     };

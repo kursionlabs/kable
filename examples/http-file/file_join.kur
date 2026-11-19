@@ -10,22 +10,22 @@ fn serve() -> Action! {
     let first = read_file(&access, "example.txt", FILE_LIMIT);
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
-    join(first, second).defer_within(1000u64, joined_response, discard_join)
+    join(first, second).defer_within(1000, joined_response, discard_join)
 }
 
 fn joined_response(files: JoinOutcome[FileOutcome!, FileOutcome!]) -> Response! {
     match files {
         JoinOutcome::Ready(first, second) => file_response(first, second),
-        JoinOutcome::Cancelled(first, second) => reject_files(first, second, 408u16),
-        JoinOutcome::Failed(first, second, code) => reject_files(first, second, 500u16),
+        JoinOutcome::Cancelled(first, second) => reject_files(first, second, 408),
+        JoinOutcome::Failed(first, second, code) => reject_files(first, second, 500),
     }
 }
 
 fn file_response(first: FileOutcome!, second: FileOutcome!) -> Response! {
     match first {
         FileOutcome!::Read(left) => append_file(left, second),
-        FileOutcome!::Cancelled => { discard_file(second); Response!::rejected(408u16) },
-        FileOutcome!::Failed(code) => { discard_file(second); Response!::rejected(500u16) },
+        FileOutcome!::Cancelled => { discard_file(second); Response!::rejected(408) },
+        FileOutcome!::Failed(code) => { discard_file(second); Response!::rejected(500) },
     }
 }
 

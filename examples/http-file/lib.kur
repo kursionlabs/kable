@@ -7,14 +7,14 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::slice::StaticRead;
 
-const FILE_LIMIT: usize = 65_536usize;
+const FILE_LIMIT: usize = 65_536;
 
 fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
     if !timed { return file.defer(|outcome| file_response(outcome)); }
 
-    file.defer_within(1000u64, file_response, discard_file)
+    file.defer_within(1000, file_response, discard_file)
 }
 
 fn file_response(outcome: FileOutcome!) -> Response! {
@@ -22,9 +22,9 @@ fn file_response(outcome: FileOutcome!) -> Response! {
         FileOutcome!::Read(bytes) => Response!::ok(bytes),
         FileOutcome!::Cancelled => {
             eprint_buffer(f"File request cancelled.\n");
-            Response!::rejected(408u16)
+            Response!::rejected(408)
         },
-        FileOutcome!::Failed(code) => Response!::rejected(500u16),
+        FileOutcome!::Failed(code) => Response!::rejected(500),
     }
 }
 
@@ -39,8 +39,8 @@ fn discard_file(outcome: FileOutcome!) {
 fn append_file(first: Buffer!, second: FileOutcome!) -> Response! {
     match second {
         FileOutcome!::Read(bytes) => Response!::ok(first.push_buffer(bytes)),
-        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408u16) },
-        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500u16) },
+        FileOutcome!::Cancelled => { first.destroy(); Response!::rejected(408) },
+        FileOutcome!::Failed(code) => { first.destroy(); Response!::rejected(500) },
     }
 }
 
@@ -70,29 +70,29 @@ fn handle(request: Request!) -> Action! {
         Route::TimedFile => serve_file(true),
         Route::FileJoin => file_join::serve(),
         Route::FileSequence => file_sequence::serve(),
-        Route::Health => Response!::text(200u16, "ok\n").reply(),
-        Route::Missing => Response!::rejected(404u16).reply(),
+        Route::Health => Response!::text(200, "ok\n").reply(),
+        Route::Missing => Response!::rejected(404).reply(),
     }
 }
 
 fn main() -> i32 {
-    let server = match Server!::bind_async(0u16, handle) {
+    let server = match Server!::bind_async(0, handle) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"http-file: cannot listen (libuv error {code})\n");
-            return 1i32;
+            return 1;
         },
     };
     let port = &server.port();
     if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
-        return 1i32;
+        return 1;
     }
     match server.run() {
-        Result::Ok(unit) => 0i32,
+        Result::Ok(unit) => 0,
         Result::Err(code) => {
             eprint_buffer(f"http-file: server stopped (libuv error {code})\n");
-            1i32
+            1
         },
     }
 }
