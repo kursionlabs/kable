@@ -1,5 +1,7 @@
 //! Request ownership and HTTP response serialization.
 use std::bytes::buffer::Buffer!;
+use std::option::Option;
+use std::raw::Span;
 use std::slice::Slice;
 
 exposed enum Method { Other, Get, Head, Post }
@@ -8,6 +10,28 @@ exposed struct Request! {
     method: Method,
     target: Buffer!,
     body: Buffer!,
+}
+
+impl Request! {
+    /// Checks the request path before the query string.
+    fn path_is(&self, path: Slice[u8, 'static]) -> bool {
+        let { method, target, body } = self;
+        let exists 'k. (access, bytes, restore) = target.open();
+        let raw = Span::from_slice(bytes);
+        let raw = match raw.find_byte(&access, b'?', 0usize) {
+            Option::Some(end) => raw.take(end),
+            Option::None => raw,
+        };
+        let matches = raw.is(&access, path);
+        self = Request!.{ method, target: restore.restore(access), body };
+        matches
+    }
+
+    fn destroy(self) {
+        let { method, target, body } = self;
+        target.destroy();
+        body.destroy();
+    }
 }
 
 struct Response! {

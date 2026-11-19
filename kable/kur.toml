@@ -12,6 +12,3 @@ path="../lib/http"
 
 [dependencies.server]
 path="../lib/server"
-
-[dependencies.async]
-path="../lib/async"

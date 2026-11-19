@@ -1,17 +1,21 @@
 use http::{Request!, Response!};
-use server::Server!;
+use server::{Action!, Server!};
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 
-fn hello(request: Request!) -> Response! {
-    let { method, target, body } = request;
-    target.destroy();
-    body.destroy();
-    Response!::text(200u16, "Hello from Kable!\n")
+fn hello(request: Request!) -> Action! {
+    let delayed = &request.path_is("/delay");
+    request.destroy();
+
+    if delayed {
+        Response!::text(200u16, "done\n").after(1000u64)
+    } else {
+        Response!::text(200u16, "Hello from Kable!\n").reply()
+    }
 }
 
 fn main() -> i32 {
-    let server = match Server!::bind_local(0u16, hello) {
+    let server = match Server!::bind_async(0u16, hello) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"hello-server: cannot listen (libuv error {code})\n");

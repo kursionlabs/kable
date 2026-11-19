@@ -35,6 +35,34 @@ The limits are 128 active connections, 16 KiB for the request line and
 headers, 1 MiB for the decoded body, and 1088 KiB for the full request on the
 wire.
 
+## A small async server
+
+The hello server uses one handler for immediate replies and replies that
+wait one second. `Server!::bind_async` takes a handler that returns either
+action.
+
+```kursal
+fn hello(request: Request!) -> Action! {
+    let delayed = &request.path_is("/delay");
+    request.destroy();
+
+    if delayed {
+        Response!::text(200u16, "done\n").after(1000u64)
+    } else {
+        Response!::text(200u16, "Hello from Kable!\n").reply()
+    }
+}
+```
+
+```sh
+../kursal/bin/kursal build examples/hello-server -o bin/hello-server
+bin/hello-server
+```
+
+Request `/delay` in one terminal, then request `/` from another while the
+timer is still pending. The hello reply can arrive first. The timer belongs
+to the delayed request and is cancelled when that request ends.
+
 ## Connection lifetimes
 
 The linear `Server!` in `lib/server/` owns the handler and its TCP listener
@@ -232,16 +260,13 @@ buffer.
 - `lib/http/` — owned request and response types and response encoding
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
-- `examples/hello-server/` — standalone server with a custom handler
+- `examples/hello-server/` — immediate and delayed replies in one handler
 - `examples/http-file/` — file plan and an owned continuation in an HTTP request
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
 - `examples/task-chain/` — explicit sequential adapters and owned state on both engines
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
 - `examples/tcp-session/` — owned connection state across a read retry
-
-Build the example with `../kursal/bin/kursal build examples/hello-server -o bin/hello-server`.
-Run `bin/hello-server` and request the address it prints.
 
 ```sh
 python3 tests/integration.py --check-timeout

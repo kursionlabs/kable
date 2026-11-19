@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{Prepared!, Scope!, collect, prepare};
+use async::{Outcome, Prepared!, Scope!, collect, prepare, sleep};
 use http::{Method, Request!, Response!};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
@@ -26,6 +26,20 @@ extern "C" fn kable_stop(server: *u8) -> ();
 exposed enum Action! {
     Reply(Response!),
     Deferred(Deferred!),
+}
+
+impl Response! {
+    /// Sends this response when the handler returns.
+    fn reply(self) -> Action! { Action!::Reply.(self) }
+
+    /// Sends this response after a request-scoped timer.
+    fn after(self, ms: u64) -> Action! {
+        defer(sleep(ms, self), |outcome| match outcome {
+            Outcome::Ready(response) => response,
+            Outcome::Cancelled(response) => { response.destroy(); Response!::rejected(408u16) },
+            Outcome::Failed(response, code) => { response.destroy(); Response!::rejected(500u16) },
+        })
+    }
 }
 
 enum Handler {

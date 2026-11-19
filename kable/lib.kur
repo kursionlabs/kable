@@ -1,6 +1,5 @@
-use async::{Outcome, sleep};
 use http::{Method, Request!, Response!};
-use server::{Action!, Plan, PlanOutput, Server!};
+use server::{Action!, Server!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -24,10 +23,10 @@ fn handle(request: Request!) -> Action! {
 
     if echo {
         match method {
-            Method::Post => return Action!::Reply.(Response!::ok(body)),
+            Method::Post => return Response!::ok(body).reply(),
             _ => {
                 body.destroy();
-                return Action!::Reply.(Response!::method_not_allowed("POST"));
+                return Response!::method_not_allowed("POST").reply();
             },
         }
     }
@@ -37,19 +36,15 @@ fn handle(request: Request!) -> Action! {
         match method {
             Method::Get | Method::Head => {
                 if delay {
-                    return sleep(1000u64, ()).defer(|outcome| match outcome {
-                        Outcome::Ready(unit) => Response!::text(200u16, "done\n"),
-                        Outcome::Cancelled(unit) => Response!::rejected(408u16),
-                        Outcome::Failed(unit, code) => Response!::rejected(500u16),
-                    });
+                    return Response!::text(200u16, "done\n").after(1000u64);
                 }
                 let message = if home { "Kable\n" } else { "ok\n" };
-                Action!::Reply.(Response!::text(200u16, message))
+                Response!::text(200u16, message).reply()
             },
-            _ => Action!::Reply.(Response!::method_not_allowed("GET, HEAD")),
+            _ => Response!::method_not_allowed("GET, HEAD").reply(),
         }
     } else {
-        Action!::Reply.(Response!::text(404u16, "Not Found\n"))
+        Response!::text(404u16, "Not Found\n").reply()
     }
 }
 

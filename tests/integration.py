@@ -124,13 +124,31 @@ def check_concurrency(port, process):
             assert process.wait(timeout=8) == 0
 
 
-def check_delayed_handler(port):
+def check_delayed_handler(port, immediate=HEALTH, body=b"ok\n", delayed_request=DELAY):
     with connect(port) as delayed:
-        delayed.sendall(DELAY)
+        delayed.sendall(delayed_request)
         assert not select.select([delayed], [], [], 0.05)[0], "delay replied immediately"
-        assert_response(exchange(port, HEALTH), 200, b"ok\n")
-        assert not select.select([delayed], [], [], 0)[0], "health was blocked by the timer"
+        assert_response(exchange(port, immediate), 200, body)
+        assert not select.select([delayed], [], [], 0)[0], "the immediate reply was blocked by the timer"
         assert_response(read_response(delayed), 200, b"done\n")
+
+
+def check_hello_server(binary):
+    with subprocess.Popen([str(binary)], stdout=subprocess.PIPE) as process:
+        try:
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
+            check_delayed_handler(
+                port,
+                immediate=b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                body=b"Hello from Kable!\n",
+                delayed_request=DELAY.replace(b"/delay ", b"/delay?test=1 "),
+            )
+            process.terminate()
+            assert process.wait(timeout=5) == 0
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable hello server checks passed")
 
 
 def check_timeout(port):
@@ -522,11 +540,13 @@ def main():
     else:
         with tempfile.TemporaryDirectory() as directory:
             binary = build("kable", Path(directory) / "kable")
+            hello = build("examples/hello-server", Path(directory) / "hello-server")
             check_timer_engines(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
+            check_hello_server(hello)
             check_async_read([str(async_read)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
