@@ -239,14 +239,40 @@ instance Plan[Join![First, Second], JoinOutcome[A, B]] {
     }
 }
 
+forall Task.
+struct Prepared! { scope: Scope!, task: Task, root: usize }
+
 forall Task, Output where Plan[Task, Output].
-fn drive_plan(task: Task, deadline: Option[u64]) -> Output {
+fn prepare(task: Task) -> Prepared![Task] {
     var scope = Scope!.{ raw: unsafe kable_scope_new() };
     let root = Plan[Task, Output]::stage(&task, &scope);
-    &scope.run(root, deadline);
+    Prepared!.{ scope, task, root }
+}
+
+forall Task.
+impl Prepared![Task] {
+    /// The host must keep this plan alive until the native scope has joined.
+    unsafe fn native(&self) -> (*u8, usize) {
+        let { scope, task, root } = self;
+        let { raw } = scope;
+        self = Prepared!.{ scope: Scope!.{ raw }, task, root };
+        (raw, root)
+    }
+}
+
+forall Task, Output where Plan[Task, Output].
+fn collect(prepared: Prepared![Task]) -> Output {
+    let { scope, task, root } = prepared;
     let result = Plan[Task, Output]::collect(task, &scope);
     scope.close();
     result
+}
+
+forall Task, Output where Plan[Task, Output].
+fn drive_plan(task: Task, deadline: Option[u64]) -> Output {
+    let { scope, task, root } = prepare[Task, Output](task);
+    &scope.run(root, deadline);
+    collect[Task, Output](Prepared!.{ scope, task, root })
 }
 
 forall T.

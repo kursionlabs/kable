@@ -1,0 +1,63 @@
+use async::{FileOutcome!, read_file};
+use http::{Method, Request!, Response!};
+use server::{Action!, Server!, defer};
+use std::io::{eprint_buffer, print_buffer};
+use std::option::Result;
+use std::raw::Span;
+use std::slice::StaticRead;
+
+fn handle(request: Request!) -> Action! {
+    let { method, target, body } = request;
+    body.destroy();
+    let exists 'k. (access, bytes, restore) = target.open();
+    let path = Span::from_slice(bytes);
+    let health = path.is(&access, "/health");
+    let file = path.is(&access, "/file");
+    let target = restore.restore(access);
+    match method {
+        Method::Get | Method::Head => (),
+        _ => {
+            target.destroy();
+            return Action!::Reply.(Response!::method_not_allowed("GET, HEAD"));
+        },
+    }
+    if file {
+        let access = StaticRead::new();
+        return defer(read_file(&access, "example.txt", 65_536usize), |outcome: FileOutcome!| {
+            target.destroy();
+            match outcome {
+                FileOutcome!::Read(bytes) => Response!::ok(bytes),
+                FileOutcome!::Cancelled => {
+                    eprint_buffer(f"File request cancelled.\n");
+                    Response!::rejected(408u16)
+                },
+                FileOutcome!::Failed(code) => Response!::rejected(500u16),
+            }
+        });
+    }
+    target.destroy();
+    if health { Action!::Reply.(Response!::text(200u16, "ok\n")) }
+    else { Action!::Reply.(Response!::rejected(404u16)) }
+}
+
+fn main() -> i32 {
+    let server = match Server!::bind_async(0u16, handle) {
+        Result::Ok(server) => server,
+        Result::Err(code) => {
+            eprint_buffer(f"http-file: cannot listen (libuv error {code})\n");
+            return 1i32;
+        },
+    };
+    let port = &server.port();
+    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+        server.stop();
+        return 1i32;
+    }
+    match server.run() {
+        Result::Ok(unit) => 0i32,
+        Result::Err(code) => {
+            eprint_buffer(f"http-file: server stopped (libuv error {code})\n");
+            1i32
+        },
+    }
+}

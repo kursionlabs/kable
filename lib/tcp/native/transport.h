@@ -3,10 +3,11 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <uv.h>
 
 enum KableTcpEvent {
     KABLE_TCP_CONNECTED, KABLE_TCP_BYTES, KABLE_TCP_TIMED_OUT, KABLE_TCP_END,
-    KABLE_TCP_CANCELLED, KABLE_TCP_FAILED, KABLE_TCP_WAKE
+    KABLE_TCP_CANCELLED, KABLE_TCP_FAILED
 };
 
 /* The callback borrows the connection and bytes until it returns. A negative
@@ -23,9 +24,13 @@ void kable_tcp_stop(uint8_t *listener);
 void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(uint8_t *));
 uint8_t *kable_tcp_attachment(uint8_t *connection);
 uint64_t kable_tcp_now(uint8_t *connection);
+uv_loop_t *kable_tcp_loop(uint8_t *connection);
 int32_t kable_tcp_read(uint8_t *connection, uint64_t ms, uint8_t timed);
 int32_t kable_tcp_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed);
-int32_t kable_tcp_delay(uint8_t *connection, uint64_t ms);
+/* An external operation holds the connection until it joins. A close
+   requests its cancellation. Unpark returns whether the socket can reply. */
+int32_t kable_tcp_park(uint8_t *connection, void (*cancel)(void *), void *context);
+int kable_tcp_unpark(uint8_t *connection);
 /* Copies the final response, then writes, half-closes, and drains until the
    deadline. A read-side EOF still permits this final write. */
 int32_t kable_tcp_finish(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms);

@@ -6,6 +6,7 @@
 #include <uv.h>
 
 #include "../../tcp/native/transport.h"
+#include "../../async/native/scope.h"
 
 enum {
     MAX_HEAD = 16 * 1024,
@@ -35,8 +36,11 @@ typedef struct {
 
 typedef struct {
     uint8_t *connection;
-    int32_t (*resume)(uint8_t *, uint8_t *, uint8_t);
-    uint8_t *response;
+    uint8_t *scope;
+    uint8_t *plan;
+    int32_t (*finish)(uint8_t *, uint8_t *, uint8_t, uint8_t, uint8_t);
+    uint8_t head;
+    uint8_t http10;
     Server *server;
     llhttp_t parser;
     Bytes target;
@@ -175,17 +179,9 @@ static void release_request(Client *client) {
     client->body = (Bytes){0};
 }
 
-static int resume_response(Client *client, uint8_t ready) {
-    if (!client->resume) return 0;
-    int result = client->resume(client->response, (uint8_t *)client, ready);
-    client->resume = NULL;
-    client->response = NULL;
-    return result;
-}
-
 static void destroy_client(uint8_t *attachment) {
     Client *client = (Client *)attachment;
-    resume_response(client, 0);
+    if (client->plan) abort();
     release_request(client);
     free(client);
 }
@@ -200,17 +196,39 @@ static uint64_t time_left(Client *client) {
     return now < client->deadline ? client->deadline - now : 0;
 }
 
-/* The attachment owns response only after the TCP scope accepts the wait. */
-int32_t kable_defer(uint8_t *raw, uint64_t ms,
-    int32_t (*resume)(uint8_t *, uint8_t *, uint8_t), uint8_t *response) {
+static void cancel_plan(void *context) {
+    Client *client = context;
+    kable_scope_cancel(client->scope);
+}
+
+static void finish_plan(void *context) {
+    Client *client = context;
+    uint8_t ready = kable_tcp_unpark(client->connection) && time_left(client) != 0;
+    uint8_t *plan = client->plan;
+    client->plan = NULL;
+    client->scope = NULL;
+    int status = client->finish(plan, (uint8_t *)client, ready, client->head, client->http10);
+    if (!ready || status < 0) kable_tcp_close(client->connection);
+}
+
+/* The request owns the plan and its continuation once the socket is parked. */
+int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
+    int32_t (*finish)(uint8_t *, uint8_t *, uint8_t, uint8_t, uint8_t),
+    uint8_t head, uint8_t http10) {
     Client *client = (Client *)raw;
+    int status = kable_tcp_park(client->connection, cancel_plan, client);
+    if (status < 0) return status;
+    client->scope = scope;
+    client->plan = plan;
+    client->finish = finish;
+    client->head = head;
+    client->http10 = http10;
     uint64_t remaining = time_left(client);
-    int status = kable_tcp_delay(client->connection, ms < remaining ? ms : remaining);
-    if (status == 0) {
-        client->resume = resume;
-        client->response = response;
+    if (!kable_scope_start(scope, root, kable_tcp_loop(client->connection), remaining,
+        1, finish_plan, client)) {
+        finish_plan(client);
     }
-    return status;
+    return 0;
 }
 
 static int reply(Client *client, uint16_t status) {
@@ -287,12 +305,6 @@ static int32_t on_event(uint8_t *context, uint8_t *connection, uint8_t event,
         return reply(client, 408);
     case KABLE_TCP_END:
         return client->wire_bytes ? reply(client, 400) : 0;
-    case KABLE_TCP_WAKE: {
-        uint8_t ready = time_left(client) != 0;
-        int status = resume_response(client, ready);
-        if (!ready) kable_tcp_close(connection);
-        return status;
-    }
     default:
         return 0;
     }

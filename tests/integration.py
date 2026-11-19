@@ -2,12 +2,14 @@
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import os
 from pathlib import Path
 import select
 import socket
 import subprocess
 import tempfile
+import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +173,89 @@ def check_async_read(command, directory):
     print("Kable async file checks passed")
 
 
+@contextmanager
+def gated_file_server(command, directory, library):
+    started, notify = os.pipe()
+    release, permit = os.pipe()
+    env = os.environ | {
+        "LD_PRELOAD": str(library),
+        "KABLE_TEST_FILE_STARTED": str(notify),
+        "KABLE_TEST_FILE_RELEASE": str(release),
+    }
+    try:
+        with subprocess.Popen(command, cwd=directory, env=env, pass_fds=(notify, release),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
+            try:
+                port = listening_port(process, b"Listening on http://127.0.0.1:")
+                yield process, port, started, permit
+            finally:
+                if process.poll() is None:
+                    process.kill()
+    finally:
+        for fd in (started, notify, release, permit):
+            os.close(fd)
+
+
+def check_http_file(command, directory, check_request_timeout=False):
+    library = directory / "hold-file-read.so"
+    subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "tests/hold_file_read.c"),
+                    "-ldl", "-pthread", "-o", str(library)], check=True)
+    payload = b"Kable\x00hosted file read\n"
+    (directory / "example.txt").write_bytes(payload)
+    request = b"GET /file HTTP/1.1\r\nHost: localhost\r\n\r\n"
+
+    with gated_file_server(command, directory, library) as (process, port, started, permit):
+        with connect(port) as client:
+            client.sendall(request)
+            assert select.select([started], [], [], 5)[0], "file worker did not start"
+            assert os.read(started, 1) == b"R"
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert not select.select([client], [], [], 0)[0], "file reply arrived before the read"
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 200, payload)
+        head = b"HEAD /file HTTP/1.1\r\nHost: localhost\r\n\r\n"
+        assert_response(exchange(port, head), 200, payload, head=True)
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
+
+    with gated_file_server(command, directory, library) as (process, port, started, permit):
+        with connect(port) as client:
+            client.sendall(request)
+            assert select.select([started], [], [], 5)[0], "file worker did not start"
+            assert os.read(started, 1) == b"R"
+            process.terminate()
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        pass
+                except ConnectionRefusedError:
+                    break
+                assert time.monotonic() < deadline, "shutdown kept accepting connections"
+                time.sleep(0.01)
+            assert process.poll() is None, "shutdown returned before the worker joined"
+            assert not select.select([client], [], [], 0)[0], "request finished before the worker"
+            assert os.write(permit, b"R") == 1
+            assert client.recv(1) == b"", "shutdown sent a cancelled file response"
+            assert process.wait(timeout=5) == 0, process.stderr.read()
+            assert process.stderr.read().count(b"File request cancelled.") == 1
+
+    if check_request_timeout:
+        with gated_file_server(command, directory, library) as (process, port, started, permit):
+            with connect(port) as client:
+                client.sendall(request)
+                assert select.select([started], [], [], 5)[0], "file worker did not start"
+                assert os.read(started, 1) == b"R"
+                assert not select.select([client], [], [], 10.25)[0], "deadline returned before the worker joined"
+                assert_response(exchange(port, HEALTH), 200, b"ok\n")
+                assert os.write(permit, b"R") == 1
+                assert client.recv(1) == b"", "deadline sent a cancelled file response"
+                read_log_until(process.stderr, b"File request cancelled.")
+            process.terminate()
+            assert process.wait(timeout=5) == 0, process.stderr.read()
+    print("Kable HTTP file checks passed")
+
+
 def assert_received(client, data):
     received = bytearray()
     while len(received) < len(data):
@@ -286,13 +371,20 @@ def main():
     example_checks.add_argument("--tcp-echo", action="store_true", help="run echo checks against the given command")
     example_checks.add_argument("--tcp-session", action="store_true", help="run stateful TCP checks against the given command")
     example_checks.add_argument("--async-read", action="store_true", help="run file checks against the given command")
+    example_checks.add_argument("--http-file", action="store_true", help="run hosted file checks against the given command")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="use a prebuilt server with an optional runner")
     args = parser.parse_args()
-    if args.async_read:
+    if args.async_read or args.http_file:
         if not args.command:
-            parser.error("--async-read requires an example command")
+            parser.error("file checks require an example command")
+        command = args.command
+        if args.http_file:
+            command = [str(Path(arg).resolve()) if Path(arg).is_file() else arg for arg in command]
         with tempfile.TemporaryDirectory() as directory:
-            check_async_read(args.command, Path(directory))
+            if args.http_file:
+                check_http_file(command, Path(directory), args.check_timeout)
+            else:
+                check_async_read(command, Path(directory))
     elif args.tcp_echo or args.tcp_session:
         if not args.command:
             parser.error("TCP checks require a server command")
@@ -305,12 +397,14 @@ def main():
             binary = build("kable", Path(directory) / "kable")
             example = build("examples/timer-race", Path(directory) / "timer-race")
             async_read = build("examples/async-read", Path(directory) / "async-read")
+            http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
             assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
             assert b"Join waited" in result.stdout and b"cancelled the nested waits" in result.stdout
             check_async_read([str(async_read)], Path(directory))
+            check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
             check_tcp_session([str(tcp_session)])
             run_checks([str(binary)], args.check_timeout)

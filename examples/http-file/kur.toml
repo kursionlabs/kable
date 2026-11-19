@@ -1,0 +1,17 @@
+[package]
+name="http_file"
+source_root="."
+kind="executable"
+entry="main"
+
+[dependencies.std]
+path="../../../kursal/lib/std"
+
+[dependencies.http]
+path="../../lib/http"
+
+[dependencies.server]
+path="../../lib/server"
+
+[dependencies.async]
+path="../../lib/async"

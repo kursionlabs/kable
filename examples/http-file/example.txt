@@ -1,0 +1,1 @@
+This file was read in the HTTP request's scope.

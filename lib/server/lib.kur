@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::Sleep!;
+use async::{Outcome, Plan, Prepared!, Sleep!, collect, prepare};
 use http::{Method, Request!, Response!};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
@@ -13,14 +13,15 @@ extern "C" fn kable_bind(port: u16,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
-extern "C" fn kable_defer(client: *u8, ms: u64,
-    resume: unsafe fn(*u8, *u8, u8) -> i32, response: *u8) -> i32;
+extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8, u8, u8) -> i32, head: u8, http10: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
 extern "C" fn kable_stop(server: *u8) -> ();
 
 exposed enum Action! {
     Reply(Response!),
     After(Sleep![Response!]),
+    Deferred(Deferred!),
 }
 
 enum Handler {
@@ -29,6 +30,30 @@ enum Handler {
 }
 
 struct Pending! { response: Response!, head: bool, http10: bool }
+
+struct Deferred! {
+    plan: *u8, scope: *u8, root: usize,
+    finish: unsafe fn(*u8, *u8, u8, u8, u8) -> i32,
+}
+
+forall Task, Output, Env.
+struct ResponsePlan! { prepared: Prepared![Task], reply: closure[Env](Output) -> Response! }
+
+/// Runs the plan in the request's scope. The continuation consumes its
+/// outcome once, including on cancellation, so it can reclaim owned values.
+forall Task, Output, Env where Plan[Task, Output].
+fn defer(task: Task, reply: closure[Env](Output) -> Response!) -> Action! {
+    Action!::Deferred.(response_plan(task, reply))
+}
+
+forall Task, Output, Env where Plan[Task, Output].
+fn response_plan(task: Task, reply: closure[Env](Output) -> Response!) -> Deferred! {
+    let prepared = prepare[Task, Output](task);
+    let (scope, root) = unsafe &prepared.native();
+    let plan = HeapAllocator::alloc(sizeof[ResponsePlan![Task, Output, Env]]()).into_raw();
+    unsafe *(unsafe (plan as *ResponsePlan![Task, Output, Env])) = ResponsePlan!.{ prepared, reply };
+    Deferred!.{ plan, scope, root, finish: finish_plan[Task, Output, Env] }
+}
 
 unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
     let { response, head, http10 } = pending;
@@ -40,21 +65,34 @@ unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
     result
 }
 
-unsafe fn reclaim(raw: *u8) -> Pending! {
-    let pending = unsafe *(unsafe (raw as *Pending!));
+forall Task, Output, Env where Plan[Task, Output].
+unsafe fn finish_plan(raw: *u8, client: *u8, ready: u8, head: u8, http10: u8) -> i32 {
+    let { prepared, reply } = unsafe *(unsafe (raw as *ResponsePlan![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    pending
-}
-
-unsafe fn resume(raw: *u8, client: *u8, ready: u8) -> i32 {
-    let pending = unsafe reclaim(raw);
+    let response = reply(collect[Task, Output](prepared));
     if ready != 0u8 {
-        unsafe write_response(client, pending)
+        unsafe write_response(client, Pending!.{ response, head: head != 0u8, http10: http10 != 0u8 })
     } else {
-        let { response, head, http10 } = pending;
         response.destroy();
         0i32
     }
+}
+
+fn after_timer(result: Outcome[Response!]) -> Response! {
+    match result {
+        Outcome::Ready(response) => response,
+        Outcome::Cancelled(response) => { response.destroy(); Response!::rejected(408u16) },
+        Outcome::Failed(response, code) => { response.destroy(); Response!::rejected(500u16) },
+    }
+}
+
+unsafe fn schedule(client: *u8, deferred: Deferred!, head: bool, http10: bool) -> i32 {
+    let { plan, scope, root, finish } = deferred;
+    let head = if head { 1u8 } else { 0u8 };
+    let http10 = if http10 { 1u8 } else { 0u8 };
+    let status = unsafe kable_schedule(client, scope, root, plan, finish, head, http10);
+    if status < 0i32 { unsafe finish(plan, client, 0u8, head, http10); }
+    status
 }
 
 unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,
@@ -81,14 +119,9 @@ unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8
     };
     match action {
         Action!::Reply(response) => unsafe write_response(client, Pending!.{ response, head, http10 }),
-        Action!::After(task) => {
-            let (ms, response) = task.into_parts();
-            let raw = HeapAllocator::alloc(sizeof[Pending!]()).into_raw();
-            unsafe *(unsafe (raw as *Pending!)) = Pending!.{ response, head, http10 };
-            let result = unsafe kable_defer(client, ms, resume, raw);
-            if result != 0i32 { unsafe resume(raw, client, 0u8); }
-            result
-        },
+        Action!::After(task) => unsafe schedule(client,
+            response_plan(task, |outcome: Outcome[Response!]| after_timer(outcome)), head, http10),
+        Action!::Deferred(plan) => unsafe schedule(client, plan, head, http10),
     }
 }
 
@@ -99,7 +132,7 @@ impl Server! {
         Server!::bind(port, Handler::Immediate.(call))
     }
 
-    /// Binds handlers that can reply immediately or wait on an owned timer.
+    /// Binds handlers that can reply immediately or defer to a scoped plan.
     fn bind_async(port: u16, call: fn(Request!) -> Action!) -> Result[Server!, i32] {
         Server!::bind(port, Handler::Deferred.(call))
     }

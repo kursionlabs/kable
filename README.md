@@ -50,10 +50,20 @@ finish within their existing deadlines. Shutdown releases any response held
 by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
-Handlers run synchronously on the event loop and should return promptly.
-`Server!::bind_async` takes a handler that can return `Action!::After` with
-a `sleep` plan. The server schedules the plan on its own loop, and the
-connection owns the wait until the response is sent or the wait is cancelled.
+Handlers run on the event loop and should return promptly. A handler bound with
+`Server!::bind_async` can use `defer(plan, continuation)` to run a timer, file
+read, or joined plan on the listener's loop. The continuation can capture
+owned request values and runs once after the plan joins, including on
+cancellation. The request deadline and shutdown cancel unfinished plans.
+When cancellation ends the request, the connection closes after cleanup.
+
+```sh
+../kursal/bin/kursal build examples/http-file -o bin/http-file
+(cd examples/http-file && ../../bin/http-file)
+```
+
+Request `/file` on the printed address to read the bundled `example.txt`.
+`/health` remains available while the read is pending.
 
 ## Scoped task plans
 
@@ -143,6 +153,7 @@ buffer.
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
 - `examples/hello-server/` — standalone server with a custom handler
+- `examples/http-file/` — file plan and an owned continuation in an HTTP request
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
@@ -157,8 +168,10 @@ python3 tests/integration.py --check-timeout
 
 The integration suite builds Kable and the examples with the adjacent Kursal
 compiler. It checks timer races, file reads, HTTP framing and request limits,
-and TCP state across read deadlines and shutdown. Omit `--check-timeout` to
-skip the ten-second HTTP request deadline check.
+and TCP state across read deadlines and shutdown. The hosted file check holds
+a worker inside a read so it can verify that `/health` stays responsive and
+shutdown waits for the worker to return. Omit `--check-timeout` to skip the
+ten-second HTTP request deadline check.
 
 ## License
 
