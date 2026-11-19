@@ -1,0 +1,188 @@
+//! Owned task plans and outcomes. Drivers supply primitive operations.
+use package::scope::{Branch, ScopeState!};
+
+export Branch;
+export ScopeState!;
+
+forall Driver.
+trait PlanDriver {
+    fn timer(&scope: Driver, ms: u64) -> usize;
+    fn pair(&scope: Driver, kind: Branch, first: usize, second: usize) -> usize;
+    /// Reads the next result in staging order after the engine has joined.
+    /// Zero means cancelled, one means ready or first, and two means second.
+    /// Negative codes report engine or staging failures.
+    fn next(&scope: Driver) -> i32;
+}
+
+forall Task, Output, Driver.
+trait Plan {
+    fn stage(&task: Task, &scope: Driver) -> usize;
+    fn collect(task: Task, &scope: Driver) -> Output;
+}
+
+forall T.
+struct Sleep! { ms: u64, value: T }
+
+forall T.
+impl Sleep![T] {
+    /// Consumes a wait plan to schedule it on a host event loop.
+    fn into_parts(self) -> (u64, T) {
+        let { ms, value } = self;
+        (ms, value)
+    }
+}
+
+forall T.
+fn sleep(ms: u64, value: T) -> Sleep![T] { Sleep!.{ ms, value } }
+
+forall A, B.
+struct Race! { first: Sleep![A], second: Sleep![B] }
+
+forall A, B.
+fn race(first: Sleep![A], second: Sleep![B]) -> Race![A, B] { Race!.{ first, second } }
+
+forall First, Second.
+struct Select! { first: First, second: Second }
+
+/// Starts both plans and selects the first to complete, including a plan
+/// whose operation reports an error. The losing plan is cancelled and joined.
+forall First, Second.
+fn select(first: First, second: Second) -> Select![First, Second] { Select!.{ first, second } }
+
+forall First, Second.
+struct Join! { first: First, second: Second }
+
+/// Starts both plans in the same scope and waits for both to complete.
+forall First, Second.
+fn join(first: First, second: Second) -> Join![First, Second] { Join!.{ first, second } }
+
+forall T.
+exposed enum Outcome {
+    Ready(T),
+    Cancelled(T),
+    Failed(T, i32),
+}
+
+/// Each branch returns both values in input order after the scope closes.
+forall A, B.
+exposed enum RaceOutcome {
+    First(A, B),
+    Second(A, B),
+    Cancelled(A, B),
+    Failed(A, B, i32),
+}
+
+/// Each branch carries both child outcomes, including children that completed
+/// before a cancellation.
+forall A, B.
+exposed enum JoinOutcome {
+    Ready(A, B),
+    Cancelled(A, B),
+    Failed(A, B, i32),
+}
+
+forall T, Driver where PlanDriver[Driver].
+fn stage_sleep(&task: Sleep![T], &scope: Driver) -> usize {
+    let { ms, value } = task;
+    let id = PlanDriver[Driver]::timer(&scope, ms);
+    task = Sleep!.{ ms, value };
+    id
+}
+
+forall T, Driver where PlanDriver[Driver].
+instance Plan[Sleep![T], Outcome[T], Driver] {
+    fn stage(&task: Sleep![T], &scope: Driver) -> usize { stage_sleep(&task, &scope) }
+
+    fn collect(task: Sleep![T], &scope: Driver) -> Outcome[T] {
+        let { ms, value } = task;
+        let code = PlanDriver[Driver]::next(&scope);
+        match code {
+            1i32 => Outcome::Ready.(value),
+            0i32 => Outcome::Cancelled.(value),
+            _ => Outcome::Failed.(value, code),
+        }
+    }
+}
+
+forall A, B, Driver where PlanDriver[Driver].
+instance Plan[Race![A, B], RaceOutcome[A, B], Driver] {
+    fn stage(&task: Race![A, B], &scope: Driver) -> usize {
+        let { first, second } = task;
+        let a = stage_sleep(&first, &scope);
+        let b = stage_sleep(&second, &scope);
+        let id = PlanDriver[Driver]::pair(&scope, Branch::Select, a, b);
+        task = Race!.{ first, second };
+        id
+    }
+
+    fn collect(task: Race![A, B], &scope: Driver) -> RaceOutcome[A, B] {
+        let { first, second } = task;
+        let (first_ms, a) = first.into_parts();
+        let (second_ms, b) = second.into_parts();
+        let first_code = PlanDriver[Driver]::next(&scope);
+        let second_code = PlanDriver[Driver]::next(&scope);
+        let code = PlanDriver[Driver]::next(&scope);
+        race_outcome(a, b, code)
+    }
+}
+
+forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, A, Driver], Plan[Second, B, Driver].
+fn stage_pair(&first: First, &second: Second, &scope: Driver, kind: Branch) -> usize {
+    let a = Plan[First, A, Driver]::stage(&first, &scope);
+    let b = Plan[Second, B, Driver]::stage(&second, &scope);
+    PlanDriver[Driver]::pair(&scope, kind, a, b)
+}
+
+forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, A, Driver], Plan[Second, B, Driver].
+fn collect_pair(first: First, second: Second, &scope: Driver) -> (A, B, i32) {
+    let a = Plan[First, A, Driver]::collect(first, &scope);
+    let b = Plan[Second, B, Driver]::collect(second, &scope);
+    let code = PlanDriver[Driver]::next(&scope);
+    (a, b, code)
+}
+
+forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, A, Driver], Plan[Second, B, Driver].
+instance Plan[Select![First, Second], RaceOutcome[A, B], Driver] {
+    fn stage(&task: Select![First, Second], &scope: Driver) -> usize {
+        let { first, second } = task;
+        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, Branch::Select);
+        task = Select!.{ first, second };
+        id
+    }
+
+    fn collect(task: Select![First, Second], &scope: Driver) -> RaceOutcome[A, B] {
+        let { first, second } = task;
+        let (a, b, code) = collect_pair[First, Second, A, B, Driver](first, second, &scope);
+        race_outcome(a, b, code)
+    }
+}
+
+forall A, B.
+fn race_outcome(a: A, b: B, code: i32) -> RaceOutcome[A, B] {
+    match code {
+        1i32 => RaceOutcome::First.(a, b),
+        2i32 => RaceOutcome::Second.(a, b),
+        0i32 => RaceOutcome::Cancelled.(a, b),
+        _ => RaceOutcome::Failed.(a, b, code),
+    }
+}
+
+forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, A, Driver], Plan[Second, B, Driver].
+instance Plan[Join![First, Second], JoinOutcome[A, B], Driver] {
+    fn stage(&task: Join![First, Second], &scope: Driver) -> usize {
+        let { first, second } = task;
+        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, Branch::Join);
+        task = Join!.{ first, second };
+        id
+    }
+
+    fn collect(task: Join![First, Second], &scope: Driver) -> JoinOutcome[A, B] {
+        let { first, second } = task;
+        let (a, b, code) = collect_pair[First, Second, A, B, Driver](first, second, &scope);
+        match code {
+            1i32 => JoinOutcome::Ready.(a, b),
+            0i32 => JoinOutcome::Cancelled.(a, b),
+            _ => JoinOutcome::Failed.(a, b, code),
+        }
+    }
+}

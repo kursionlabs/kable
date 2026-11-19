@@ -515,15 +515,11 @@ def main():
     else:
         with tempfile.TemporaryDirectory() as directory:
             binary = build("kable", Path(directory) / "kable")
-            example = build("examples/timer-race", Path(directory) / "timer-race")
+            check_timer_engines(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
-            result = subprocess.run([str(example)], check=True, capture_output=True, timeout=5)
-            assert b"First timer won" in result.stdout and b"cancelled both timers" in result.stdout
-            assert b"Join waited" in result.stdout and b"cancelled the nested waits" in result.stdout
-            assert b"Select cancelled the unfinished part of a losing join" in result.stdout
             check_async_read([str(async_read)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
@@ -538,6 +534,39 @@ def build(package, binary):
         check=True,
     )
     return binary
+
+
+def check_timer_engines(directory):
+    native = build("examples/timer-race", directory / "timer-race")
+    virtual_package = directory / "virtual-timers"
+    virtual_package.mkdir()
+    (virtual_package / "lib.kur").write_bytes((ROOT / "examples/timer-race/lib.kur").read_bytes())
+    (virtual_package / "kur.toml").write_text(f"""
+[package]
+name="virtual_timer_test"
+source_root="."
+kind="executable"
+entry="main"
+
+[dependencies.std]
+path="{(ROOT / '../kursal/lib/std').resolve()}"
+
+[dependencies.async]
+path="{ROOT / 'lib/virtual_clock'}"
+""")
+    virtual = build(str(virtual_package), directory / "virtual-timer-race")
+    scope = build("tests/task-scope", directory / "task-scope")
+
+    def output(binary):
+        return subprocess.run([str(binary)], check=True, capture_output=True, timeout=5).stdout
+
+    expected = output(native)
+    assert b"First timer won" in expected and b"cancelled both timers" in expected
+    assert b"Join waited" in expected and b"cancelled the nested waits" in expected
+    assert b"Select cancelled the unfinished part of a losing join" in expected
+    assert output(virtual) == expected
+    output(scope)
+    print("Kable libuv and virtual timer checks passed")
 
 
 if __name__ == "__main__":

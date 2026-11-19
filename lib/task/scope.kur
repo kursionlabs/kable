@@ -1,0 +1,200 @@
+//! Engine-independent task selection and resource lifetime bookkeeping.
+use std::collections::vec::{OwnedVec!, Popped!};
+
+const PENDING: i32 = i32::MAX;
+
+exposed enum Branch { Leaf, Select, Join }
+
+struct Node {
+    kind: Branch,
+    first: usize,
+    second: usize,
+    parent: usize,
+    result: i32,
+}
+
+impl Node {
+    fn reparent(self, parent: usize) -> Node {
+        let { parent: old, ..rest } = self;
+        Node.{ parent, ..rest }
+    }
+
+    fn resolve(self, result: i32) -> Node {
+        let { result: old, ..rest } = self;
+        Node.{ result, ..rest }
+    }
+}
+
+/// The engine reports logical completions and resource retirement separately.
+/// A cancelled leaf can still own an in-flight engine request.
+struct ScopeState! {
+    nodes: OwnedVec![Node],
+    stops: OwnedVec![usize],
+    root: usize,
+    pending: usize,
+}
+
+impl ScopeState! {
+    fn new() -> ScopeState! {
+        ScopeState!.{
+            nodes: OwnedVec!::new(), stops: OwnedVec!::new(),
+            root: usize::MAX, pending: 0usize,
+        }
+    }
+
+    fn add(&self, kind: Branch, first: usize, second: usize) -> usize {
+        let { nodes, stops, root, pending } = self;
+        var nodes = nodes;
+        let index = &nodes.len();
+        let leaf = match kind { Branch::Leaf => true, _ => false, };
+        let valid = root == usize::MAX && (leaf ||
+            (first < index && second < index && first != second &&
+             (&nodes.at(first)).parent == usize::MAX && (&nodes.at(second)).parent == usize::MAX));
+        if valid {
+            if !leaf {
+                let a = &nodes.at(first);
+                let b = &nodes.at(second);
+                &nodes.set(first, a.reparent(index));
+                &nodes.set(second, b.reparent(index));
+            }
+            nodes = nodes.push(Node.{ kind, first, second, parent: usize::MAX, result: PENDING });
+        }
+        self = ScopeState!.{ nodes, stops, root, pending };
+        if valid { index } else { usize::MAX }
+    }
+
+    fn begin(&self, root: usize) -> bool {
+        let { nodes, stops, root: prior, pending } = self;
+        let count = &nodes.len();
+        var valid = prior == usize::MAX && root < count;
+        var i = 0usize;
+        while valid && i < count {
+            let node = &nodes.at(i);
+            valid = (node.parent == usize::MAX) == (i == root);
+            i = i + 1usize;
+        }
+        let root = if valid { root } else { prior };
+        self = ScopeState!.{ nodes, stops, root, pending };
+        valid
+    }
+
+    fn started(&self) {
+        let { nodes, stops, root, pending } = self;
+        self = ScopeState!.{ nodes, stops, root, pending: pending + 1usize };
+    }
+
+    fn retired(&self) -> bool {
+        let { nodes, stops, root, pending } = self;
+        let joined = pending == 1usize;
+        let pending = if pending == 0usize { 0usize } else { pending - 1usize };
+        self = ScopeState!.{ nodes, stops, root, pending };
+        joined
+    }
+
+    fn pending(&self) -> bool {
+        let { nodes, stops, root, pending } = self;
+        self = ScopeState!.{ nodes, stops, root, pending };
+        pending != 0usize
+    }
+
+    fn complete(&self, id: usize) -> bool {
+        let { nodes, stops, root, pending } = self;
+        var resolved = false;
+        if root != usize::MAX && id < &nodes.len() {
+            let leaf = &nodes.at(id);
+            match leaf.kind {
+                Branch::Leaf => { resolved = settle(&nodes, &stops, id); },
+                _ => (),
+            }
+        }
+        self = ScopeState!.{ nodes, stops, root, pending };
+        resolved
+    }
+
+    fn cancel(&self) {
+        let { nodes, stops, root, pending } = self;
+        if root != usize::MAX { cancel_branch(&nodes, &stops, root); }
+        self = ScopeState!.{ nodes, stops, root, pending };
+    }
+
+    fn take_cancel(&self) -> usize {
+        let { nodes, stops, root, pending } = self;
+        let id = match &stops.pop() {
+            Popped!::Item(id) => id,
+            Popped!::Empty => usize::MAX,
+        };
+        self = ScopeState!.{ nodes, stops, root, pending };
+        id
+    }
+
+    fn result(&self, id: usize) -> i32 {
+        let { nodes, stops, root, pending } = self;
+        let result = if root != usize::MAX && pending == 0usize && id < &nodes.len() {
+            (&nodes.at(id)).result
+        } else { PENDING };
+        self = ScopeState!.{ nodes, stops, root, pending };
+        if result == PENDING { -1i32 } else { result }
+    }
+
+    fn destroy(self) {
+        let { nodes, stops, root, pending } = self;
+        nodes.destroy(ignore_node);
+        stops.destroy(ignore_id);
+    }
+}
+
+fn ignore_node(node: Node) {}
+fn ignore_id(id: usize) {}
+
+fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize) {
+    // Follow the parent links to walk the subtree without using the call stack.
+    var index = root;
+    while true {
+        let node = &nodes.at(index);
+        var child = usize::MAX;
+        if node.result == PENDING {
+            &nodes.set(index, node.resolve(0i32));
+            match node.kind {
+                Branch::Leaf => { stops = stops.push(index); },
+                _ => { child = node.first; },
+            }
+        }
+        if child == usize::MAX {
+            while index != root && child == usize::MAX {
+                let node = &nodes.at(index);
+                let parent = &nodes.at(node.parent);
+                if index == parent.first { child = parent.second; }
+                index = node.parent;
+            }
+            if child == usize::MAX { return; }
+        }
+        index = child;
+    }
+}
+
+fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bool {
+    var index = start;
+    var result = 1i32;
+    while true {
+        let node = &nodes.at(index);
+        if node.result != PENDING { return false; }
+        &nodes.set(index, node.resolve(result));
+        if node.parent == usize::MAX { return true; }
+
+        let parent = &nodes.at(node.parent);
+        let first = index == parent.first;
+        let other = if first { parent.second } else { parent.first };
+        match parent.kind {
+            Branch::Select => {
+                cancel_branch(&nodes, &stops, other);
+                result = if first { 1i32 } else { 2i32 };
+            },
+            _ => {
+                if (&nodes.at(other)).result == PENDING { return false; }
+                result = 1i32;
+            },
+        }
+        index = node.parent;
+    }
+    false
+}

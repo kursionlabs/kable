@@ -6,3 +6,6 @@ link_flags=["-luv"]
 
 [dependencies.std]
 path="../../../kursal/lib/std"
+
+[dependencies.task]
+path="../task"

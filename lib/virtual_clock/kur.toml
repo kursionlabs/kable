@@ -1,0 +1,9 @@
+[package]
+name="virtual_clock"
+source_root="."
+
+[dependencies.std]
+path="../../../kursal/lib/std"
+
+[dependencies.task]
+path="../task"

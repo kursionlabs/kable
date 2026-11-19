@@ -1,0 +1,132 @@
+//! Deterministic driver for timer plans. Each step advances to the next event.
+use std::collections::vec::OwnedVec!;
+use std::option::Option;
+use std::process::trap;
+use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, RaceOutcome, ScopeState!,
+    join, race, select, sleep};
+
+export JoinOutcome;
+export Outcome;
+export RaceOutcome;
+export join;
+export race;
+export select;
+export sleep;
+
+struct Virtual! {
+    state: ScopeState!,
+    timers: OwnedVec![Option[u64]],
+    cursor: usize,
+}
+
+instance PlanDriver[Virtual!] {
+    fn timer(&scope: Virtual!, ms: u64) -> usize {
+        let { state, timers, cursor } = scope;
+        let id = &state.add(Branch::Leaf, 0usize, 0usize);
+        let timers = if id == usize::MAX { timers } else { timers.push(Option::Some.(ms)) };
+        scope = Virtual!.{ state, timers, cursor };
+        id
+    }
+
+    fn pair(&scope: Virtual!, kind: Branch, first: usize, second: usize) -> usize {
+        let { state, timers, cursor } = scope;
+        let id = &state.add(kind, first, second);
+        let timers = if id == usize::MAX { timers } else { timers.push(Option::None) };
+        scope = Virtual!.{ state, timers, cursor };
+        id
+    }
+
+    fn next(&scope: Virtual!) -> i32 {
+        let { state, timers, cursor } = scope;
+        let code = &state.result(cursor);
+        scope = Virtual!.{ state, timers, cursor: cursor + 1usize };
+        code
+    }
+}
+
+fn earliest(&timers: OwnedVec![Option[u64]]) -> (usize, u64) {
+    var id = usize::MAX;
+    var earliest = u64::MAX;
+    var i = 0usize;
+    while i < &timers.len() {
+        match &timers.at(i) {
+            Option::Some(ms) => {
+                if id == usize::MAX || ms < earliest {
+                    id = i;
+                    earliest = ms;
+                }
+            },
+            Option::None => (),
+        }
+        i = i + 1usize;
+    }
+    (id, earliest)
+}
+
+fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) {
+    let { state, timers, cursor } = scope;
+    if !&state.begin(root) {
+        scope = Virtual!.{ state, timers, cursor };
+        return;
+    }
+    let expired = match deadline { Option::Some(ms) => ms == 0u64, Option::None => false, };
+    if expired {
+        &state.cancel();
+        scope = Virtual!.{ state, timers, cursor };
+        return;
+    }
+    var limit = deadline;
+    if limit.is_some() { &state.started(); }
+    var i = 0usize;
+    while i < &timers.len() {
+        if (&timers.at(i)).is_some() { &state.started(); }
+        i = i + 1usize;
+    }
+
+    while &state.pending() {
+        let (id, due) = earliest(&timers);
+        let expired = match limit { Option::Some(ms) => ms <= due, Option::None => false, };
+        if expired {
+            &state.cancel();
+            &state.retired();
+            limit = Option::None;
+        } else {
+            if id == usize::MAX { trap(); }
+            &timers.set(id, Option::None);
+            let finished = &state.complete(id);
+            &state.retired();
+            if finished && limit.is_some() {
+                &state.retired();
+                limit = Option::None;
+            }
+        }
+
+        var cancelled = &state.take_cancel();
+        while cancelled != usize::MAX {
+            &timers.set(cancelled, Option::None);
+            &state.retired();
+            cancelled = &state.take_cancel();
+        }
+    }
+    scope = Virtual!.{ state, timers, cursor };
+}
+
+fn ignore_timer(timer: Option[u64]) {}
+
+forall Task, Output where Plan[Task, Output, Virtual!].
+fn drive(task: Task, deadline: Option[u64]) -> Output {
+    var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), cursor: 0usize };
+    let root = Plan[Task, Output, Virtual!]::stage(&task, &scope);
+    advance(&scope, root, deadline);
+    let result = Plan[Task, Output, Virtual!]::collect(task, &scope);
+    let { state, timers, cursor } = scope;
+    state.destroy();
+    timers.destroy(ignore_timer);
+    result
+}
+
+forall Task, Output where Plan[Task, Output, Virtual!].
+fn run(task: Task) -> Output { drive(task, Option::None) }
+
+forall Task, Output where Plan[Task, Output, Virtual!].
+fn timeout(ms: u64, task: Task) -> Output { drive(task, Option::Some.(ms)) }

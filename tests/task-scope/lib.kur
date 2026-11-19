@@ -1,0 +1,26 @@
+use task::{Branch, ScopeState!};
+
+fn main() -> i32 {
+    let scope = ScopeState!::new();
+    let first = &scope.add(Branch::Leaf, 0usize, 0usize);
+    let second = &scope.add(Branch::Leaf, 0usize, 0usize);
+    let root = &scope.add(Branch::Select, first, second);
+    let valid = &scope.begin(root);
+    &scope.started();
+    &scope.started();
+    let won = &scope.complete(first);
+    let cancelled = &scope.take_cancel();
+    let first_retired = &scope.retired();
+    let still_pending = &scope.pending();
+    let early = &scope.result(root);
+    // A late event from the cancelled child cannot replace the winner.
+    let late = &scope.complete(second);
+    let joined = &scope.retired();
+    let result = &scope.result(root);
+    let loser = &scope.result(second);
+    let next_stop = &scope.take_cancel();
+    scope.destroy();
+    if valid && won && cancelled == second && !first_retired && still_pending &&
+        early < 0i32 && !late && joined && result == 1i32 && loser == 0i32 &&
+        next_stop == usize::MAX { 0i32 } else { 1i32 }
+}

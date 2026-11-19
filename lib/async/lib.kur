@@ -1,52 +1,34 @@
 //! Structured waits, joins, and bounded file reads on libuv.
+use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
-use std::mem::alloca;
+use std::mem::{alloca, sizeof};
 use std::option::Option;
+use std::ptr::is_null;
 use std::slice::ReadBytes;
+use task::{Join!, JoinOutcome, Outcome, Plan as TaskPlan, PlanDriver, Race!, RaceOutcome, Select!, Sleep!,
+    join, race, select, sleep};
+use task::{Branch, ScopeState!};
 
-extern "C" fn kable_scope_new() -> *u8;
+export Join!;
+export JoinOutcome;
+export Outcome;
+export Race!;
+export RaceOutcome;
+export Select!;
+export Sleep!;
+export join;
+export race;
+export select;
+export sleep;
+
+extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize) -> usize,
+    event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
 extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize) -> usize;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> ();
 extern "C" fn kable_scope_next(scope: *u8) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, bytes: *(*u8), len: *usize) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
-
-forall T.
-struct Sleep! { ms: u64, value: T }
-
-forall T.
-impl Sleep![T] {
-    /// Consumes a wait plan to schedule it on a host event loop.
-    fn into_parts(self) -> (u64, T) {
-        let { ms, value } = self;
-        (ms, value)
-    }
-}
-
-forall T.
-fn sleep(ms: u64, value: T) -> Sleep![T] { Sleep!.{ ms, value } }
-
-forall A, B.
-struct Race! { first: Sleep![A], second: Sleep![B] }
-
-forall A, B.
-fn race(first: Sleep![A], second: Sleep![B]) -> Race![A, B] { Race!.{ first, second } }
-
-forall First, Second.
-struct Select! { first: First, second: Second }
-
-/// Starts both plans and selects the first to complete, including a plan
-/// whose operation reports an error. The losing plan is cancelled and joined.
-forall First, Second.
-fn select(first: First, second: Second) -> Select![First, Second] { Select!.{ first, second } }
-
-forall First, Second.
-struct Join! { first: First, second: Second }
-
-/// Starts both plans in the same scope and waits for both to complete.
-forall First, Second.
-fn join(first: First, second: Second) -> Join![First, Second] { Join!.{ first, second } }
 
 struct ReadFile! { path: Buffer!, limit: usize }
 
@@ -62,31 +44,6 @@ exposed enum FileOutcome! {
     Failed(i32),
 }
 
-forall T.
-exposed enum Outcome {
-    Ready(T),
-    Cancelled(T),
-    Failed(T, i32),
-}
-
-/// Each branch returns both values in input order after the scope closes.
-forall A, B.
-exposed enum RaceOutcome {
-    First(A, B),
-    Second(A, B),
-    Cancelled(A, B),
-    Failed(A, B, i32),
-}
-
-/// Each branch carries both child outcomes, including children that completed
-/// before a cancellation.
-forall A, B.
-exposed enum JoinOutcome {
-    Ready(A, B),
-    Cancelled(A, B),
-    Failed(A, B, i32),
-}
-
 forall Task, Output.
 trait Runnable {
     fn drive(task: Task, deadline: Option[u64]) -> Output;
@@ -96,7 +53,57 @@ trait Runnable {
 // Owned payloads stay in Kursal throughout the native event loop.
 struct Scope! { raw: *u8 }
 
+unsafe fn add_branch(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
+    let branch = match kind {
+        0u8 => Branch::Leaf,
+        1u8 => Branch::Select,
+        2u8 => Branch::Join,
+        _ => return usize::MAX,
+    };
+    let ptr = unsafe (raw as *ScopeState!);
+    let state = unsafe *ptr;
+    let id = &state.add(branch, first, second);
+    unsafe *ptr = state;
+    id
+}
+
+// Messages sent by the libuv adapter. Only the portable state decides which
+// branch wins, what to cancel, and when all resources have retired.
+unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
+    let ptr = unsafe (raw as *ScopeState!);
+    let state = unsafe *ptr;
+    if event == 8u8 {
+        state.destroy();
+        HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
+        return 0usize;
+    }
+    let result = match event {
+        0u8 => if &state.begin(id) { 1usize } else { 0usize },
+        1u8 => { &state.started(); 0usize },
+        2u8 => if &state.retired() { 1usize } else { 0usize },
+        3u8 => if &state.pending() { 1usize } else { 0usize },
+        4u8 => if &state.complete(id) { 1usize } else { 0usize },
+        5u8 => { &state.cancel(); 0usize },
+        6u8 => &state.take_cancel(),
+        7u8 => {
+            let code = &state.result(id);
+            if code < 0i32 { usize::MAX } else { code as usize }
+        },
+        _ => 0usize,
+    };
+    unsafe *ptr = state;
+    result
+}
+
 impl Scope! {
+    fn new() -> Scope! {
+        let policy = HeapAllocator::alloc(sizeof[ScopeState!]()).into_raw();
+        unsafe *(unsafe (policy as *ScopeState!)) = ScopeState!::new();
+        let raw = unsafe kable_scope_new(policy, add_branch, scope_event);
+        if is_null(raw) { unsafe scope_event(policy, 8u8, 0usize); }
+        Scope!.{ raw }
+    }
+
     fn add(&self, kind: u8, ms: u64, first: usize, second: usize) -> usize {
         let { raw } = self;
         let id = unsafe kable_scope_add(raw, kind, ms, first, second);
@@ -153,7 +160,7 @@ trait Plan {
     fn collect(task: Task, &scope: Scope!) -> Output;
 }
 
-instance Plan[ReadFile!, FileOutcome!] {
+instance TaskPlan[ReadFile!, FileOutcome!, Scope!] {
     fn stage(&task: ReadFile!, &scope: Scope!) -> usize {
         let { path, limit } = task;
         let id = &scope.add_file(&path, limit);
@@ -173,109 +180,29 @@ instance Plan[ReadFile!, FileOutcome!] {
     }
 }
 
-forall T.
-fn stage_sleep(&task: Sleep![T], &scope: Scope!) -> usize {
-    let { ms, value } = task;
-    let id = &scope.add(0u8, ms, 0usize, 0usize);
-    task = Sleep!.{ ms, value };
-    id
-}
+instance PlanDriver[Scope!] {
+    fn timer(&scope: Scope!, ms: u64) -> usize { &scope.add(0u8, ms, 0usize, 0usize) }
 
-forall T.
-instance Plan[Sleep![T], Outcome[T]] {
-    fn stage(&task: Sleep![T], &scope: Scope!) -> usize { stage_sleep(&task, &scope) }
-
-    fn collect(task: Sleep![T], &scope: Scope!) -> Outcome[T] {
-        let { ms, value } = task;
-        let code = &scope.next();
-        match code {
-            1i32 => Outcome::Ready.(value),
-            0i32 => Outcome::Cancelled.(value),
-            _ => Outcome::Failed.(value, code),
-        }
-    }
-}
-
-forall A, B.
-instance Plan[Race![A, B], RaceOutcome[A, B]] {
-    fn stage(&task: Race![A, B], &scope: Scope!) -> usize {
-        let { first, second } = task;
-        let a = stage_sleep(&first, &scope);
-        let b = stage_sleep(&second, &scope);
-        let id = &scope.add(1u8, 0u64, a, b);
-        task = Race!.{ first, second };
-        id
+    fn pair(&scope: Scope!, kind: Branch, first: usize, second: usize) -> usize {
+        let tag = match kind {
+            Branch::Leaf => 0u8,
+            Branch::Select => 1u8,
+            Branch::Join => 2u8,
+        };
+        &scope.add(tag, 0u64, first, second)
     }
 
-    fn collect(task: Race![A, B], &scope: Scope!) -> RaceOutcome[A, B] {
-        let { first, second } = task;
-        let (first_ms, a) = first.into_parts();
-        let (second_ms, b) = second.into_parts();
-        let first_code = &scope.next();
-        let second_code = &scope.next();
-        let code = &scope.next();
-        race_outcome(a, b, code)
-    }
+    fn next(&scope: Scope!) -> i32 { &scope.next() }
 }
 
-forall First, Second, A, B where Plan[First, A], Plan[Second, B].
-fn stage_pair(&first: First, &second: Second, &scope: Scope!, kind: u8) -> usize {
-    let a = Plan[First, A]::stage(&first, &scope);
-    let b = Plan[Second, B]::stage(&second, &scope);
-    &scope.add(kind, 0u64, a, b)
-}
-
-forall First, Second, A, B where Plan[First, A], Plan[Second, B].
-fn collect_pair(first: First, second: Second, &scope: Scope!) -> (A, B, i32) {
-    let a = Plan[First, A]::collect(first, &scope);
-    let b = Plan[Second, B]::collect(second, &scope);
-    let code = &scope.next();
-    (a, b, code)
-}
-
-forall First, Second, A, B where Plan[First, A], Plan[Second, B].
-instance Plan[Select![First, Second], RaceOutcome[A, B]] {
-    fn stage(&task: Select![First, Second], &scope: Scope!) -> usize {
-        let { first, second } = task;
-        let id = stage_pair[First, Second, A, B](&first, &second, &scope, 1u8);
-        task = Select!.{ first, second };
-        id
+forall Task, Output where TaskPlan[Task, Output, Scope!].
+instance Plan[Task, Output] {
+    fn stage(&task: Task, &scope: Scope!) -> usize {
+        TaskPlan[Task, Output, Scope!]::stage(&task, &scope)
     }
 
-    fn collect(task: Select![First, Second], &scope: Scope!) -> RaceOutcome[A, B] {
-        let { first, second } = task;
-        let (a, b, code) = collect_pair[First, Second, A, B](first, second, &scope);
-        race_outcome(a, b, code)
-    }
-}
-
-forall A, B.
-fn race_outcome(a: A, b: B, code: i32) -> RaceOutcome[A, B] {
-    match code {
-        1i32 => RaceOutcome::First.(a, b),
-        2i32 => RaceOutcome::Second.(a, b),
-        0i32 => RaceOutcome::Cancelled.(a, b),
-        _ => RaceOutcome::Failed.(a, b, code),
-    }
-}
-
-forall First, Second, A, B where Plan[First, A], Plan[Second, B].
-instance Plan[Join![First, Second], JoinOutcome[A, B]] {
-    fn stage(&task: Join![First, Second], &scope: Scope!) -> usize {
-        let { first, second } = task;
-        let id = stage_pair[First, Second, A, B](&first, &second, &scope, 2u8);
-        task = Join!.{ first, second };
-        id
-    }
-
-    fn collect(task: Join![First, Second], &scope: Scope!) -> JoinOutcome[A, B] {
-        let { first, second } = task;
-        let (a, b, code) = collect_pair[First, Second, A, B](first, second, &scope);
-        match code {
-            1i32 => JoinOutcome::Ready.(a, b),
-            0i32 => JoinOutcome::Cancelled.(a, b),
-            _ => JoinOutcome::Failed.(a, b, code),
-        }
+    fn collect(task: Task, &scope: Scope!) -> Output {
+        TaskPlan[Task, Output, Scope!]::collect(task, &scope)
     }
 }
 
@@ -284,7 +211,7 @@ struct Prepared! { scope: Scope!, task: Task, root: usize }
 
 forall Task, Output where Plan[Task, Output].
 fn prepare(task: Task) -> Prepared![Task] {
-    var scope = Scope!.{ raw: unsafe kable_scope_new() };
+    var scope = Scope!::new();
     let root = Plan[Task, Output]::stage(&task, &scope);
     Prepared!.{ scope, task, root }
 }
@@ -329,14 +256,14 @@ instance Runnable[Race![A, B], RaceOutcome[A, B]] {
     fn drive(task: Race![A, B], deadline: Option[u64]) -> RaceOutcome[A, B] { drive_plan(task, deadline) }
 }
 
-forall First, Second, A, B where Plan[First, A], Plan[Second, B].
+forall First, Second, A, B where TaskPlan[First, A, Scope!], TaskPlan[Second, B, Scope!].
 instance Runnable[Select![First, Second], RaceOutcome[A, B]] {
     fn drive(task: Select![First, Second], deadline: Option[u64]) -> RaceOutcome[A, B] {
         drive_plan(task, deadline)
     }
 }
 
-forall First, Second, A, B where Plan[First, A], Plan[Second, B].
+forall First, Second, A, B where TaskPlan[First, A, Scope!], TaskPlan[Second, B, Scope!].
 instance Runnable[Join![First, Second], JoinOutcome[A, B]] {
     fn drive(task: Join![First, Second], deadline: Option[u64]) -> JoinOutcome[A, B] {
         drive_plan(task, deadline)

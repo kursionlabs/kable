@@ -80,11 +80,21 @@ buffer into a second read of `footer.txt`. It returns their contents together.
 
 ## Scoped task plans
 
-`lib/async/` lets any Kursal program build a wait with `sleep(ms, value)` and
-drive it with `run`. `race` runs two waits in one scope and cancels the loser
-when the first timer fires. `join` waits for both child plans. `select` takes the
-first child to complete, which may report an error, then cancels and joins the
-loser. Both combinators accept waits, file reads, and nested plans.
+`lib/task/` defines owned task plans, typed outcomes, and scope policy in
+Kursal. A driver provides primitive operations and reports logical completion
+and resource retirement separately. The scope chooses winners, tracks
+cancellation, and exposes results after all operations have retired.
+
+`lib/async/` drives plans with libuv and provides bounded file reads.
+`lib/virtual_clock/` drives timer plans by advancing directly to the next
+event. It builds and links without libuv. The integration suite builds
+the same timer program against both drivers and compares its outcomes.
+
+Build a wait with `sleep(ms, value)` and drive it with the chosen engine's
+`run`. `race` runs two waits in one scope and cancels the loser when the first
+timer fires. `join` waits for both child plans. `select` takes the first child
+to complete, which may report an error, then cancels and joins the loser.
+Both combinators accept nested plans and operations supported by the driver.
 
 `timeout` adds a parent deadline that cancels every pending child, including
 children of nested joins. The scope closes all timer handles before returning.
@@ -163,7 +173,9 @@ buffer.
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
-- `lib/async/` — scoped waits, joins, races, and file reads
+- `lib/task/` — portable task plans and scope policy
+- `lib/async/` — libuv driver and bounded file reads
+- `lib/virtual_clock/` — deterministic timer driver
 - `lib/http/` — owned request and response types and response encoding
 - `lib/server/` — server lifecycle and the native libuv and llhttp adapter
 - `lib/tcp/` — scoped TCP reads, deadlines, and writes
