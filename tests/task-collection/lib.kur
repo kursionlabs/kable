@@ -1,6 +1,6 @@
 use async::{run, sleep};
 use std::option::Option;
-use task::{Branch, Outcome, Plan, PlanDriver, PlanOutput, Resolution, Sleep!};
+use task::{Outcome, Pair, PairKind, Plan, PlanDriver, PlanOutput, Resolution, Sleep!};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
 
@@ -14,7 +14,7 @@ instance Plan[ReverseSelect!, Driver -> bool] {
         let b = Plan[Sleep![u8], Driver -> Outcome[u8]]::stage(&second, &scope);
         let id = match a {
             Option::Some(a) => match b {
-                Option::Some(b) => PlanDriver[Driver]::pair(&scope, Branch::Select, a, b),
+                Option::Some(b) => PlanDriver[Driver]::pair(&scope, Pair.{ kind: PairKind::Select, first: a, second: b }),
                 Option::None => Option::None,
             },
             Option::None => Option::None,

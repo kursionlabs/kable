@@ -1,7 +1,7 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
-use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, Resolution, ScopeState!, Sleep!, WithinOutcome,
+use task::{Branch, JoinOutcome, Outcome, Pair, Plan, PlanDriver, PlanOutput, RaceOutcome, Resolution, ScopeState!, Sleep!, WithinOutcome,
     join, map, race, select, sleep, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
@@ -27,15 +27,15 @@ struct Virtual! {
 instance PlanDriver[Virtual!] {
     fn timer(&scope: Virtual!, ms: u64) -> Option[usize] {
         let { state, timers } = scope;
-        let id = &state.add(Branch::Leaf, 0usize, 0usize);
+        let id = &state.add(Branch::Leaf);
         let timers = if id.is_some() { timers.push(Option::Some.(ms)) } else { timers };
         scope = Virtual!.{ state, timers };
         id
     }
 
-    fn pair(&scope: Virtual!, kind: Branch, first: usize, second: usize) -> Option[usize] {
+    fn pair(&scope: Virtual!, pair: Pair) -> Option[usize] {
         let { state, timers } = scope;
-        let id = &state.add(kind, first, second);
+        let id = &state.add(Branch::Pair.(pair));
         let timers = if id.is_some() { timers.push(Option::None) } else { timers };
         scope = Virtual!.{ state, timers };
         id

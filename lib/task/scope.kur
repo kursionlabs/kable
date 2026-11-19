@@ -1,8 +1,17 @@
 //! Engine-independent task selection and resource lifetime bookkeeping.
 use std::collections::vec::{OwnedVec!, Popped!};
 use std::option::Option;
+use std::process::trap;
 
-exposed enum Branch { Leaf, Select, Join }
+exposed enum PairKind { Select, Join }
+
+exposed struct Pair {
+    kind: PairKind,
+    first: usize,
+    second: usize,
+}
+
+exposed enum Branch { Leaf, Pair(Pair) }
 
 /// The outcome of a node after its scope joins.
 exposed enum Resolution {
@@ -14,9 +23,7 @@ exposed enum Resolution {
 }
 
 struct Node {
-    kind: Branch,
-    first: usize,
-    second: usize,
+    branch: Branch,
     parent: Option[usize],
     result: Option[Resolution],
 }
@@ -50,22 +57,29 @@ impl ScopeState! {
         }
     }
 
-    fn add(&self, kind: Branch, first: usize, second: usize) -> Option[usize] {
+    fn add(&self, branch: Branch) -> Option[usize] {
         let { nodes, stops, root, pending } = self;
         var nodes = nodes;
         let index = &nodes.len();
-        let leaf = match kind { Branch::Leaf => true, _ => false, };
-        let valid = root.is_none() && (leaf ||
-            (first < index && second < index && first != second &&
-             (&nodes.at(first)).parent.is_none() && (&nodes.at(second)).parent.is_none()));
-        if valid {
-            if !leaf {
-                let a = &nodes.at(first);
-                let b = &nodes.at(second);
-                &nodes.set(first, a.reparent(index));
-                &nodes.set(second, b.reparent(index));
+        let valid = if root.is_none() {
+            match branch {
+                Branch::Leaf => true,
+                Branch::Pair(pair) => {
+                    if pair.first < index && pair.second < index && pair.first != pair.second {
+                        let a = &nodes.at(pair.first);
+                        let b = &nodes.at(pair.second);
+                        let unattached = a.parent.is_none() && b.parent.is_none();
+                        if unattached {
+                            &nodes.set(pair.first, a.reparent(index));
+                            &nodes.set(pair.second, b.reparent(index));
+                        }
+                        unattached
+                    } else { false }
+                },
             }
-            nodes = nodes.push(Node.{ kind, first, second, parent: Option::None, result: Option::None });
+        } else { false };
+        if valid {
+            nodes = nodes.push(Node.{ branch, parent: Option::None, result: Option::None });
         }
         self = ScopeState!.{ nodes, stops, root, pending };
         if valid { Option::Some.(index) } else { Option::None }
@@ -110,7 +124,7 @@ impl ScopeState! {
         var resolved = false;
         if root.is_some() && id < &nodes.len() {
             let leaf = &nodes.at(id);
-            match leaf.kind {
+            match leaf.branch {
                 Branch::Leaf => { resolved = settle(&nodes, &stops, id); },
                 _ => (),
             }
@@ -165,9 +179,9 @@ fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize)
         var child = Option::None;
         if node.result.is_none() {
             &nodes.set(index, node.resolve(Resolution::Cancelled));
-            match node.kind {
+            match node.branch {
                 Branch::Leaf => { stops = stops.push(index); },
-                _ => { child = Option::Some.(node.first); },
+                Branch::Pair(pair) => { child = Option::Some.(pair.first); },
             }
         }
         let next = match child {
@@ -185,11 +199,18 @@ fn next_sibling(&nodes: OwnedVec![Node], root: usize, start: usize) -> Option[us
     var index = start;
     while index != root {
         let parent_id = (&nodes.at(index)).parent.unwrap();
-        let parent = &nodes.at(parent_id);
-        if index == parent.first { return Option::Some.(parent.second); }
+        let pair = children(&nodes, parent_id);
+        if index == pair.first { return Option::Some.(pair.second); }
         index = parent_id;
     }
     Option::None
+}
+
+fn children(&nodes: OwnedVec![Node], id: usize) -> Pair {
+    match (&nodes.at(id)).branch {
+        Branch::Pair(pair) => pair,
+        Branch::Leaf => trap(),
+    }
 }
 
 fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bool {
@@ -204,15 +225,15 @@ fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bo
             Option::None => return true,
         };
 
-        let parent = &nodes.at(parent_id);
-        let first = index == parent.first;
-        let other = if first { parent.second } else { parent.first };
-        match parent.kind {
-            Branch::Select => {
+        let pair = children(&nodes, parent_id);
+        let first = index == pair.first;
+        let other = if first { pair.second } else { pair.first };
+        match pair.kind {
+            PairKind::Select => {
                 cancel_branch(&nodes, &stops, other);
                 result = if first { Resolution::First } else { Resolution::Second };
             },
-            _ => {
+            PairKind::Join => {
                 if (&nodes.at(other)).result.is_none() { return false; }
                 result = Resolution::Completed;
             },

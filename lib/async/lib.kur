@@ -7,7 +7,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, Select!, Sleep!,
     join, race, select, sleep};
-use task::{Branch, Resolution, ScopeState!, WithinOutcome, map, within};
+use task::{Branch, Pair, PairKind, Resolution, ScopeState!, WithinOutcome, map, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export Join!;
@@ -65,13 +65,13 @@ const SECOND: i32 = 3i32;
 unsafe fn add_branch(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
     let branch = match kind {
         0u8 => Branch::Leaf,
-        1u8 => Branch::Select,
-        2u8 => Branch::Join,
+        1u8 => Branch::Pair.(Pair.{ kind: PairKind::Select, first, second }),
+        2u8 => Branch::Pair.(Pair.{ kind: PairKind::Join, first, second }),
         _ => return usize::MAX,
     };
     let ptr = unsafe (raw as *ScopeState!);
     let state = unsafe *ptr;
-    let id = &state.add(branch, first, second);
+    let id = &state.add(branch);
     unsafe *ptr = state;
     id.unwrap_or(usize::MAX)
 }
@@ -203,11 +203,11 @@ instance Plan[ReadFile!, Scope! -> FileOutcome!] {
 instance PlanDriver[Scope!] {
     fn timer(&scope: Scope!, ms: u64) -> Option[usize] { &scope.add(0u8, ms, 0usize, 0usize) }
 
-    fn pair(&scope: Scope!, kind: Branch, first: usize, second: usize) -> Option[usize] {
+    fn pair(&scope: Scope!, pair: Pair) -> Option[usize] {
+        let { kind, first, second } = pair;
         let tag = match kind {
-            Branch::Leaf => 0u8,
-            Branch::Select => 1u8,
-            Branch::Join => 2u8,
+            PairKind::Select => 1u8,
+            PairKind::Join => 2u8,
         };
         &scope.add(tag, 0u64, first, second)
     }

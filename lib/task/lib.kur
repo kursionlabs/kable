@@ -1,15 +1,17 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
 use std::option::Option;
-use package::scope::{Branch, Resolution, ScopeState!};
+use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
 
 export Branch;
+export Pair;
+export PairKind;
 export Resolution;
 export ScopeState!;
 
 forall Driver.
 trait PlanDriver {
     fn timer(&scope: Driver, ms: u64) -> Option[usize];
-    fn pair(&scope: Driver, kind: Branch, first: usize, second: usize) -> Option[usize];
+    fn pair(&scope: Driver, pair: Pair) -> Option[usize];
     /// Gets a node's result after the engine has joined.
     /// An absent ID reports staging failure.
     fn result(&scope: Driver, id: Option[usize]) -> Resolution;
@@ -104,10 +106,10 @@ instance Plan[Sleep![T], Driver -> Outcome[T]] {
 }
 
 forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-fn stage_pair(&first: First, &second: Second, &scope: Driver, kind: Branch) -> Option[usize] {
+fn stage_pair(&first: First, &second: Second, &scope: Driver, kind: PairKind) -> Option[usize] {
     let a = Plan[First, Driver -> A]::stage(&first, &scope);
     let b = Plan[Second, Driver -> B]::stage(&second, &scope);
-    PlanDriver[Driver]::pair(&scope, kind, a?, b?)
+    PlanDriver[Driver]::pair(&scope, Pair.{ kind, first: a?, second: b? })
 }
 
 forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
@@ -122,7 +124,7 @@ forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver 
 instance Plan[Select![First, Second], Driver -> RaceOutcome[A, B]] {
     fn stage(&task: Select![First, Second], &scope: Driver) -> Option[usize] {
         let { first, second, id } = task;
-        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, Branch::Select);
+        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, PairKind::Select);
         task = Select!.{ first, second, id };
         id
     }
@@ -144,7 +146,7 @@ forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver 
 instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
     fn stage(&task: Join![First, Second], &scope: Driver) -> Option[usize] {
         let { first, second, id } = task;
-        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, Branch::Join);
+        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, PairKind::Join);
         task = Join!.{ first, second, id };
         id
     }
