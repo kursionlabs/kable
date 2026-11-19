@@ -27,8 +27,12 @@ struct Handoff! {
 
 forall State, Input, Task.
 impl Handoff![State, Input, Task] {
-    fn resume(self, prior: Option[Input]) -> Option[Task] {
+    fn advance(self, active: bool, prior: Option[Input]) -> Option[Task] {
         let { state, resume, cancel } = self;
+        if !active {
+            cancel(state, prior);
+            return Option::None;
+        }
         match prior {
             Option::Some(input) => resume(state, input),
             Option::None => { cancel(state, Option::None); Option::None },
@@ -52,13 +56,28 @@ fn sequence(task: Task) -> Sequence![First![Task]] {
     Sequence!.{ stages: First!.{ task } }
 }
 
+forall Env, Input, Task.
+fn resume_copy(resume: closure[Env](Input) -> Option[Task], input: Input) -> Option[Task] {
+    resume(input)
+}
+
+forall Env, Input, Task where Copy[Env], Copy[Input].
+fn skip_copy(resume: closure[Env](Input) -> Option[Task], input: Option[Input]) {}
+
 forall Stages.
 impl Sequence![Stages] {
+    /// The callback and its input can both be dropped if the handoff is skipped.
+    forall Env, Input, Task where Copy[Env], Copy[Input].
+    fn then(self, resume: closure[Env](Input) -> Option[Task])
+        -> Sequence![Then![Stages, closure[Env](Input) -> Option[Task], Input, Task]] {
+        self.then_owned(resume, resume_copy[Env, Input, Task], skip_copy[Env, Input, Task])
+    }
+
     /// Transfers state to resume after the prior stage joins. If the deadline
     /// prevents the handoff, cancel receives the state and any prior outcome.
     /// Resume can consume its inputs and return None to stop explicitly.
     forall State, Input, Task.
-    fn then(self, state: State, resume: fn(State, Input) -> Option[Task],
+    fn then_owned(self, state: State, resume: fn(State, Input) -> Option[Task],
         cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task]] {
         let { stages } = self;
         Sequence!.{ stages: Then!.{ previous: stages, handoff: Handoff!.{ state, resume, cancel } } }
@@ -97,11 +116,7 @@ instance Chain[Then![Previous, State, Input, Task], Output, Engine] {
         let result = Chain[Previous, Input, Engine]::drive(previous, &engine, deadline);
         let budget = remaining_budget(&engine, deadline);
         let expired = match budget { Option::Some(ms) => ms == 0u64, Option::None => false, };
-        if expired {
-            handoff.cancel(result);
-            return Option::None;
-        }
-        match handoff.resume(result) {
+        match handoff.advance(!expired, result) {
             Option::Some(next) => Option::Some.(StageDriver[Task, Output, Engine]::drive(next, &engine, deadline)),
             Option::None => Option::None,
         }
@@ -191,7 +206,7 @@ struct Next! { handoff: Handoff![State, Input, Task], tail: Continuation![Output
 forall State, Input, Task, Output, Host, Action where StageHost[Task, Output, Host, Action].
 fn resume_next(next: Next![State, Input, Task, Output, Action], prior: Option[Input]) -> Action {
     let { handoff, tail } = next;
-    match handoff.resume(prior) {
+    match handoff.advance(true, prior) {
         Option::Some(task) => StageHost[Task, Output, Host, Action]::schedule(task, tail),
         Option::None => tail.resume(Option::None),
     }

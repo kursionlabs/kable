@@ -6,7 +6,7 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::slice::StaticRead;
-use task::{Carry!, carry, sequence};
+use task::{Map!, map, sequence};
 
 fn file_response(outcome: FileOutcome!) -> Response! {
     match outcome {
@@ -42,8 +42,7 @@ fn timed_response(outcome: WithinOutcome[FileOutcome!]) -> Response! {
     }
 }
 
-fn cancel_first(target: Buffer!, outcome: Option[FileOutcome!]) {
-    target.destroy();
+fn cancel_first(unit: (), outcome: Option[FileOutcome!]) {
     match outcome {
         Option::Some(file) => discard_file(file),
         Option::None => (),
@@ -77,12 +76,13 @@ fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action!
     Action!::Reply.(response)
 }
 
-fn next_file(target: Buffer!, outcome: FileOutcome!) -> Option[Carry![ReadFile!, Buffer!]] {
-    target.destroy();
+fn next_file(unit: (), outcome: FileOutcome!)
+    -> Option[Map![ReadFile!, FileOutcome!, (Buffer!, FileOutcome!), (Buffer!,)]] {
     match outcome {
         FileOutcome!::Read(first) => {
             let access = StaticRead::new();
-            Option::Some.(carry(read_file(&access, "footer.txt", 65_536usize), first))
+            let footer = read_file(&access, "footer.txt", 65_536usize);
+            Option::Some.(map(footer, |file: FileOutcome!| (first, file)))
         },
         FileOutcome!::Cancelled => Option::None,
         FileOutcome!::Failed(code) => Option::None,
@@ -98,11 +98,10 @@ fn handle(request: Request!) -> Action! {
     let file = path.is(&access, "/file");
     let timed = path.is(&access, "/file-with-timeout");
     let sequence_path = path.is(&access, "/file-sequence");
-    let target = restore.restore(access);
+    restore.restore(access).destroy();
     match method {
         Method::Get | Method::Head => (),
         _ => {
-            target.destroy();
             return Action!::Reply.(Response!::method_not_allowed("GET, HEAD"));
         },
     }
@@ -110,22 +109,15 @@ fn handle(request: Request!) -> Action! {
         let access = StaticRead::new();
         let task = read_file(&access, "example.txt", 65_536usize);
         if sequence_path {
-            let plan = sequence(task).then(target, next_file, cancel_first);
+            let plan = sequence(task).then_owned((), next_file, cancel_first);
             return defer_sequence(plan, (), finish_sequence, cancel_sequence);
         }
         if timed {
             return defer(within(1000u64, task),
-                |outcome: WithinOutcome[FileOutcome!]| {
-                    target.destroy();
-                    timed_response(outcome)
-                });
+                |outcome: WithinOutcome[FileOutcome!]| timed_response(outcome));
         }
-        return defer(task, |outcome: FileOutcome!| {
-            target.destroy();
-            file_response(outcome)
-        });
+        return defer(task, |outcome: FileOutcome!| file_response(outcome));
     }
-    target.destroy();
     if health { Action!::Reply.(Response!::text(200u16, "ok\n")) }
     else { Action!::Reply.(Response!::rejected(404u16)) }
 }

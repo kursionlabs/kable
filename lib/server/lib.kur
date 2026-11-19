@@ -1,13 +1,13 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{Outcome, Plan, Prepared!, Sleep!, collect, prepare};
+use async::{Prepared!, Scope!, collect, prepare};
 use http::{Method, Request!, Response!};
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::{Option, Result};
 use std::ptr::is_null;
-use task::{Continuation!, HostedChain, Sequence!, StageHost, continuation, host_sequence};
+use task::{Continuation!, HostedChain, Plan, Sequence!, StageHost, continuation, host_sequence};
 
 extern "C" fn kable_bind(port: u16,
     callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,
@@ -21,7 +21,6 @@ extern "C" fn kable_stop(server: *u8) -> ();
 
 exposed enum Action! {
     Reply(Response!),
-    After(Sleep![Response!]),
     Deferred(Deferred!),
 }
 
@@ -38,52 +37,40 @@ struct Deferred! {
 }
 
 forall Task, Output, Env.
-struct ResponsePlan! { prepared: Prepared![Task], reply: closure[Env](Output) -> Response! }
-
-forall Task, Output, State.
-struct NextPlan! {
+struct DeferredPlan! {
     prepared: Prepared![Task],
-    state: State,
-    resume: fn(State, Output) -> Action!,
-    cancel: fn(State, Output) -> (),
+    finish: closure[Env](Output, bool) -> Option[Action!],
 }
 
 /// Runs the plan in the request's scope. The continuation consumes its
 /// outcome once, including on cancellation, so it can reclaim owned values.
-forall Task, Output, Env where Plan[Task, Output].
+forall Task, Output, Env where Plan[Task, Output, Scope!].
 fn defer(task: Task, reply: closure[Env](Output) -> Response!) -> Action! {
-    Action!::Deferred.(response_plan(task, reply))
-}
-
-/// Runs a plan, then chooses the next action using its outcome and owned
-/// state. If the request stops, cancel consumes both after the plan joins.
-forall Task, Output, State where Plan[Task, Output].
-fn defer_next(task: Task, state: State, resume: fn(State, Output) -> Action!,
-    cancel: fn(State, Output) -> ()) -> Action! {
-    let prepared = prepare[Task, Output](task);
-    let (scope, root) = unsafe &prepared.native();
-    let plan = HeapAllocator::alloc(sizeof[NextPlan![Task, Output, State]]()).into_raw();
-    unsafe *(unsafe (plan as *NextPlan![Task, Output, State])) =
-        NextPlan!.{ prepared, state, resume, cancel };
-    Action!::Deferred.(Deferred!.{ plan, scope, root, finish: finish_next[Task, Output, State] })
+    defer_plan(task, |outcome: Output, active: bool| {
+        let response = reply(outcome);
+        if active {
+            Option::Some.(Action!::Reply.(response))
+        } else {
+            response.destroy();
+            Option::None
+        }
+    })
 }
 
 struct RequestHost {}
 
-forall Output.
-fn resume_stage(next: Continuation![Output, Action!], outcome: Output) -> Action! {
-    next.resume(Option::Some.(outcome))
-}
-
-forall Output.
-fn cancel_stage(next: Continuation![Output, Action!], outcome: Output) {
-    next.cancel(Option::Some.(outcome));
-}
-
-forall Task, Output where Plan[Task, Output].
+forall Task, Output where Plan[Task, Output, Scope!].
 instance StageHost[Task, Output, RequestHost, Action!] {
     fn schedule(task: Task, next: Continuation![Output, Action!]) -> Action! {
-        defer_next(task, next, resume_stage[Output], cancel_stage[Output])
+        defer_plan(task, |outcome: Output, active: bool| {
+            let result = Option::Some.(outcome);
+            if active {
+                Option::Some.(next.resume(result))
+            } else {
+                next.cancel(result);
+                Option::None
+            }
+        })
     }
 }
 
@@ -95,13 +82,13 @@ fn defer_sequence(plan: Sequence![Stages], state: State, resume: fn(State, Optio
     host_sequence[Stages, Output, RequestHost, Action!](plan, next)
 }
 
-forall Task, Output, Env where Plan[Task, Output].
-fn response_plan(task: Task, reply: closure[Env](Output) -> Response!) -> Deferred! {
+forall Task, Output, Env where Plan[Task, Output, Scope!].
+fn defer_plan(task: Task, finish: closure[Env](Output, bool) -> Option[Action!]) -> Action! {
     let prepared = prepare[Task, Output](task);
     let (scope, root) = unsafe &prepared.native();
-    let plan = HeapAllocator::alloc(sizeof[ResponsePlan![Task, Output, Env]]()).into_raw();
-    unsafe *(unsafe (plan as *ResponsePlan![Task, Output, Env])) = ResponsePlan!.{ prepared, reply };
-    Deferred!.{ plan, scope, root, finish: finish_plan[Task, Output, Env] }
+    let plan = HeapAllocator::alloc(sizeof[DeferredPlan![Task, Output, Env]]()).into_raw();
+    unsafe *(unsafe (plan as *DeferredPlan![Task, Output, Env])) = DeferredPlan!.{ prepared, finish };
+    Action!::Deferred.(Deferred!.{ plan, scope, root, finish: finish_plan[Task, Output, Env] })
 }
 
 unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
@@ -114,37 +101,13 @@ unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
     result
 }
 
-forall Task, Output, Env where Plan[Task, Output].
+forall Task, Output, Env where Plan[Task, Output, Scope!].
 unsafe fn finish_plan(raw: *u8, client: *u8, ready: u8, head: u8, http10: u8) -> i32 {
-    let { prepared, reply } = unsafe *(unsafe (raw as *ResponsePlan![Task, Output, Env]));
+    let { prepared, finish } = unsafe *(unsafe (raw as *DeferredPlan![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    let response = reply(collect[Task, Output](prepared));
-    if ready != 0u8 {
-        unsafe write_response(client, Pending!.{ response, head: head != 0u8, http10: http10 != 0u8 })
-    } else {
-        response.destroy();
-        0i32
-    }
-}
-
-forall Task, Output, State where Plan[Task, Output].
-unsafe fn finish_next(raw: *u8, client: *u8, ready: u8, head: u8, http10: u8) -> i32 {
-    let { prepared, state, resume, cancel } = unsafe *(unsafe (raw as *NextPlan![Task, Output, State]));
-    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    let result = collect[Task, Output](prepared);
-    if ready == 0u8 {
-        cancel(state, result);
-        0i32
-    } else {
-        unsafe apply(client, resume(state, result), head != 0u8, http10 != 0u8)
-    }
-}
-
-fn after_timer(result: Outcome[Response!]) -> Response! {
-    match result {
-        Outcome::Ready(response) => response,
-        Outcome::Cancelled(response) => { response.destroy(); Response!::rejected(408u16) },
-        Outcome::Failed(response, code) => { response.destroy(); Response!::rejected(500u16) },
+    match finish(collect[Task, Output](prepared), ready != 0u8) {
+        Option::Some(action) => unsafe apply(client, action, head != 0u8, http10 != 0u8),
+        Option::None => 0i32,
     }
 }
 
@@ -160,8 +123,6 @@ unsafe fn schedule(client: *u8, deferred: Deferred!, head: bool, http10: bool) -
 unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
     match action {
         Action!::Reply(response) => unsafe write_response(client, Pending!.{ response, head, http10 }),
-        Action!::After(task) => unsafe schedule(client,
-            response_plan(task, |outcome: Outcome[Response!]| after_timer(outcome)), head, http10),
         Action!::Deferred(plan) => unsafe schedule(client, plan, head, http10),
     }
 }

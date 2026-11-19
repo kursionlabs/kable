@@ -70,17 +70,11 @@ Request `/file` on the printed address to read the bundled `example.txt`.
 If the timer wins, the handler returns 504 after the worker closes the file
 and returns.
 
-`defer_next(plan, state, resume, cancel)` lets a continuation return another
-HTTP action. On an active request, `resume` receives the owned state and
-the completed plan's outcome. When the request is cancelled, `cancel`
-consumes both after the active plan joins. Every stage shares the original
-request deadline.
-
-An HTTP handler can also pass a portable `sequence(...).then(...)` chain to
-`defer_sequence`. The listener drives each stage and delivers request
-cancellation to the chain. The example's `/file-sequence` uses this API to read
-`example.txt`, then carry its owned buffer into a second read of `footer.txt`.
-It returns their contents together.
+An HTTP handler can pass a portable sequence to `defer_sequence`. The
+listener drives each stage under the original request deadline and delivers
+request cancellation after the active plan joins. The example’s
+`/file-sequence` reads `example.txt`, then captures its owned buffer in a
+`map` on the second read of `footer.txt` and returns both files together.
 
 ## Scoped task plans
 
@@ -118,19 +112,21 @@ nested waits.
 
 ### Explicit sequencing
 
-`sequence(first).then(state, resume, cancel)` builds a chain of adapters in
-the style of Kursal's iterator chaining. `resume(state, outcome)` runs after
-the previous stage joins and returns `Some(next)` to start another stage or
-`None` to stop. When the deadline prevents a handoff, `cancel` consumes
-the state and any previous outcome. Later adapters also receive their
-state back through `cancel` if an earlier adapter stopped.
+`sequence(first).then(resume)` builds a chain of adapters in the style
+of Kursal’s iterator chaining. The closure consumes the previous outcome
+and returns `Some(next)` to start another stage or `None` to stop. Both
+the closure captures and the previous outcome must be copyable because
+the handoff can be skipped.
+
+Use `.then_owned(state, resume, cancel)` when the captures or outcome need
+explicit cleanup. `resume(state, outcome)` runs after the previous stage
+joins. If a deadline or an earlier stage prevents a handoff, `cancel`
+consumes the state and any available outcome.
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
 Its optional millisecond budget applies to the whole chain. It returns
 `None` when the last stage was never constructed and `Some(outcome)` when
 that stage produced an outcome, including cancellation during the stage.
-`carry(plan, state)` moves an owned value alongside a stage and returns it
-with that stage's outcome.
 
 `map(plan, transform)` converts a plan's result without scheduling an
 extra operation. Its closure can capture owned state. It receives the full

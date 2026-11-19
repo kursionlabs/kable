@@ -1,6 +1,6 @@
-use async::sleep;
+use async::{Outcome, sleep};
 use http::{Method, Request!, Response!};
-use server::{Action!, Server!};
+use server::{Action!, Server!, defer};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -37,7 +37,11 @@ fn handle(request: Request!) -> Action! {
         match method {
             Method::Get | Method::Head => {
                 if delay {
-                    return Action!::After.(sleep(1000u64, Response!::text(200u16, "done\n")));
+                    return defer(sleep(1000u64, ()), |outcome: Outcome[()]| match outcome {
+                        Outcome::Ready(unit) => Response!::text(200u16, "done\n"),
+                        Outcome::Cancelled(unit) => Response!::rejected(408u16),
+                        Outcome::Failed(unit, code) => Response!::rejected(500u16),
+                    });
                 }
                 let message = if home { "Kable\n" } else { "ok\n" };
                 Action!::Reply.(Response!::text(200u16, message))

@@ -24,22 +24,7 @@ forall T.
 struct Sleep! { ms: u64, value: T }
 
 forall T.
-impl Sleep![T] {
-    /// Consumes a wait plan to schedule it on a host event loop.
-    fn into_parts(self) -> (u64, T) {
-        let { ms, value } = self;
-        (ms, value)
-    }
-}
-
-forall T.
 fn sleep(ms: u64, value: T) -> Sleep![T] { Sleep!.{ ms, value } }
-
-forall A, B.
-struct Race! { first: Sleep![A], second: Sleep![B] }
-
-forall A, B.
-fn race(first: Sleep![A], second: Sleep![B]) -> Race![A, B] { Race!.{ first, second } }
 
 forall First, Second.
 struct Select! { first: First, second: Second }
@@ -82,16 +67,13 @@ exposed enum JoinOutcome {
 }
 
 forall T, Driver where PlanDriver[Driver].
-fn stage_sleep(&task: Sleep![T], &scope: Driver) -> usize {
-    let { ms, value } = task;
-    let id = PlanDriver[Driver]::timer(&scope, ms);
-    task = Sleep!.{ ms, value };
-    id
-}
-
-forall T, Driver where PlanDriver[Driver].
 instance Plan[Sleep![T], Outcome[T], Driver] {
-    fn stage(&task: Sleep![T], &scope: Driver) -> usize { stage_sleep(&task, &scope) }
+    fn stage(&task: Sleep![T], &scope: Driver) -> usize {
+        let { ms, value } = task;
+        let id = PlanDriver[Driver]::timer(&scope, ms);
+        task = Sleep!.{ ms, value };
+        id
+    }
 
     fn collect(task: Sleep![T], &scope: Driver) -> Outcome[T] {
         let { ms, value } = task;
@@ -101,28 +83,6 @@ instance Plan[Sleep![T], Outcome[T], Driver] {
             0i32 => Outcome::Cancelled.(value),
             _ => Outcome::Failed.(value, code),
         }
-    }
-}
-
-forall A, B, Driver where PlanDriver[Driver].
-instance Plan[Race![A, B], RaceOutcome[A, B], Driver] {
-    fn stage(&task: Race![A, B], &scope: Driver) -> usize {
-        let { first, second } = task;
-        let a = stage_sleep(&first, &scope);
-        let b = stage_sleep(&second, &scope);
-        let id = PlanDriver[Driver]::pair(&scope, Branch::Select, a, b);
-        task = Race!.{ first, second };
-        id
-    }
-
-    fn collect(task: Race![A, B], &scope: Driver) -> RaceOutcome[A, B] {
-        let { first, second } = task;
-        let (first_ms, a) = first.into_parts();
-        let (second_ms, b) = second.into_parts();
-        let first_code = PlanDriver[Driver]::next(&scope);
-        let second_code = PlanDriver[Driver]::next(&scope);
-        let code = PlanDriver[Driver]::next(&scope);
-        race_outcome(a, b, code)
     }
 }
 
@@ -203,30 +163,6 @@ export host_sequence;
 export remaining_budget;
 export sequence;
 
-forall Task, State.
-struct Carry! { task: Task, state: State }
-
-/// Moves owned state alongside a plan. Its outcome returns the state on
-/// every exit path, including cancellation of the inner plan.
-forall Task, State.
-fn carry(task: Task, state: State) -> Carry![Task, State] { Carry!.{ task, state } }
-
-forall Task, State, Output, Driver where Plan[Task, Output, Driver].
-instance Plan[Carry![Task, State], (State, Output), Driver] {
-    fn stage(&task: Carry![Task, State], &scope: Driver) -> usize {
-        let { task: inner, state } = task;
-        let id = Plan[Task, Output, Driver]::stage(&inner, &scope);
-        task = Carry!.{ task: inner, state };
-        id
-    }
-
-    fn collect(task: Carry![Task, State], &scope: Driver) -> (State, Output) {
-        let { task, state } = task;
-        let result = Plan[Task, Output, Driver]::collect(task, &scope);
-        (state, result)
-    }
-}
-
 forall Task, Input, Output, Env.
 struct Map! { task: Task, transform: closure[Env](Input) -> Output }
 
@@ -252,13 +188,34 @@ instance Plan[Map![Task, Input, Output, Env], Output, Driver] {
     }
 }
 
+/// Selects the first timer and returns both payloads after they have joined.
+forall A, B.
+fn race(first: Sleep![A], second: Sleep![B])
+    -> Map![Select![Sleep![A], Sleep![B]], RaceOutcome[Outcome[A], Outcome[B]], RaceOutcome[A, B], ()] {
+    map(select(first, second), |result: RaceOutcome[Outcome[A], Outcome[B]]| match result {
+        RaceOutcome::First(a, b) => RaceOutcome::First.(sleep_value(a), sleep_value(b)),
+        RaceOutcome::Second(a, b) => RaceOutcome::Second.(sleep_value(a), sleep_value(b)),
+        RaceOutcome::Cancelled(a, b) => RaceOutcome::Cancelled.(sleep_value(a), sleep_value(b)),
+        RaceOutcome::Failed(a, b, code) => RaceOutcome::Failed.(sleep_value(a), sleep_value(b), code),
+    })
+}
+
+forall T.
+fn sleep_value(outcome: Outcome[T]) -> T {
+    match outcome {
+        Outcome::Ready(value) => value,
+        Outcome::Cancelled(value) => value,
+        Outcome::Failed(value, code) => value,
+    }
+}
+
 forall Task.
-struct Within! { task: Task, ms: u64 }
+struct Within! { selection: Select![Sleep![()], Task] }
 
 /// Races a plan against a local timer. The outcome includes the inner
 /// plan's result after it and the timer have joined.
 forall Task.
-fn within(ms: u64, task: Task) -> Within![Task] { Within!.{ task, ms } }
+fn within(ms: u64, task: Task) -> Within![Task] { Within!.{ selection: select(sleep(ms, ()), task) } }
 
 forall Output.
 exposed enum WithinOutcome {
@@ -271,24 +228,22 @@ exposed enum WithinOutcome {
 forall Task, Output, Driver where PlanDriver[Driver], Plan[Task, Output, Driver].
 instance Plan[Within![Task], WithinOutcome[Output], Driver] {
     fn stage(&task: Within![Task], &scope: Driver) -> usize {
-        let { task: inner, ms } = task;
-        let timer = PlanDriver[Driver]::timer(&scope, ms);
-        let work = Plan[Task, Output, Driver]::stage(&inner, &scope);
-        let root = PlanDriver[Driver]::pair(&scope, Branch::Select, timer, work);
-        task = Within!.{ task: inner, ms };
-        root
+        let { selection: { first, second } } = task;
+        let id = stage_pair[Sleep![()], Task, Outcome[()], Output, Driver](
+            &first, &second, &scope, Branch::Select);
+        task = Within!.{ selection: select(first, second) };
+        id
     }
 
     fn collect(task: Within![Task], &scope: Driver) -> WithinOutcome[Output] {
-        let { task, ms } = task;
-        let timer = PlanDriver[Driver]::next(&scope);
-        let outcome = Plan[Task, Output, Driver]::collect(task, &scope);
-        let result = PlanDriver[Driver]::next(&scope);
-        match result {
-            1i32 => WithinOutcome::TimedOut.(outcome),
-            2i32 => WithinOutcome::Completed.(outcome),
-            0i32 => WithinOutcome::Cancelled.(outcome),
-            _ => WithinOutcome::Failed.(outcome, result),
+        let { selection: { first, second } } = task;
+        let (timer, outcome, code) = collect_pair[Sleep![()], Task, Outcome[()], Output, Driver](
+            first, second, &scope);
+        match race_outcome(timer, outcome, code) {
+            RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
+            RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),
+            RaceOutcome::Cancelled(timer, outcome) => WithinOutcome::Cancelled.(outcome),
+            RaceOutcome::Failed(timer, outcome, code) => WithinOutcome::Failed.(outcome, code),
         }
     }
 }

@@ -51,7 +51,7 @@ fn expect_stop(result: Option[Outcome[Buffer!]]) {
 
 fn check_chain(budget: Option[u64], should_finish: bool) {
     let plan = sequence(sleep(65u64, Buffer!::new().push_static("first")))
-        .then(Buffer!::new().push_static("second"), append, discard);
+        .then_owned(Buffer!::new().push_static("second"), append, discard);
     let result: Option[Outcome[Buffer!]] = run_sequence(plan, budget);
     match result {
         Option::Some(outcome) => {
@@ -65,18 +65,33 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
 }
 
 fn main() -> i32 {
+    let suffix = 3u32;
+    let plan = sequence(sleep(0u64, 4u32)).then(|outcome: Outcome[u32]| match outcome {
+        Outcome::Ready(value) => Option::Some.(sleep(0u64, value + suffix)),
+        Outcome::Cancelled(value) => trap(),
+        Outcome::Failed(value, code) => trap(),
+    });
+    let result: Option[Outcome[u32]] = run_sequence(plan, Option::None);
+    match result {
+        Option::Some(outcome) => match outcome {
+            Outcome::Ready(value) => { if value != 7u32 { trap(); } },
+            _ => trap(),
+        },
+        Option::None => trap(),
+    }
+
     check_chain(Option::None, true);
     check_chain(Option::Some.(180u64), false);
     print_buffer(f"The second stage used the original deadline.\n");
 
     let plan = sequence(sleep(0u64, Buffer!::new()))
-        .then(Buffer!::new(), stop, discard)
-        .then(Buffer!::new(), append, discard);
+        .then_owned(Buffer!::new(), stop, discard)
+        .then_owned(Buffer!::new(), append, discard);
     let result: Option[Outcome[Buffer!]] = run_sequence(plan, Option::None);
     expect_stop(result);
 
     let plan = sequence(sleep(30_000u64, Buffer!::new()))
-        .then(Buffer!::new(), append, discard);
+        .then_owned(Buffer!::new(), append, discard);
     let result: Option[Outcome[Buffer!]] = run_sequence(plan, Option::Some.(10u64));
     expect_stop(result);
     0i32
