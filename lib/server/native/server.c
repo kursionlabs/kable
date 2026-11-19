@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <unistd.h>
 #include <uv.h>
 
 #include "../../tcp/native/transport.h"
@@ -264,95 +263,8 @@ uint16_t kable_file_range(uint8_t *raw, uint64_t total, uint64_t *offset, uint64
     return 206;
 }
 
-enum { FILE_CHUNK = 64 * 1024 };
-
-typedef struct {
-    uint8_t *connection;
-    uv_fs_t request;
-    uv_buf_t chunk;
-    int fd;
-    int reading;
-    int cancelled;
-    uint64_t offset;
-    uint64_t remaining;
-    uint8_t bytes[FILE_CHUNK];
-} FileStream;
-
-static void finish_file_stream(FileStream *stream, int complete) {
-    close(stream->fd);
-    kable_tcp_end_stream(stream->connection, complete);
-    free(stream);
-}
-
-static void file_chunk_ready(uv_fs_t *request) {
-    FileStream *stream = request->data;
-    ssize_t count = request->result;
-    uv_fs_req_cleanup(request);
-    stream->reading = 0;
-    if (stream->cancelled || count <= 0) {
-        finish_file_stream(stream, 0);
-        return;
-    }
-    stream->remaining -= (uint64_t)count;
-    stream->offset += (uint64_t)count;
-    if (kable_tcp_stream_write(stream->connection, stream->bytes, (size_t)count) < 0) {
-        finish_file_stream(stream, 0);
-    }
-}
-
-static void file_chunk_written(void *context) {
-    FileStream *stream = context;
-    if (!stream->remaining) {
-        finish_file_stream(stream, 1);
-        return;
-    }
-    uint64_t len = stream->remaining < FILE_CHUNK ? stream->remaining : FILE_CHUNK;
-    stream->chunk = uv_buf_init((char *)stream->bytes, (unsigned int)len);
-    stream->request.data = stream;
-    int status = uv_fs_read(kable_tcp_loop(stream->connection), &stream->request,
-        stream->fd, &stream->chunk, 1, (int64_t)stream->offset, file_chunk_ready);
-    if (status < 0) {
-        uv_fs_req_cleanup(&stream->request);
-        finish_file_stream(stream, 0);
-    } else {
-        stream->reading = 1;
-    }
-}
-
-static void cancel_file_stream(void *context) {
-    FileStream *stream = context;
-    if (stream->reading) {
-        stream->cancelled = 1;
-        uv_cancel((uv_req_t *)&stream->request);
-    } else {
-        finish_file_stream(stream, 0);
-    }
-}
-
-/* Consumes fd even when the stream cannot start. */
-int32_t kable_send_file(uint8_t *raw, uint8_t *headers, size_t len, int32_t fd,
-    uint64_t offset, uint64_t length) {
-    if (!length) {
-        close(fd);
-        return kable_write(raw, headers, len);
-    }
-    Client *client = (Client *)raw;
-    FileStream *stream = calloc(1, sizeof *stream);
-    if (!stream) {
-        close(fd);
-        return UV_ENOMEM;
-    }
-    stream->connection = client->connection;
-    stream->fd = fd;
-    stream->offset = offset;
-    stream->remaining = length;
-    int status = kable_tcp_start_stream(client->connection, headers, len, WRITE_TIMEOUT,
-        file_chunk_written, cancel_file_stream, stream);
-    if (status < 0) {
-        close(fd);
-        free(stream);
-    }
-    return status;
+uint8_t *kable_client_connection(uint8_t *raw) {
+    return ((Client *)raw)->connection;
 }
 
 static uint64_t time_left(Client *client) {

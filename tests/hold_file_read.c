@@ -9,21 +9,22 @@
 
 static pthread_once_t lookup = PTHREAD_ONCE_INIT;
 static ssize_t (*system_read)(int, void *, size_t);
+static ssize_t (*system_pread)(int, void *, size_t, off_t);
 static atomic_uint held;
 
 static void resolve_read(void) {
     system_read = (ssize_t (*)(int, void *, size_t))dlsym(RTLD_NEXT, "read");
-    if (!system_read) abort();
+    system_pread = (ssize_t (*)(int, void *, size_t, off_t))dlsym(RTLD_NEXT, "pread");
+    if (!system_read || !system_pread) abort();
 }
 
-ssize_t read(int fd, void *buffer, size_t size) {
-    pthread_once(&lookup, resolve_read);
+static void hold_read(int fd) {
     const char *started = getenv("KABLE_TEST_FILE_STARTED");
     const char *release = getenv("KABLE_TEST_FILE_RELEASE");
     const char *enabled = getenv("KABLE_TEST_FILE_GATES");
     struct stat input;
     if (started && release && enabled && fstat(fd, &input) == 0 && S_ISREG(input.st_mode)) {
-        const char *paths[] = {"example.txt", "footer.txt", "footer-detailed.txt"};
+        const char *paths[] = {"example.txt", "footer.txt", "footer-detailed.txt", "large.bin"};
         unsigned gates = (unsigned)atoi(enabled);
         for (unsigned slot = 0; slot < sizeof paths / sizeof paths[0]; slot++) {
             unsigned bit = 1u << slot;
@@ -38,6 +39,11 @@ ssize_t read(int fd, void *buffer, size_t size) {
             break;
         }
     }
+}
+
+ssize_t read(int fd, void *buffer, size_t size) {
+    pthread_once(&lookup, resolve_read);
+    hold_read(fd);
     ssize_t count = system_read(fd, buffer, size);
     if (count < 0 && errno == ECONNRESET) {
         const char *reset = getenv("KABLE_TEST_TCP_RESET");
@@ -45,4 +51,10 @@ ssize_t read(int fd, void *buffer, size_t size) {
         errno = ECONNRESET;
     }
     return count;
+}
+
+ssize_t pread(int fd, void *buffer, size_t size, off_t offset) {
+    pthread_once(&lookup, resolve_read);
+    hold_read(fd);
+    return system_pread(fd, buffer, size, offset);
 }

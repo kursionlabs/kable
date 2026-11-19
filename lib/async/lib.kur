@@ -33,6 +33,7 @@ extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize)
     event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
 extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize, mode: u8) -> usize;
+extern "C" fn kable_scope_add_chunk(scope: *u8, fd: i32, offset: u64, limit: usize) -> usize;
 extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> ()) -> usize;
@@ -66,6 +67,7 @@ exposed enum FileOutcome! {
 
 struct OpenFile! { path: Buffer!, id: Option[usize] }
 struct OpenedFile! { fd: i32, length: u64 }
+struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
 
 exposed enum OpenOutcome! {
     Opened(OpenedFile!),
@@ -80,6 +82,22 @@ fn open_file_beneath_cwd(&cx: C, path: S) -> OpenFile! {
 }
 
 impl OpenedFile! {
+    fn len(&self) -> u64 {
+        let { fd, length } = self;
+        self = OpenedFile!.{ fd, length };
+        length
+    }
+
+    /// Reads at most limit bytes from the measured file without changing its position.
+    /// The joined outcome returns the file on success, failure, or cancellation.
+    /// An empty buffer indicates the end of the file or a zero limit.
+    fn read_chunk(self, offset: u64, limit: usize) -> ReadChunk! {
+        let length = &self.len();
+        let remaining = if offset < length { length - offset } else { 0 };
+        let limit = if remaining < limit as u64 { remaining as usize } else { limit };
+        ReadChunk!.{ file: self, offset, limit, id: Option::None }
+    }
+
     fn close(self) {
         let { fd, length } = self;
         unsafe kable_file_close_descriptor(fd);
@@ -179,6 +197,15 @@ impl Scope! {
         registered(id)
     }
 
+    fn add_chunk(&self, &file: OpenedFile!, offset: u64, limit: usize) -> Option[usize] {
+        let { raw } = self;
+        let { fd, length } = file;
+        let id = unsafe kable_scope_add_chunk(raw, fd, offset, limit);
+        file = OpenedFile!.{ fd, length };
+        self = Scope!.{ raw };
+        registered(id)
+    }
+
     /// The context lives through collection. Start schedules an asynchronous
     /// completion on the supplied loop. Stop retires it without a callback.
     unsafe fn add_operation(&self, context: *u8,
@@ -238,6 +265,15 @@ impl Scope! {
     }
 }
 
+fn collect_file(&scope: Scope!, id: Option[usize]) -> FileOutcome! {
+    match &scope.result(id) {
+        Resolution::Completed => &scope.file_result(id),
+        Resolution::Cancelled => FileOutcome!::Cancelled,
+        Resolution::Failed(code) => FileOutcome!::Failed.(code),
+        Resolution::First | Resolution::Second => FileOutcome!::Failed.(-1i32),
+    }
+}
+
 instance PlanOutput[ReadFile! -> FileOutcome!] {}
 
 instance Plan[ReadFile!, Scope! -> FileOutcome!] {
@@ -251,12 +287,23 @@ instance Plan[ReadFile!, Scope! -> FileOutcome!] {
     fn collect(task: ReadFile!, &scope: Scope!) -> FileOutcome! {
         let { path, limit, beneath, id } = task;
         path.destroy();
-        match &scope.result(id) {
-            Resolution::Completed => &scope.file_result(id),
-            Resolution::Cancelled => FileOutcome!::Cancelled,
-            Resolution::Failed(code) => FileOutcome!::Failed.(code),
-            Resolution::First | Resolution::Second => FileOutcome!::Failed.(-1i32),
-        }
+        collect_file(&scope, id)
+    }
+}
+
+instance PlanOutput[ReadChunk! -> (OpenedFile!, FileOutcome!)] {}
+
+instance Plan[ReadChunk!, Scope! -> (OpenedFile!, FileOutcome!)] {
+    fn stage(&task: ReadChunk!, &scope: Scope!) -> Option[usize] {
+        let { file, offset, limit, id } = task;
+        let id = &scope.add_chunk(&file, offset, limit);
+        task = ReadChunk!.{ file, offset, limit, id };
+        id
+    }
+
+    fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, FileOutcome!) {
+        let { file, offset, limit, id } = task;
+        (file, collect_file(&scope, id))
     }
 }
 

@@ -252,6 +252,7 @@ def check_static_files(command, directory, check_write_timeout=False):
         finally:
             if process.poll() is None:
                 process.kill()
+    check_stream_shutdown(command, root, build_file_gate(directory))
     print("Kable static file checks passed")
 
 
@@ -289,6 +290,26 @@ def check_stream_idle_timeout(port, process, path):
         assert holds_file(process, path), "stalled stream never held the file"
         wait_for_file_release(process, path, 8)
         assert time.monotonic() - start >= 4.75, "stalled stream expired too early"
+
+
+def check_stream_shutdown(command, root, library):
+    path = root / "large.bin"
+    with gated_file_server([*command, str(root), "0"], root, library, gates=8) as (process, port, started, permit):
+        with connect(port) as client:
+            client.sendall(b"GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            wait_for_held_read(started, b"D")
+            with client.makefile("rb") as stream:
+                _, status, headers = read_headers(stream)
+                assert status == 200 and int(headers[b"content-length"]) == path.stat().st_size
+                assert_response(exchange(port, b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+                                200, b"<h1>Kable</h1>\n")
+                process.terminate()
+                wait_for_listener_shutdown(port)
+                assert process.poll() is None, "shutdown returned before the chunk read joined"
+                assert holds_file(process, path), "shutdown closed the file during the read"
+                assert os.write(permit, b"R") == 1
+                assert stream.read() == b"", "the cancelled read sent a chunk"
+                assert process.wait(timeout=5) == 0, process.stderr.read()
 
 
 def holds_file(process, path):
@@ -406,10 +427,15 @@ def wait_for_listener_shutdown(port):
         time.sleep(0.01)
 
 
-def check_http_file(command, directory, check_request_timeout=False):
+def build_file_gate(directory):
     library = directory / "hold-file-read.so"
     subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "tests/hold_file_read.c"),
                     "-ldl", "-pthread", "-o", str(library)], check=True)
+    return library
+
+
+def check_http_file(command, directory, check_request_timeout=False):
+    library = build_file_gate(directory)
     payload = b"Kable\x00hosted file read\n"
     document = directory / "example.txt"
     document.write_bytes(payload)

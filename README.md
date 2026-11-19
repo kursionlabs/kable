@@ -49,10 +49,12 @@ The server listens on loopback, accepts `GET` and `HEAD`, and serves
 
 Opening the file and checking its length use the worker pool with a two-second
 deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
-each socket write completes. `HEAD` uses the file length without reading
-its body. Each completed write restarts the five-second idle timer, so a
-transfer can continue while writes make progress. The server closes the file
-when the transfer finishes or cancels.
+each socket write completes. The Kursal transfer loop hands its owned file
+to `file.read_chunk(offset, limit)` and gets it back once the read joins,
+even after cancellation. It closes the file after the final read or when a
+cancelled read joins. `HEAD` uses the file length without reading its body.
+Each completed write restarts the five-second idle timer, so a transfer can
+continue while writes make progress.
 
 `GET` accepts a single byte range such as `Range: bytes=0-31`,
 `bytes=32-`, or `bytes=-32`. A satisfiable range returns `206 Partial
