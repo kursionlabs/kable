@@ -1,5 +1,6 @@
 // Holds one read per selected file until the integration test releases it.
 #include <dlfcn.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -37,5 +38,11 @@ ssize_t read(int fd, void *buffer, size_t size) {
             break;
         }
     }
-    return system_read(fd, buffer, size);
+    ssize_t count = system_read(fd, buffer, size);
+    if (count < 0 && errno == ECONNRESET) {
+        const char *reset = getenv("KABLE_TEST_TCP_RESET");
+        if (reset && write(atoi(reset), "R", 1) != 1) abort();
+        errno = ECONNRESET;
+    }
+    return count;
 }

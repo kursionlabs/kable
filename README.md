@@ -54,8 +54,10 @@ Handlers run on the event loop and should return promptly. A handler bound with
 `Server!::bind_async` can use `defer(plan, continuation)` to run a timer, file
 read, or joined plan on the listener's loop. The continuation can capture
 owned request values and runs once after the plan joins, including on
-cancellation. The request deadline and shutdown cancel unfinished plans.
-When cancellation ends the request, the connection closes after cleanup.
+cancellation. A transport error, the request deadline, or shutdown cancels
+unfinished plans. When cancellation ends the request, the connection closes
+after cleanup. A client can half-close its sending side and still receive
+the response.
 
 ```sh
 ../kursal/bin/kursal build examples/http-file -o bin/http-file
@@ -184,6 +186,7 @@ compiler. It checks timer races, file reads, HTTP framing and request limits,
 and TCP state across read deadlines and shutdown. The hosted file check holds
 a worker inside a read so it can verify that `/health` stays responsive,
 sequential plans join in order, and shutdown waits for the active stage.
+It also checks cancellation after a TCP reset and delivery after a half-close.
 Omit `--check-timeout` to skip the ten-second HTTP request deadline checks.
 
 ## License

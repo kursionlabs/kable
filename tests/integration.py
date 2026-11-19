@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import select
 import socket
+import struct
 import subprocess
 import tempfile
 import time
@@ -174,7 +175,7 @@ def check_async_read(command, directory):
 
 
 @contextmanager
-def gated_file_server(command, directory, library, gates=1):
+def gated_file_server(command, directory, library, gates=1, reset_notify=None):
     started, notify = os.pipe()
     release, permit = os.pipe()
     env = os.environ | {
@@ -183,8 +184,12 @@ def gated_file_server(command, directory, library, gates=1):
         "KABLE_TEST_FILE_RELEASE": str(release),
         "KABLE_TEST_FILE_GATES": str(gates),
     }
+    fds = (notify, release)
+    if reset_notify is not None:
+        env["KABLE_TEST_TCP_RESET"] = str(reset_notify)
+        fds += (reset_notify,)
     try:
-        with subprocess.Popen(command, cwd=directory, env=env, pass_fds=(notify, release),
+        with subprocess.Popen(command, cwd=directory, env=env, pass_fds=fds,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
             try:
                 port = listening_port(process, b"Listening on http://127.0.0.1:")
@@ -279,6 +284,7 @@ def check_http_file(command, directory, check_request_timeout=False):
             process.terminate()
             assert process.wait(timeout=5) == 0, process.stderr.read()
     check_http_sequence(command, directory, library, payload, check_request_timeout)
+    check_http_reset(command, directory, library)
     print("Kable HTTP file checks passed")
 
 
@@ -293,6 +299,7 @@ def check_http_sequence(command, directory, library, payload, check_request_time
     with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
         with connect(port) as client:
             start_held_read(client, request, started)
+            client.shutdown(socket.SHUT_WR)
             assert not select.select([started], [], [], 0.05)[0], "second read started before the first joined"
             assert os.write(permit, b"R") == 1
             wait_for_held_read(started, b"B")
@@ -337,6 +344,36 @@ def check_http_sequence(command, directory, library, payload, check_request_time
                 read_log_until(process.stderr, second_cancelled)
             process.terminate()
             assert process.wait(timeout=5) == 0, process.stderr.read()
+
+
+def check_http_reset(command, directory, library):
+    observed, notify = os.pipe()
+    try:
+        with gated_file_server(command, directory, library, gates=3,
+                               reset_notify=notify) as (process, port, started, permit):
+            request = b"GET /file-sequence HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            with connect(port) as client:
+                start_held_read(client, request, started)
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            assert select.select([observed], [], [], 5)[0], "listener did not observe the TCP reset"
+            assert os.read(observed, 1) == b"R"
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            cancelled = b"Sequence cancelled before the second read."
+            logs = bytearray()
+            if select.select([process.stderr], [], [], 0)[0]:
+                logs.extend(os.read(process.stderr.fileno(), 65536))
+            assert cancelled not in logs, "cancellation cleanup ran before the worker returned"
+            assert os.write(permit, b"R") == 1
+            logs.extend(read_log_until(process.stderr, cancelled))
+            assert not select.select([started], [], [], 0)[0], "reset started another stage"
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            process.terminate()
+            assert process.wait(timeout=5) == 0, process.stderr.read()
+            logs.extend(process.stderr.read())
+            assert logs.count(cancelled) == 1, logs
+    finally:
+        os.close(observed)
+        os.close(notify)
 
 
 def assert_received(client, data):

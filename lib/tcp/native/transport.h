@@ -27,8 +27,9 @@ uint64_t kable_tcp_now(uint8_t *connection);
 uv_loop_t *kable_tcp_loop(uint8_t *connection);
 int32_t kable_tcp_read(uint8_t *connection, uint64_t ms, uint8_t timed);
 int32_t kable_tcp_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed);
-/* An external operation holds the connection until it joins. A close
-   requests its cancellation. Unpark returns whether the socket can reply. */
+/* An external operation holds the connection until it joins. While parked,
+   incoming bytes are discarded, and a close or read error requests
+   cancellation. Unpark returns whether the socket can reply. */
 int32_t kable_tcp_park(uint8_t *connection, void (*cancel)(void *), void *context);
 int kable_tcp_unpark(uint8_t *connection);
 /* Copies the final response, then writes, half-closes, and drains until the

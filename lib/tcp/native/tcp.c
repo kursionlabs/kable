@@ -40,6 +40,7 @@ typedef struct {
     uint8_t next_timed;
     int phase;
     int socket_closed;
+    int read_eof;
     uint8_t event;
     int error;
     size_t length;
@@ -76,6 +77,7 @@ static void close_connection(Connection *connection) {
     if (connection->phase == PARKED) {
         if (!connection->cancelled) {
             connection->cancelled = 1;
+            uv_read_stop((uv_stream_t *)&connection->socket);
             connection->cancel_parked(connection->parked_context);
         }
         return;
@@ -168,7 +170,10 @@ static void read_done(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer
     (void)buffer;
     Connection *connection = stream->data;
     if (count > 0) complete_read(connection, KABLE_TCP_BYTES, (size_t)count, 0);
-    else if (count == UV_EOF) complete_read(connection, KABLE_TCP_END, 0, 0);
+    else if (count == UV_EOF) {
+        connection->read_eof = 1;
+        complete_read(connection, KABLE_TCP_END, 0, 0);
+    }
     else if (count < 0) complete_read(connection, KABLE_TCP_FAILED, 0, (int)count);
 }
 
@@ -203,7 +208,7 @@ static void discard_input(uv_stream_t *stream, ssize_t nread, const uv_buf_t *bu
 
 static void shutdown_done(uv_shutdown_t *shutdown, int status) {
     Connection *connection = shutdown->data;
-    if (status < 0 || uv_read_start((uv_stream_t *)&connection->socket,
+    if (status < 0 || connection->read_eof || uv_read_start((uv_stream_t *)&connection->socket,
         allocate_read, discard_input) < 0) {
         close_connection(connection);
     }
@@ -258,9 +263,25 @@ int32_t kable_tcp_write(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms, u
     return status;
 }
 
+static void parked_read(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer) {
+    (void)buffer;
+    Connection *connection = stream->data;
+    if (count == UV_EOF) {
+        /* A peer that has finished sending can still read its response. */
+        connection->read_eof = 1;
+        uv_read_stop(stream);
+    } else if (count < 0) {
+        close_connection(connection);
+    }
+}
+
 int32_t kable_tcp_park(uint8_t *raw, void (*cancel)(void *), void *context) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
+    if (!connection->read_eof) {
+        int status = uv_read_start((uv_stream_t *)&connection->socket, allocate_read, parked_read);
+        if (status < 0) return status;
+    }
     connection->phase = PARKED;
     connection->cancel_parked = cancel;
     connection->parked_context = context;
@@ -271,6 +292,7 @@ int32_t kable_tcp_park(uint8_t *raw, void (*cancel)(void *), void *context) {
 int kable_tcp_unpark(uint8_t *raw) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != PARKED) return 0;
+    uv_read_stop((uv_stream_t *)&connection->socket);
     connection->phase = IDLE;
     connection->cancel_parked = NULL;
     connection->parked_context = NULL;
