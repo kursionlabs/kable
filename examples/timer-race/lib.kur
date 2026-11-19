@@ -1,4 +1,5 @@
-use async::{JoinOutcome, Outcome, RaceOutcome, join, map, race, run, select, sleep, timeout};
+use async::{JoinOutcome, Outcome, RaceOutcome, WithinOutcome, join, map, race, run, select, sleep,
+    timeout, within};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
 use std::process::trap;
@@ -34,8 +35,54 @@ fn main() -> i32 {
         RaceOutcome::Second(cancelled, unit) => { cancelled.destroy(); return 1i32; },
         RaceOutcome::Failed(recovered, unit, code) => { recovered.destroy(); return 1i32; },
     }
-    if !check_join() || !check_nested_deadline() || !check_select() || !check_map() { return 1i32; }
+    if !check_join() || !check_nested_deadline() || !check_select() || !check_map() ||
+        !check_within() { return 1i32; }
     0i32
+}
+
+fn check_within() -> bool {
+    let owned = Buffer!::new().push_static("owned");
+    let plan = join(within(10u64, sleep(30_000u64, owned)), sleep(25u64, 7u8));
+    let result: JoinOutcome[WithinOutcome[Outcome[Buffer!]], Outcome[u8]] = run(plan);
+    let (limited, sibling, joined) = match result {
+        JoinOutcome::Ready(limited, sibling) => (limited, sibling, true),
+        JoinOutcome::Cancelled(limited, sibling) => (limited, sibling, false),
+        JoinOutcome::Failed(limited, sibling, code) => (limited, sibling, false),
+    };
+    let local_expired = reclaim_limited_buffer(limited, true);
+    if !local_expired || !joined || !is_ready(sibling, 7u8) { return false; }
+
+    let owned = Buffer!::new().push_static("owned");
+    let result: WithinOutcome[Outcome[Buffer!]] =
+        timeout(10u64, within(20_000u64, sleep(30_000u64, owned)));
+    if !reclaim_limited_buffer(result, false) { return false; }
+
+    let result: WithinOutcome[Outcome[u8]] = run(within(30_000u64, sleep(0u64, 8u8)));
+    match result {
+        WithinOutcome::Completed(outcome) => {
+            if !is_ready(outcome, 8u8) { return false; }
+            print_buffer(f"Local deadline left its sibling running; parent cancellation stayed distinct.\n");
+            true
+        },
+        _ => false,
+    }
+}
+
+fn reclaim_limited_buffer(result: WithinOutcome[Outcome[Buffer!]], local: bool) -> bool {
+    let (outcome, expected) = match result {
+        WithinOutcome::TimedOut(outcome) => (outcome, local),
+        WithinOutcome::Cancelled(outcome) => (outcome, !local),
+        WithinOutcome::Completed(outcome) => (outcome, false),
+        WithinOutcome::Failed(outcome, code) => (outcome, false),
+    };
+    let (bytes, cancelled) = match outcome {
+        Outcome::Cancelled(bytes) => (bytes, true),
+        Outcome::Ready(bytes) => (bytes, false),
+        Outcome::Failed(bytes, code) => (bytes, false),
+    };
+    let length = &bytes.len();
+    bytes.destroy();
+    expected && cancelled && length == 5usize
 }
 
 fn label(outcome: Outcome[Buffer!], suffix: Buffer!) -> (Buffer!, bool) {

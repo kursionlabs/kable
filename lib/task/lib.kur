@@ -251,3 +251,44 @@ instance Plan[Map![Task, Input, Output, Env], Output, Driver] {
         transform(Plan[Task, Input, Driver]::collect(task, &scope))
     }
 }
+
+forall Task.
+struct Within! { task: Task, ms: u64 }
+
+/// Races a plan against a local timer. The outcome includes the inner
+/// plan's result after it and the timer have joined.
+forall Task.
+fn within(ms: u64, task: Task) -> Within![Task] { Within!.{ task, ms } }
+
+forall Output.
+exposed enum WithinOutcome {
+    Completed(Output),
+    TimedOut(Output),
+    Cancelled(Output),
+    Failed(Output, i32),
+}
+
+forall Task, Output, Driver where PlanDriver[Driver], Plan[Task, Output, Driver].
+instance Plan[Within![Task], WithinOutcome[Output], Driver] {
+    fn stage(&task: Within![Task], &scope: Driver) -> usize {
+        let { task: inner, ms } = task;
+        let timer = PlanDriver[Driver]::timer(&scope, ms);
+        let work = Plan[Task, Output, Driver]::stage(&inner, &scope);
+        let root = PlanDriver[Driver]::pair(&scope, Branch::Select, timer, work);
+        task = Within!.{ task: inner, ms };
+        root
+    }
+
+    fn collect(task: Within![Task], &scope: Driver) -> WithinOutcome[Output] {
+        let { task, ms } = task;
+        let timer = PlanDriver[Driver]::next(&scope);
+        let outcome = Plan[Task, Output, Driver]::collect(task, &scope);
+        let result = PlanDriver[Driver]::next(&scope);
+        match result {
+            1i32 => WithinOutcome::TimedOut.(outcome),
+            2i32 => WithinOutcome::Completed.(outcome),
+            0i32 => WithinOutcome::Cancelled.(outcome),
+            _ => WithinOutcome::Failed.(outcome, result),
+        }
+    }
+}

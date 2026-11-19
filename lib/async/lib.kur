@@ -7,7 +7,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, Plan as TaskPlan, PlanDriver, Race!, RaceOutcome, Select!, Sleep!,
     join, race, select, sleep};
-use task::{Branch, Carry!, Map!, ScopeState!, map};
+use task::{Branch, Carry!, Map!, ScopeState!, Within!, WithinOutcome, map, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export Join!;
@@ -22,6 +22,8 @@ export map;
 export race;
 export select;
 export sleep;
+export WithinOutcome;
+export within;
 export sequence;
 
 extern "C" fn uv_hrtime() -> u64;
@@ -271,6 +273,13 @@ instance Runnable[Carry![Task, State], (State, Output)] {
 forall Task, Input, Output, Env where TaskPlan[Task, Input, Scope!].
 instance Runnable[Map![Task, Input, Output, Env], Output] {
     fn drive(task: Map![Task, Input, Output, Env], deadline: Option[u64]) -> Output {
+        drive_plan(task, deadline)
+    }
+}
+
+forall Task, Output where TaskPlan[Task, Output, Scope!].
+instance Runnable[Within![Task], WithinOutcome[Output]] {
+    fn drive(task: Within![Task], deadline: Option[u64]) -> WithinOutcome[Output] {
         drive_plan(task, deadline)
     }
 }

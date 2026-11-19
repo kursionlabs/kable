@@ -2,8 +2,8 @@
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::process::trap;
-use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, RaceOutcome, ScopeState!, Sleep!,
-    join, map, race, select, sleep};
+use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, RaceOutcome, ScopeState!, Sleep!, WithinOutcome,
+    join, map, race, select, sleep, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
 
 export JoinOutcome;
@@ -16,6 +16,8 @@ export race;
 export select;
 export sleep;
 export sequence;
+export WithinOutcome;
+export within;
 
 struct Virtual! {
     state: ScopeState!,

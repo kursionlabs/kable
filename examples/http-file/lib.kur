@@ -1,4 +1,4 @@
-use async::{FileOutcome!, Outcome, RaceOutcome, ReadFile!, read_file, select, sleep};
+use async::{FileOutcome!, ReadFile!, WithinOutcome, read_file, within};
 use http::{Method, Request!, Response!};
 use server::{Action!, Server!, defer, defer_sequence};
 use std::bytes::buffer::Buffer!;
@@ -27,15 +27,15 @@ fn discard_file(outcome: FileOutcome!) {
     }
 }
 
-fn timed_response(outcome: RaceOutcome[FileOutcome!, Outcome[()]]) -> Response! {
+fn timed_response(outcome: WithinOutcome[FileOutcome!]) -> Response! {
     match outcome {
-        RaceOutcome::First(file, timer) => file_response(file),
-        RaceOutcome::Second(file, timer) => {
+        WithinOutcome::Completed(file) => file_response(file),
+        WithinOutcome::TimedOut(file) => {
             discard_file(file);
             Response!::rejected(504u16)
         },
-        RaceOutcome::Cancelled(file, timer) => file_response(file),
-        RaceOutcome::Failed(file, timer, code) => {
+        WithinOutcome::Cancelled(file) => file_response(file),
+        WithinOutcome::Failed(file, code) => {
             discard_file(file);
             Response!::rejected(500u16)
         },
@@ -114,8 +114,8 @@ fn handle(request: Request!) -> Action! {
             return defer_sequence(plan, (), finish_sequence, cancel_sequence);
         }
         if timed {
-            return defer(select(task, sleep(1000u64, ())),
-                |outcome: RaceOutcome[FileOutcome!, Outcome[()]]| {
+            return defer(within(1000u64, task),
+                |outcome: WithinOutcome[FileOutcome!]| {
                     target.destroy();
                     timed_response(outcome)
                 });

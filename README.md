@@ -66,8 +66,9 @@ the response.
 
 Request `/file` on the printed address to read the bundled `example.txt`.
 `/health` remains available while the read is pending.
-`/file-with-timeout` races the same read against a one-second timer. If the
-timer wins, the handler returns 504 after the worker closes the file and returns.
+`/file-with-timeout` uses `within` to give the read a one-second deadline.
+If the timer wins, the handler returns 504 after the worker closes the file
+and returns.
 
 `defer_next(plan, state, resume, cancel)` lets a continuation return another
 HTTP action. On an active request, `resume` receives the owned state and
@@ -136,6 +137,12 @@ extra operation. Its closure can capture owned state. It receives the full
 typed outcome once cleanup has finished, including outcomes from cancelled
 or failed plans. A mapped plan can be used inside `join`, `select`, or a
 sequence stage.
+
+`within(ms, plan)` races one plan against a local timer. `TimedOut` means the
+timer won, and `Cancelled` means the enclosing scope cancelled the plan.
+`Completed` means the plan finished first and may carry an operation error.
+Every branch returns the inner outcome after cleanup so the caller can
+reclaim owned values. A local timeout leaves unrelated sibling plans running.
 
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain
