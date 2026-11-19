@@ -1,7 +1,5 @@
 //! Explicit sequential adapters. Engines drive one fully scoped stage at a time.
 use package::PlanOutput;
-use std::alloc::heap::HeapAllocator;
-use std::mem::sizeof;
 use std::option::Option;
 
 forall Engine.
@@ -156,84 +154,6 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
 
 /// Owns one continuation for a hosted stage. The host consumes it by
 /// resuming or cancelling after that stage has joined.
-forall Input, Action.
-struct Continuation! {
-    raw: *u8,
-    finish: unsafe fn(*u8, StageResult[Input]) -> Option[Action],
-}
-
-forall Env, Input, Action.
-fn box_continuation(finish: closure[Env](StageResult[Input]) -> Option[Action])
-    -> Continuation![Input, Action] {
-    let raw = HeapAllocator::alloc(sizeof[closure[Env](StageResult[Input]) -> Option[Action]]()).into_raw();
-    unsafe *(unsafe (raw as *closure[Env](StageResult[Input]) -> Option[Action])) = finish;
-    Continuation!.{ raw, finish: finish_continuation[Env, Input, Action] }
-}
-
-forall Env, Input, Action.
-unsafe fn finish_continuation(raw: *u8, result: StageResult[Input]) -> Option[Action] {
-    let finish = unsafe *(unsafe (raw as *closure[Env](StageResult[Input]) -> Option[Action]));
-    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    finish(result)
-}
-
-forall Input, Action.
-impl Continuation![Input, Action] {
-    fn finish(self, result: StageResult[Input]) -> Option[Action] {
-        let { raw, finish } = self;
-        unsafe finish(raw, result)
-    }
-}
-
-forall State, Input, Action.
-fn continuation(state: State, resume: fn(State, Option[Input]) -> Action,
-    cancel: fn(State, Option[Input]) -> ()) -> Continuation![Input, Action] {
-    box_continuation(|result: StageResult[Input]| match result {
-        StageResult::Joined(output) => Option::Some.(resume(state, Option::Some.(output))),
-        StageResult::Stopped => Option::Some.(resume(state, Option::None)),
-        StageResult::Cancelled(prior) => { cancel(state, prior); Option::None },
-    })
-}
-
-/// Hosts schedule one plan at a time under the same enclosing lifetime.
-forall Task, Host, Action -> Output.
-trait StageHost {
-    fn schedule(task: Task, next: Continuation![Output, Action]) -> Action;
-}
-
-forall Stages, Host, Action -> Output.
-trait HostedChain {
-    fn schedule(stages: Stages, next: Continuation![Output, Action]) -> Action;
-}
-
-forall Task, Output, Host, Action where StageHost[Task, Host, Action -> Output].
-instance HostedChain[First![Task], Host, Action -> Output] {
-    fn schedule(stages: First![Task], next: Continuation![Output, Action]) -> Action {
-        let { task } = stages;
-        StageHost[Task, Host, Action -> Output]::schedule(task, next)
-    }
-}
-
-forall Previous, State, Input, Task, Env, Output, Host, Action
-    where Copy[Env], HostedChain[Previous, Host, Action -> Input], StageHost[Task, Host, Action -> Output].
-instance HostedChain[Then![Previous, State, Input, Task, Env], Host, Action -> Output] {
-    fn schedule(stages: Then![Previous, State, Input, Task, Env], next: Continuation![Output, Action]) -> Action {
-        let { previous, handoff } = stages;
-        let next = box_continuation(|result: StageResult[Input]| match handoff.advance(result) {
-            NextStage::Start(task) => Option::Some.(StageHost[Task, Host, Action -> Output]::schedule(task, next)),
-            NextStage::Stop => next.finish(StageResult::Stopped),
-            NextStage::Cancel => next.finish(StageResult::Cancelled.(Option::None)),
-        });
-        HostedChain[Previous, Host, Action -> Input]::schedule(previous, next)
-    }
-}
-
-forall Stages, Output, Host, Action where HostedChain[Stages, Host, Action -> Output].
-fn host_sequence(plan: Sequence![Stages], next: Continuation![Output, Action]) -> Action {
-    let { stages } = plan;
-    HostedChain[Stages, Host, Action -> Output]::schedule(stages, next)
-}
-
 /// Uses one absolute deadline for the whole chain. None means the final
 /// stage was never constructed. Otherwise it returns that stage's outcome.
 forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Engine -> Output].

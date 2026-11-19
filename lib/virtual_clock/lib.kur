@@ -1,9 +1,9 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
-use task::{Branch, JoinOutcome, Outcome, Pair, Plan, PlanDriver, PlanOutput, RaceOutcome, Resolution, ScopeState!, Sleep!, WithinOutcome,
-    join, map, race, select, sleep, within};
-use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
+use task::{JoinOutcome, Outcome, PlanOutput, RaceOutcome, Sleep!, WithinOutcome, join, select, sleep};
+use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!};
+use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
 
 export JoinOutcome;
 export Outcome;
@@ -11,13 +11,9 @@ export PlanOutput;
 export RaceOutcome;
 export Sleep!;
 export join;
-export map;
-export race;
 export select;
 export sleep;
-export sequence;
 export WithinOutcome;
-export within;
 
 struct Virtual! {
     state: ScopeState!,
@@ -163,7 +159,7 @@ forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Out
 fn run(task: Task) -> Output { drive(task, Option::None) }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
-fn timeout(ms: u64, task: Task) -> Output { drive(task, Option::Some.(ms)) }
+fn run_with_deadline(task: Task, ms: u64) -> Output { drive(task, Option::Some.(ms)) }
 
 struct SequenceClock! { time: u64 }
 

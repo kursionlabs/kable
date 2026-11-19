@@ -1,34 +1,13 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
 use std::option::Option;
-use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
-
-export Branch;
-export Pair;
-export PairKind;
-export Resolution;
-export ScopeState!;
-
-forall Driver.
-trait PlanDriver {
-    fn timer(&scope: Driver, ms: u64) -> Option[usize];
-    fn pair(&scope: Driver, pair: Pair) -> Option[usize];
-    /// Gets a node's result after the engine has joined.
-    /// An absent ID reports staging failure.
-    fn result(&scope: Driver, id: Option[usize]) -> Resolution;
-}
+use package::{driver, sequence};
+export driver;
+export sequence;
+use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 
 /// The outcome a plan exposes independently of where it runs.
 forall Task -> Output.
 trait PlanOutput {}
-
-/// Stages and collects a plan on a driver that supports it.
-forall Task, Driver -> Output.
-trait Plan {
-    /// Registers this plan and returns its root if staging succeeded.
-    fn stage(&task: Task, &scope: Driver) -> Option[usize];
-    /// Consumes the plan and recovers its outcome, including after staging failure.
-    fn collect(task: Task, &scope: Driver) -> Output;
-}
 
 forall T.
 struct Sleep! { ms: u64, value: T, id: Option[usize] }
@@ -163,49 +142,30 @@ instance Plan[Join![First, Second], Driver -> JoinOutcome[A, B]] {
     }
 }
 
-use package::sequence::{Chain, Clock, Continuation!, HostedChain, Sequence!, SequenceOutput, StageDriver, StageHost, StageResult,
-    continuation, drive_sequence, host_sequence, remaining_budget, sequence};
-
-export Chain;
-export Clock;
-export Continuation!;
-export HostedChain;
-export Sequence!;
-export SequenceOutput;
-export StageDriver;
-export StageHost;
-export StageResult;
-export continuation;
-export drive_sequence;
-export host_sequence;
-export remaining_budget;
-export sequence;
-
 forall Task, Input, Output, Env.
 struct Map! { task: Task, transform: closure[Env](Input) -> Output }
-
-/// Transforms the outcome after the scope joins. The closure runs once,
-/// including for a cancelled or failed outcome, and may own captured values.
-forall Task, Input, Output, Env where PlanOutput[Task -> Input].
-fn map(task: Task, transform: closure[Env](Input) -> Output) -> Map![Task, Input, Output, Env] {
-    Map!.{ task, transform }
-}
 
 forall Task, Input, Output, Env where PlanOutput[Task -> Input].
 instance PlanOutput[Map![Task, Input, Output, Env] -> Output] {}
 
 forall Task, Input where PlanOutput[Task -> Input].
 impl Task {
-    /// Transforms the outcome once after this plan has joined.
+    /// Transforms the joined outcome, including on cancellation or failure.
+    /// The closure runs once and can own captured values.
     forall Env, Mapped.
     fn map(self, transform: closure[Env](Input) -> Mapped) -> Map![Task, Input, Mapped, Env] {
-        map(self, transform)
+        Map!.{ task: self, transform }
     }
 
-    /// Gives this plan a local deadline in milliseconds.
+    /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, ms: u64)
         -> Map![Select![Sleep![()], Task], RaceOutcome[Outcome[()], Input], WithinOutcome[Input], ()] {
-        within(ms, self)
+        select(sleep(ms, ()), self).map(|result| match result {
+            RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
+            RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),
+            RaceOutcome::Cancelled(timer, outcome) => WithinOutcome::Cancelled.(outcome),
+            RaceOutcome::Failed(timer, outcome, code) => WithinOutcome::Failed.(outcome, code),
+        })
     }
 }
 
@@ -224,43 +184,10 @@ instance Plan[Map![Task, Input, Output, Env], Driver -> Output] {
     }
 }
 
-/// Selects the first timer and returns both payloads after they have joined.
-forall A, B.
-fn race(first: Sleep![A], second: Sleep![B])
-    -> Map![Select![Sleep![A], Sleep![B]], RaceOutcome[Outcome[A], Outcome[B]], RaceOutcome[A, B], ()] {
-    map(select(first, second), |result: RaceOutcome[Outcome[A], Outcome[B]]| match result {
-        RaceOutcome::First(a, b) => RaceOutcome::First.(sleep_value(a), sleep_value(b)),
-        RaceOutcome::Second(a, b) => RaceOutcome::Second.(sleep_value(a), sleep_value(b)),
-        RaceOutcome::Cancelled(a, b) => RaceOutcome::Cancelled.(sleep_value(a), sleep_value(b)),
-        RaceOutcome::Failed(a, b, code) => RaceOutcome::Failed.(sleep_value(a), sleep_value(b), code),
-    })
-}
-
-forall T.
-fn sleep_value(outcome: Outcome[T]) -> T {
-    match outcome {
-        Outcome::Ready(value) => value,
-        Outcome::Cancelled(value) => value,
-        Outcome::Failed(value, code) => value,
-    }
-}
-
 forall Output.
 exposed enum WithinOutcome {
     Completed(Output),
     TimedOut(Output),
     Cancelled(Output),
     Failed(Output, i32),
-}
-
-/// Races a plan against a local timer and returns its outcome after both join.
-forall Task, Output where PlanOutput[Task -> Output].
-fn within(ms: u64, task: Task)
-    -> Map![Select![Sleep![()], Task], RaceOutcome[Outcome[()], Output], WithinOutcome[Output], ()] {
-    map(select(sleep(ms, ()), task), |result| match result {
-        RaceOutcome::First(timer, outcome) => WithinOutcome::TimedOut.(outcome),
-        RaceOutcome::Second(timer, outcome) => WithinOutcome::Completed.(outcome),
-        RaceOutcome::Cancelled(timer, outcome) => WithinOutcome::Cancelled.(outcome),
-        RaceOutcome::Failed(timer, outcome, code) => WithinOutcome::Failed.(outcome, code),
-    })
 }

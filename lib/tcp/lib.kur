@@ -5,7 +5,8 @@ use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
-use task::{Plan, PlanOutput, Resolution};
+use task::PlanOutput;
+use task::driver::{Plan, Resolution};
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
     callback: unsafe fn(*u8, *u8, u8, *u8, usize, i32) -> i32, error: *i32) -> *u8;

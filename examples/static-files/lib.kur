@@ -1,6 +1,6 @@
-use async::{OpenOutcome!, open_file_beneath_cwd};
+use async::{OpenOutcome!, WithinOutcome, open_file_beneath_cwd};
 use http::{Method, Request!, Response!};
-use server::{Action!, Plan, PlanOutput, Server!, file_reply};
+use server::{Action!, PlanOutput, RequestState, Server!, file_reply};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -33,21 +33,33 @@ fn serve(request: Request!) -> Action! {
     let file = open_file_beneath_cwd(&access, bytes);
     restore.restore(access).destroy();
 
-    file.map(|outcome| (content_type, outcome))
-        .defer_action_within(OPEN_DEADLINE, file_response, discard_file)
+    file.within(OPEN_DEADLINE).defer(|outcome, state| file_response(content_type, outcome, state))
 }
 
-fn file_response(result: (Slice[u8, 'static], OpenOutcome!)) -> Action! {
-    let (content_type, outcome) = result;
-    match outcome {
+fn file_response(content_type: Slice[u8, 'static], result: WithinOutcome[OpenOutcome!],
+    state: RequestState) -> Option[Action!] {
+    let (outcome, status) = match result {
+        WithinOutcome::Completed(outcome) => (outcome, 0u16),
+        WithinOutcome::TimedOut(outcome) => (outcome, 504),
+        WithinOutcome::Cancelled(outcome) => (outcome, 408),
+        WithinOutcome::Failed(outcome, code) => (outcome, 500),
+    };
+    match state {
+        RequestState::Cancelled => { discard_file(outcome); return Option::None; },
+        RequestState::Active => (),
+    }
+    if status != 0 {
+        discard_file(outcome);
+        return Option::Some.(Response!::rejected(status).reply());
+    }
+    Option::Some.(match outcome {
         OpenOutcome!::Opened(file) => file_reply(file, content_type),
         OpenOutcome!::Cancelled => Response!::rejected(408).reply(),
         OpenOutcome!::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)).reply(),
-    }
+    })
 }
 
-fn discard_file(result: (Slice[u8, 'static], OpenOutcome!)) {
-    let (content_type, outcome) = result;
+fn discard_file(outcome: OpenOutcome!) {
     match outcome {
         OpenOutcome!::Opened(file) => file.close(),
         OpenOutcome!::Cancelled | OpenOutcome!::Failed => (),

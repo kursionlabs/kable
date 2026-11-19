@@ -110,14 +110,14 @@ by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
 Handlers run on the event loop and should return promptly. A handler bound with
-`Server!::bind_async` can import `server::{Plan, PlanOutput}` and use
-`plan.defer(continuation)` to run a timer, file read, or joined plan on the
-listener’s loop. The continuation can capture
-owned request values and runs once after the plan joins, including on
-cancellation. A transport error, the request deadline, or shutdown cancels
-unfinished plans. When cancellation ends the request, the connection closes
-after cleanup. A client can half-close its sending side and still receive
-the response.
+`Server!::bind_async` can import `server::PlanOutput` and return
+`plan.defer(|outcome, state| ...)`. The continuation runs once after the
+plan joins and receives its owned outcome. With `RequestState::Active`, it
+can return `Some(action)` to reply or defer another plan. With
+`RequestState::Cancelled`, it releases the values it owns and returns
+`None`. Returning `None` closes the connection. A transport error, the
+request deadline, or shutdown cancels unfinished plans. A client can
+half-close its sending side and still receive the response.
 
 ### A file response with a deadline
 
@@ -132,34 +132,34 @@ Request `/file-with-timeout` on the printed address to read the bundled
 ```kursal
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .defer_within(1000, file_response, discard_file)
+    .within(1000)
+    .defer(|outcome, state| timed_reply(outcome, state, file_response, discard_file))
 ```
 
-`defer_within(ms, reply, discard)` gives the completed plan’s outcome to
-`reply` while the request is active. If the timer wins, it waits for the
-worker to close the file, calls `discard` with the outcome, and replies 504.
-If the request ends first, it calls `discard` after the worker joins.
-`file_response` moves a successful read’s buffer into the response.
-`/file` uses the request deadline alone, and `/health` remains available
-while a read is pending.
+`.within(1000)` adds the local deadline. If the timer wins, the continuation
+gets `WithinOutcome::TimedOut` after the worker joins, releases any buffer,
+and replies 504 while the request is active. If the request ends first, the
+continuation releases the outcome and closes the connection. `/file` uses
+the request deadline alone, and `/health` remains available while a read is
+pending.
 
 ### Two independent file reads
 
 `/file-join` starts reads of `example.txt` and `footer.txt` together using
-`join(first, second).defer_within(1000, joined_response, discard_join)`.
+`join(first, second).within(1000)` and the same `.defer(...)` handoff.
 Both reads have a 64 KiB
 limit and share the one-second deadline. The response appends the footer
 after the first file’s bytes regardless of which read finishes first.
 A timeout returns 504 after both workers retire, and the handler destroys
 any buffer it received. [Parallel file handler](examples/http-file/file_join.kur)
 
-An HTTP handler can use `sequence.defer(state, resume, cancel)` to drive a
-portable sequence under the original request deadline. The listener delivers
-request cancellation after the active plan joins. The `/file-sequence`
-handler reads `example.txt` first. If its first line is `footer: detailed`,
-`.then_owned` starts a read of `footer-detailed.txt`. Otherwise it reads
-`footer.txt`. The second plan uses `.map` to keep the first file’s owned
-buffer and append the selected footer to it. [Dependent file handler](examples/http-file/file_sequence.kur)
+### Dependent file reads
+
+`/file-sequence` defers the first read of `example.txt`. Its continuation
+chooses the footer and returns a deferred action for the second read under
+the original request deadline. The second continuation captures the first
+buffer and either appends the footer or destroys the buffer if the request
+has ended. [Dependent file handler](examples/http-file/file_sequence.kur)
 
 ## Scoped task plans
 
@@ -180,13 +180,12 @@ driver can run the plan and return that outcome. A file plan has a known
 outcome even when the selected driver cannot execute file reads.
 
 Build a wait with `sleep(ms, value)` and drive it with the chosen engine's
-`run`. `race` runs two waits in one scope and cancels the loser when the first
-timer fires. `join` waits for both child plans. `select` takes the first child
-to complete, which may report an error, then cancels and joins the loser.
+`run`. `join` waits for both child plans. `select` takes the first child to
+complete, which may report an error, then cancels and joins the loser.
 Both combinators accept nested plans and operations supported by the driver.
 
-`timeout` adds a parent deadline that cancels every pending child, including
-children of nested joins. The scope closes all timer handles before returning.
+`run_with_deadline(plan, ms)` adds a parent deadline that cancels every
+pending child, including children of nested joins. The scope closes all timer handles before returning.
 The outcome hands ownership of the values back to the caller on readiness,
 cancellation, or startup failure. A cancelled join preserves the individual
 outcomes of children that already completed.
@@ -201,9 +200,23 @@ a timer race with another wait. It also shows a parent deadline and a
 winning branch preserving completed child results while cancelling pending
 nested waits.
 
-### Explicit sequencing
+### Plan adapters
 
-`sequence(first).then(resume)` builds a chain of adapters in the style
+`plan.map(transform)` converts the plan's joined outcome. Its closure can
+capture owned state and runs once, including on cancellation or failure.
+
+`plan.within(ms)` races the plan against a local timer. `TimedOut` means the
+timer won, `Cancelled` means the enclosing scope cancelled the plan, and
+`Completed` carries the plan's own outcome, including any operation error.
+Every branch returns the inner outcome after cleanup so the caller can
+reclaim owned values. A local timeout leaves unrelated sibling plans running.
+
+Import `PlanOutput` to use both methods. Driver implementations use
+`task::driver` for staging, collection, and scope policy.
+
+### Standalone sequencing
+
+Import `sequence` from `task::sequence`. `sequence(first).then(resume)` builds a chain of adapters in the style
 of Kursal’s iterator chaining. The previous plan determines the closure’s
 input type. The closure consumes the previous outcome
 and returns `Some(next)` to start another stage or `None` to stop. Both
@@ -221,25 +234,6 @@ consume them and any available outcome if the handoff is skipped. The
 Its optional millisecond budget applies to the whole chain. It returns
 `None` when the last stage was never constructed and `Some(outcome)` when
 that stage produced an outcome, including cancellation during the stage.
-The standalone runner and HTTP host use the same rules to advance, stop, or
-cancel a handoff. Standalone handoffs stay in typed values. The HTTP host
-keeps a continuation alive between listener callbacks.
-
-`map(plan, transform)` converts a plan's result without scheduling an
-extra operation. Its closure can capture owned state. It receives the full
-typed outcome once cleanup has finished, including outcomes from cancelled
-or failed plans. A mapped plan can be used inside `join`, `select`, or a
-sequence stage.
-
-`within(ms, plan)` races one plan against a local timer. `TimedOut` means the
-timer won, and `Cancelled` means the enclosing scope cancelled the plan.
-`Completed` means the plan finished first and may carry an operation error.
-Every branch returns the inner outcome after cleanup so the caller can
-reclaim owned values. A local timeout leaves unrelated sibling plans running.
-
-Import `PlanOutput` from the task package, either driver, or the HTTP server
-to use `plan.map(transform)` and `plan.within(ms)`. The methods and free
-functions build the same portable plans.
 
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain
@@ -248,7 +242,7 @@ bin/task-chain
 
 ### Bounded file reads
 
-`read_file(&access, path, limit)` plans a regular-file read. `run` or `timeout`
+`read_file(&access, path, limit)` plans a regular-file read. `run` or `run_with_deadline`
 returns an owned `Buffer!`, cancellation, or a libuv error. The work runs
 on libuv's worker pool. Cancellation skips queued work when possible and
 asks a running worker to stop between reads. The scope waits for the worker

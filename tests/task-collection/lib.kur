@@ -1,6 +1,7 @@
 use async::{run, sleep};
 use std::option::Option;
-use task::{Outcome, Pair, PairKind, Plan, PlanDriver, PlanOutput, Resolution, Sleep!};
+use task::{Outcome, PlanOutput, Sleep!};
+use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
 

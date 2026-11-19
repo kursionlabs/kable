@@ -1,10 +1,10 @@
-use async::{FileOutcome!, read_file};
+use async::{FileOutcome!, WithinOutcome, read_file};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
-use server::{Action!, Plan, PlanOutput, Server!};
+use server::{Action!, PlanOutput, RequestState, Server!};
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
-use std::option::Result;
+use std::option::{Option, Result};
 use std::slice::StaticRead;
 
 const FILE_LIMIT: usize = 65_536;
@@ -12,9 +12,37 @@ const FILE_LIMIT: usize = 65_536;
 fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
-    if !timed { return file.defer(|outcome| file_response(outcome)); }
+    if timed {
+        return file.within(1000).defer(|outcome, state| {
+            timed_reply(outcome, state, file_response, discard_file)
+        });
+    }
+    file.defer(|outcome, state| {
+        let response = file_response(outcome);
+        match state {
+            RequestState::Active => Option::Some.(response.reply()),
+            RequestState::Cancelled => { response.destroy(); Option::None },
+        }
+    })
+}
 
-    file.defer_within(1000, file_response, discard_file)
+forall Output.
+fn timed_reply(result: WithinOutcome[Output], state: RequestState,
+    reply: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Option[Action!] {
+    let (outcome, status) = match result {
+        WithinOutcome::Completed(outcome) => (outcome, 0u16),
+        WithinOutcome::TimedOut(outcome) => (outcome, 504),
+        WithinOutcome::Cancelled(outcome) => (outcome, 408),
+        WithinOutcome::Failed(outcome, code) => (outcome, 500),
+    };
+    match state {
+        RequestState::Cancelled => { discard(outcome); Option::None },
+        RequestState::Active => {
+            if status == 0 { return Option::Some.(reply(outcome).reply()); }
+            discard(outcome);
+            Option::Some.(Response!::rejected(status).reply())
+        },
+    }
 }
 
 fn file_response(outcome: FileOutcome!) -> Response! {

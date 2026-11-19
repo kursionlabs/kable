@@ -1,4 +1,4 @@
-use async::{FileOutcome!, JoinOutcome, join, read_file, timeout};
+use async::{FileOutcome!, JoinOutcome, join, read_file, run_with_deadline};
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Option;
 use std::parse::parse_u64;
@@ -59,7 +59,7 @@ fn main(args: Args) -> i32 {
         Option::None => 5000u64,
     };
     let plan = join(read_file(&access, left, 65_536usize), read_file(&access, right, 65_536usize));
-    let result = timeout(deadline, plan);
+    let result = run_with_deadline(plan, deadline);
     match result {
         JoinOutcome::Ready(left, right) => print_pair(left, right),
         JoinOutcome::Cancelled(left, right) => {

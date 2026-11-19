@@ -5,27 +5,22 @@ use std::mem::{alloca, sizeof};
 use std::option::Option;
 use std::ptr::is_null;
 use std::slice::ReadBytes;
-use task::{Join!, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, Select!, Sleep!,
-    join, race, select, sleep};
-use task::{Branch, Pair, PairKind, Resolution, ScopeState!, WithinOutcome, map, within};
-use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
+use task::{Join!, JoinOutcome, Outcome, PlanOutput, RaceOutcome, Select!, Sleep!, WithinOutcome,
+    join, select, sleep};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
+use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
 
 export Join!;
 export JoinOutcome;
 export Outcome;
-export Plan;
 export PlanOutput;
 export RaceOutcome;
 export Select!;
 export Sleep!;
 export join;
-export map;
-export race;
 export select;
 export sleep;
 export WithinOutcome;
-export within;
-export sequence;
 
 extern "C" fn uv_hrtime() -> u64;
 
@@ -391,7 +386,7 @@ fn run(task: Task) -> Output { drive_plan(task, Option::None) }
 
 /// Cancels unfinished children when the parent deadline expires, then joins them.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn timeout(ms: u64, task: Task) -> Output {
+fn run_with_deadline(task: Task, ms: u64) -> Output {
     drive_plan(task, Option::Some.(ms))
 }
 

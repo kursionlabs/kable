@@ -1,4 +1,5 @@
-use async::{Outcome, PlanOutput, Sleep!, run_sequence, sequence, sleep};
+use task::sequence::sequence;
+use async::{Outcome, PlanOutput, Sleep!, run_sequence, sleep};
 use std::bytes::buffer::Buffer!;
 use std::io::print_buffer;
 use std::option::Option;

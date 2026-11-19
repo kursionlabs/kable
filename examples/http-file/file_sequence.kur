@@ -2,57 +2,50 @@
 use async::{FileOutcome!, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file};
-use server::{Action!, PlanOutput};
+use server::{Action!, PlanOutput, RequestState};
 use std::bytes::buffer::Buffer!;
 use std::io::eprint_buffer;
 use std::option::Option;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
-use task::sequence;
 
 fn serve() -> Action! {
     let access = StaticRead::new();
     let first = read_file(&access, "example.txt", FILE_LIMIT);
-    sequence(first)
-        .then_owned((), |unit, outcome| match outcome {
-            FileOutcome!::Read(first) => {
-                let path = footer_path(&first);
-                let footer = read_file(&access, path, FILE_LIMIT);
-                Option::Some.(footer.map(|file| (first, file)))
-            },
-            FileOutcome!::Cancelled => Option::None,
-            FileOutcome!::Failed(code) => Option::None,
-        }, cancel_first)
-        .defer((), finish_sequence, cancel_sequence)
+    first.defer(|outcome, state| read_footer(outcome, state))
 }
 
-fn cancel_first(unit: (), outcome: Option[FileOutcome!]) {
-    match outcome {
-        Option::Some(file) => discard_file(file),
-        Option::None => (),
+fn read_footer(outcome: FileOutcome!, state: RequestState) -> Option[Action!] {
+    match state {
+        RequestState::Cancelled => {
+            discard_file(outcome);
+            eprint_buffer(f"Sequence cancelled before the second read.\n");
+            return Option::None;
+        },
+        RequestState::Active => (),
     }
-    eprint_buffer(f"Sequence cancelled before the second read.\n");
+    match outcome {
+        FileOutcome!::Read(first) => {
+            let path = footer_path(&first);
+            let access = StaticRead::new();
+            let footer = read_file(&access, path, FILE_LIMIT);
+            Option::Some.(footer.defer(|outcome, state| finish_footer(first, outcome, state)))
+        },
+        FileOutcome!::Cancelled | FileOutcome!::Failed => Option::Some.(Response!::rejected(500).reply()),
+    }
 }
 
-fn cancel_sequence(unit: (), outcome: Option[(Buffer!, FileOutcome!)]) {
-    match outcome {
-        Option::Some(result) => {
-            let (first, file) = result;
+fn finish_footer(first: Buffer!, footer: FileOutcome!, state: RequestState) -> Option[Action!] {
+    match state {
+        RequestState::Active => Option::Some.(append_file(first, footer).reply()),
+        RequestState::Cancelled => {
             let length = &first.len();
             first.destroy();
-            discard_file(file);
+            discard_file(footer);
             eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+            Option::None
         },
-        Option::None => (),
     }
-}
-
-fn finish_sequence(unit: (), result: Option[(Buffer!, FileOutcome!)]) -> Action! {
-    let (first, outcome) = match result {
-        Option::Some(files) => files,
-        Option::None => return Response!::rejected(500).reply(),
-    };
-    append_file(first, outcome).reply()
 }
 
 fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {

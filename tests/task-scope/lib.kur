@@ -1,5 +1,5 @@
 use std::option::Option;
-use task::{Branch, Pair, PairKind, Resolution, ScopeState!};
+use task::driver::{Branch, Pair, PairKind, Resolution, ScopeState!};
 
 fn main() -> i32 {
     let scope = ScopeState!::new();

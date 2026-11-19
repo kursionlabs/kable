@@ -1,0 +1,27 @@
+//! Staging and collection for task drivers.
+use std::option::Option;
+use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
+
+export Branch;
+export Pair;
+export PairKind;
+export Resolution;
+export ScopeState!;
+
+forall Driver.
+trait PlanDriver {
+    fn timer(&scope: Driver, ms: u64) -> Option[usize];
+    fn pair(&scope: Driver, pair: Pair) -> Option[usize];
+    /// Gets a node's result after the engine has joined.
+    /// An absent ID reports staging failure.
+    fn result(&scope: Driver, id: Option[usize]) -> Resolution;
+}
+
+/// Stages and collects a plan on a driver that supports it.
+forall Task, Driver -> Output.
+trait Plan {
+    /// Registers this plan and returns its root if staging succeeded.
+    fn stage(&task: Task, &scope: Driver) -> Option[usize];
+    /// Consumes the plan and recovers its outcome, including after staging failure.
+    fn collect(task: Task, &scope: Driver) -> Output;
+}
