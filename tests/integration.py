@@ -390,6 +390,65 @@ def check_async_read(command, directory):
     print("Kable async file checks passed")
 
 
+def check_file_copy(command, directory):
+    library = directory / "short-file-write.so"
+    subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "tests/short_file_write.c"),
+                    "-ldl", "-pthread", "-o", str(library)], check=True)
+    env = os.environ | {"LD_PRELOAD": str(library)}
+    source = directory / "copy source"
+    destination = directory / "copy destination"
+    payload = bytes(range(253)) * 570 + b"last chunk"
+    source.write_bytes(payload)
+
+    def copy(source, destination, *args, env=env):
+        return subprocess.run([*command, str(source), str(destination), *args],
+                              env=env, capture_output=True, timeout=10)
+
+    result = copy(source, destination)
+    assert result.returncode == 0 and destination.read_bytes() == payload, result.stderr
+    result = copy(source, source)
+    assert result.returncode == 1 and source.read_bytes() == payload, result.stderr
+    empty = directory / "empty source"
+    empty.touch()
+    empty_copy = directory / "empty copy"
+    result = copy(empty, empty_copy)
+    assert result.returncode == 0 and empty_copy.read_bytes() == b"", result.stderr
+
+    failed = directory / "failed copy"
+    result = copy(source, failed, env=env | {"KABLE_TEST_WRITE_FAIL": "1"})
+    assert result.returncode == 1 and b"write failed after 4093 bytes" in result.stderr, result.stderr
+    assert failed.read_bytes() == payload[:4093]
+
+    cancelled = directory / "cancelled copy"
+    result = copy(source, cancelled, "0")
+    assert result.returncode == 1 and b"write cancelled after 0 bytes" in result.stderr, result.stderr
+    assert cancelled.read_bytes() == b""
+
+    started, notify = os.pipe()
+    release, permit = os.pipe()
+    gated_env = env | {"KABLE_TEST_WRITE_STARTED": str(notify), "KABLE_TEST_WRITE_RELEASE": str(release)}
+    partial = directory / "partial copy"
+    try:
+        with subprocess.Popen([*command, str(source), str(partial), "500"], env=gated_env,
+                              pass_fds=(notify, release), stderr=subprocess.PIPE) as process:
+            try:
+                wait_for_held_read(started, b"W")
+                time.sleep(0.75)
+                assert process.poll() is None, "copy exited before the write worker joined"
+                assert partial.read_bytes() == payload[:4093]
+                assert os.write(permit, b"R") == 1
+                assert process.wait(timeout=5) == 1
+                assert b"write cancelled after 4093 bytes" in process.stderr.read()
+                assert partial.read_bytes() == payload[:4093]
+            finally:
+                if process.poll() is None:
+                    process.kill()
+    finally:
+        for fd in (started, notify, release, permit):
+            os.close(fd)
+    print("Kable scoped file copy checks passed")
+
+
 @contextmanager
 def gated_file_server(command, directory, library, gates=1, reset_notify=None):
     started, notify = os.pipe()
@@ -844,6 +903,7 @@ def main():
             static_files = build("examples/static-files", Path(directory) / "static-files")
             check_timer_engines(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
+            file_copy = build("examples/file-copy", Path(directory) / "file-copy")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
@@ -851,6 +911,7 @@ def main():
             check_hello_server(hello)
             check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
+            check_file_copy([str(file_copy)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
             check_tcp_write([str(tcp_write)])

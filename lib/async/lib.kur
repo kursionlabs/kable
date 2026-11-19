@@ -1,9 +1,9 @@
-//! Structured waits, joins, and bounded file reads on libuv.
+//! Structured waits, joins, and bounded file operations on libuv.
 use package::host;
 use std::alloc::heap::HeapAllocator;
 use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
-use std::option::Option;
+use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Join!, JoinOutcome, Outcome, PlanOutput, RaceOutcome, Select!, Sleep!, Stream, StreamOutcome!, WithinOutcome,
@@ -33,15 +33,17 @@ extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize)
 extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
 extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize, mode: u8) -> usize;
 extern "C" fn kable_scope_add_chunk(scope: *u8, fd: i32, offset: u64, limit: usize) -> usize;
+extern "C" fn kable_scope_add_write(scope: *u8, fd: i32, offset: u64, bytes: *u8, len: usize) -> usize;
 extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> u8) -> usize;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> ();
 extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
+extern "C" fn kable_scope_write_result(scope: *u8, id: usize, written: *usize) -> i32;
 extern "C" fn kable_scope_take_file(scope: *u8, id: usize, len: *u64) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
-extern "C" fn kable_file_close_descriptor(fd: i32) -> ();
+extern "C" fn kable_file_close_descriptor(fd: i32) -> i32;
 
 struct ReadFile! { path: Buffer!, limit: usize, beneath: bool, id: Option[usize] }
 
@@ -64,8 +66,11 @@ exposed enum FileOutcome! {
     Failed(i32),
 }
 
-struct OpenFile! { path: Buffer!, id: Option[usize] }
+struct OpenFile! { path: Buffer!, beneath: bool, id: Option[usize] }
 struct OpenedFile! { fd: i32, length: u64 }
+struct CreateFile! { path: Buffer!, id: Option[usize] }
+struct OutputFile! { fd: i32 }
+struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, id: Option[usize] }
 struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
 struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
 struct NextFileChunk! { read: ReadChunk!, remaining: u64 }
@@ -78,10 +83,49 @@ exposed enum OpenOutcome! {
     Failed(i32),
 }
 
+exposed enum CreateOutcome! {
+    Created(OutputFile!),
+    Cancelled,
+    Failed(i32),
+}
+
+/// Each variant records the bytes accepted by the file before the plan joined.
+exposed enum FileWriteOutcome {
+    Written(usize),
+    Cancelled(usize),
+    Failed(usize, i32),
+}
+
+/// Opens and measures a regular file.
+forall C, S where ReadBytes[C, S], Copy[S].
+fn open_file(&cx: C, path: S) -> OpenFile! {
+    OpenFile!.{ path: Buffer!::new().push_bytes(&cx, path), beneath: false, id: Option::None }
+}
+
 /// Opens a regular file beneath the working directory and measures its length.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn open_file_beneath_cwd(&cx: C, path: S) -> OpenFile! {
-    OpenFile!.{ path: Buffer!::new().push_bytes(&cx, path), id: Option::None }
+    OpenFile!.{ path: Buffer!::new().push_bytes(&cx, path), beneath: true, id: Option::None }
+}
+
+/// Creates a new regular file. An existing destination causes an error.
+forall C, S where ReadBytes[C, S], Copy[S].
+fn create_file(&cx: C, path: S) -> CreateFile! {
+    CreateFile!.{ path: Buffer!::new().push_bytes(&cx, path), id: Option::None }
+}
+
+impl OutputFile! {
+    /// Writes the buffer at offset, continuing through short writes.
+    /// The joined result returns the file, buffer, and confirmed byte count.
+    fn write_chunk(self, offset: u64, bytes: Buffer!) -> WriteChunk! {
+        WriteChunk!.{ file: self, offset, bytes, id: Option::None }
+    }
+
+    fn close(self) -> Result[(), i32] {
+        let { fd } = self;
+        let status = unsafe kable_file_close_descriptor(fd);
+        if status < 0 { Result::Err.(status) } else { Result::Ok.(()) }
+    }
 }
 
 impl OpenedFile! {
@@ -237,6 +281,15 @@ impl Scope! {
         registered(id)
     }
 
+    fn add_write(&self, &file: OutputFile!, offset: u64, &bytes: Buffer!) -> Option[usize] {
+        let { raw } = self;
+        let { fd } = file;
+        let id = unsafe kable_scope_add_write(raw, fd, offset, unsafe &bytes.as_ptr(), &bytes.len());
+        file = OutputFile!.{ fd };
+        self = Scope!.{ raw };
+        registered(id)
+    }
+
     /// The context lives through collection. Start schedules an asynchronous
     /// completion on the supplied loop. Stop returns zero to retire now or
     /// one to wait for the completion callback.
@@ -261,13 +314,30 @@ impl Scope! {
         FileOutcome!::Read.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
     }
 
-    fn take_file(&self, id: Option[usize]) -> OpenOutcome! {
+    fn write_result(&self, id: Option[usize]) -> FileWriteOutcome {
+        let resolution = &self.result(id);
+        let { raw } = self;
+        let size = unsafe alloca[usize]();
+        let status = unsafe kable_scope_write_result(raw, id.unwrap_or(usize::MAX), size);
+        let count = unsafe *size;
+        self = Scope!.{ raw };
+        match resolution {
+            Resolution::Completed => {
+                if status < 0 { FileWriteOutcome::Failed.(count, status) }
+                else { FileWriteOutcome::Written.(count) }
+            },
+            Resolution::Cancelled => FileWriteOutcome::Cancelled.(count),
+            Resolution::Failed(code) => FileWriteOutcome::Failed.(count, code),
+            Resolution::First | Resolution::Second => FileWriteOutcome::Failed.(count, -1),
+        }
+    }
+
+    fn take_descriptor(&self, id: Option[usize]) -> Result[(i32, u64), i32] {
         let { raw } = self;
         let size = unsafe alloca[u64]();
         let fd = unsafe kable_scope_take_file(raw, id.unwrap_or(usize::MAX), size);
         self = Scope!.{ raw };
-        if fd < 0 { return OpenOutcome!::Failed.(fd); }
-        OpenOutcome!::Opened.(OpenedFile!.{ fd, length: unsafe *size })
+        if fd < 0 { Result::Err.(fd) } else { Result::Ok.((fd, unsafe *size)) }
     }
 
     fn run(&self, root: Option[usize], deadline: Option[u64]) {
@@ -372,21 +442,71 @@ instance PlanOutput[OpenFile! -> OpenOutcome!] {}
 
 instance Plan[OpenFile!, Scope! -> OpenOutcome!] {
     fn stage(&task: OpenFile!, &scope: Scope!) -> Option[usize] {
-        let { path, id } = task;
-        let id = &scope.add_file(&path, 0, 2);
-        task = OpenFile!.{ path, id };
+        let { path, beneath, id } = task;
+        let id = &scope.add_file(&path, 0, if beneath { 2 } else { 3 });
+        task = OpenFile!.{ path, beneath, id };
         id
     }
 
     fn collect(task: OpenFile!, &scope: Scope!) -> OpenOutcome! {
-        let { path, id } = task;
+        let { path, beneath, id } = task;
         path.destroy();
         match &scope.result(id) {
-            Resolution::Completed => &scope.take_file(id),
+            Resolution::Completed => match &scope.take_descriptor(id) {
+                Result::Ok(parts) => {
+                    let (fd, length) = parts;
+                    OpenOutcome!::Opened.(OpenedFile!.{ fd, length })
+                },
+                Result::Err(code) => OpenOutcome!::Failed.(code),
+            },
             Resolution::Cancelled => OpenOutcome!::Cancelled,
             Resolution::Failed(code) => OpenOutcome!::Failed.(code),
             Resolution::First | Resolution::Second => OpenOutcome!::Failed.(-1i32),
         }
+    }
+}
+
+instance PlanOutput[CreateFile! -> CreateOutcome!] {}
+
+instance Plan[CreateFile!, Scope! -> CreateOutcome!] {
+    fn stage(&task: CreateFile!, &scope: Scope!) -> Option[usize] {
+        let { path, id } = task;
+        let id = &scope.add_file(&path, 0, 4);
+        task = CreateFile!.{ path, id };
+        id
+    }
+
+    fn collect(task: CreateFile!, &scope: Scope!) -> CreateOutcome! {
+        let { path, id } = task;
+        path.destroy();
+        match &scope.result(id) {
+            Resolution::Completed => match &scope.take_descriptor(id) {
+                Result::Ok(parts) => {
+                    let (fd, length) = parts;
+                    CreateOutcome!::Created.(OutputFile!.{ fd })
+                },
+                Result::Err(code) => CreateOutcome!::Failed.(code),
+            },
+            Resolution::Cancelled => CreateOutcome!::Cancelled,
+            Resolution::Failed(code) => CreateOutcome!::Failed.(code),
+            Resolution::First | Resolution::Second => CreateOutcome!::Failed.(-1),
+        }
+    }
+}
+
+instance PlanOutput[WriteChunk! -> (OutputFile!, Buffer!, FileWriteOutcome)] {}
+
+instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, FileWriteOutcome)] {
+    fn stage(&task: WriteChunk!, &scope: Scope!) -> Option[usize] {
+        let { file, offset, bytes, id } = task;
+        let id = &scope.add_write(&file, offset, &bytes);
+        task = WriteChunk!.{ file, offset, bytes, id };
+        id
+    }
+
+    fn collect(task: WriteChunk!, &scope: Scope!) -> (OutputFile!, Buffer!, FileWriteOutcome) {
+        let { file, offset, bytes, id } = task;
+        (file, bytes, &scope.write_result(id))
     }
 }
 

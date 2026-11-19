@@ -269,6 +269,23 @@ bin/async-read kur.toml README.md
 The example joins two reads under a common deadline and writes their contents
 in argument order. Each file is limited to 64 KiB.
 
+### Copy a file with bounded reads and writes
+
+```sh
+../kursal/bin/kursal build examples/file-copy -o bin/file-copy
+bin/file-copy README.md README.copy.md
+```
+
+The example pulls one chunk from `FileChunks!` and waits for
+`destination.write_chunk(offset, bytes)` to join before pulling the next.
+The write runs on the worker pool and continues through short writes. Each
+outcome returns the destination, buffer, and number of bytes accepted so far,
+including when a deadline cancels the plan. [Linux positioned I/O manual](https://man7.org/linux/man-pages/man2/pwrite.2.html)
+
+The destination must be a new path. Pass an optional third argument to set
+a deadline in milliseconds for each write. If a copy fails or is cancelled,
+the destination contains the bytes written so far.
+
 ## Scoped TCP reads and writes
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per

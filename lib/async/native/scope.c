@@ -4,7 +4,7 @@
 
 #include <stdlib.h>
 
-enum { SLEEP, RACE, JOIN, READ_FILE, OPERATION };
+enum { SLEEP, RACE, JOIN, FILE_IO, OPERATION };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY };
 enum { SCOPE_COMPLETED = 1 };
@@ -90,7 +90,7 @@ static size_t add_file_node(Scope *scope, size_t index, KableFile *file) {
         scope->status = UV_ENOMEM;
         return SIZE_MAX;
     }
-    scope->nodes[index].kind = READ_FILE;
+    scope->nodes[index].kind = FILE_IO;
     scope->nodes[index].file = file;
     return index;
 }
@@ -105,6 +105,12 @@ size_t kable_scope_add_chunk(uint8_t *raw, int32_t fd, uint64_t offset, size_t l
     size_t index = kable_scope_add(raw, SLEEP, 0, 0, 0);
     if (index == SIZE_MAX) return index;
     return add_file_node((Scope *)raw, index, kable_file_chunk(fd, offset, limit));
+}
+
+size_t kable_scope_add_write(uint8_t *raw, int32_t fd, uint64_t offset, const uint8_t *bytes, size_t len) {
+    size_t index = kable_scope_add(raw, SLEEP, 0, 0, 0);
+    if (index == SIZE_MAX) return index;
+    return add_file_node((Scope *)raw, index, kable_file_write_chunk(fd, offset, bytes, len));
 }
 
 size_t kable_scope_add_operation(uint8_t *raw, uint8_t *context,
@@ -125,7 +131,7 @@ static void cancel_operations(Scope *scope) {
     while ((id = report(scope, TAKE_CANCEL, 0)) != SIZE_MAX) {
         Node *node = &scope->nodes[id];
         if (node->kind == SLEEP) kable_timer_cancel(node->timer);
-        else if (node->kind == READ_FILE) kable_file_cancel(node->file);
+        else if (node->kind == FILE_IO) kable_file_cancel(node->file);
         else if (node->kind == OPERATION && node->active) {
             node->active = 0;
             if (!node->stop(node->operation)) report(scope, RETIRED, 0);
@@ -219,7 +225,7 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
             scope->status = kable_timer_start(loop, node->ms, task_ready,
                 clear_timer, node, &node->timer);
             if (scope->status == 0) report(scope, STARTED, 0);
-        } else if (node->kind == READ_FILE) {
+        } else if (node->kind == FILE_IO) {
             scope->status = kable_file_start(node->file, loop, leaf_done, node);
             if (scope->status == 0) report(scope, STARTED, 0);
         } else if (node->kind == OPERATION) {
@@ -258,14 +264,24 @@ int32_t kable_scope_file_result(uint8_t *raw, size_t id, uint8_t **data, size_t 
     if (kable_scope_result(raw, id) != SCOPE_COMPLETED) return UV_EINVAL;
     Scope *scope = (Scope *)raw;
     Node *node = &scope->nodes[id];
-    if (node->kind != READ_FILE) return UV_EINVAL;
+    if (node->kind != FILE_IO) return UV_EINVAL;
     return kable_file_result(node->file, data, len);
+}
+
+/* Cancelled writes can still have made progress before the worker retired. */
+int32_t kable_scope_write_result(uint8_t *raw, size_t id, size_t *written) {
+    *written = 0;
+    Scope *scope = (Scope *)raw;
+    if (!scope || !scope->driven || report(scope, PENDING, 0) || id >= scope->count) return UV_EINVAL;
+    Node *node = &scope->nodes[id];
+    if (node->kind != FILE_IO) return UV_EINVAL;
+    return kable_file_write_result(node->file, written);
 }
 
 int32_t kable_scope_take_file(uint8_t *raw, size_t id, uint64_t *len) {
     if (kable_scope_result(raw, id) != SCOPE_COMPLETED) return UV_EINVAL;
     Node *node = &((Scope *)raw)->nodes[id];
-    if (node->kind != READ_FILE) return UV_EINVAL;
+    if (node->kind != FILE_IO) return UV_EINVAL;
     return kable_file_take_descriptor(node->file, len);
 }
 

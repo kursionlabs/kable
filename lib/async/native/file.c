@@ -14,7 +14,7 @@
 #include <sys/syscall.h>
 #endif
 
-enum { READ_CHUNK = KABLE_OPEN_BENEATH + 1 };
+enum { READ_CHUNK = KABLE_CREATE_FILE + 1, WRITE_CHUNK };
 
 struct KableFile {
     uv_work_t request;
@@ -22,6 +22,7 @@ struct KableFile {
     void *context;
     char *path;
     uint8_t *data;
+    const uint8_t *input;
     size_t len;
     size_t capacity;
     size_t limit;
@@ -47,7 +48,7 @@ static KableFile *new_file(size_t limit, uint8_t mode) {
 KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t mode) {
     KableFile *file = new_file(limit, mode);
     if (!file) return NULL;
-    if (len == SIZE_MAX || (len && memchr(path, 0, len))) {
+    if (mode > KABLE_CREATE_FILE || len == SIZE_MAX || (len && memchr(path, 0, len))) {
         file->status = UV_EINVAL;
         return file;
     }
@@ -67,6 +68,16 @@ KableFile *kable_file_chunk(int fd, uint64_t offset, size_t limit) {
     if (file) {
         file->fd = fd;
         file->offset = offset;
+    }
+    return file;
+}
+
+KableFile *kable_file_write_chunk(int fd, uint64_t offset, const uint8_t *bytes, size_t len) {
+    KableFile *file = new_file(len, WRITE_CHUNK);
+    if (file) {
+        file->fd = fd;
+        file->offset = offset;
+        file->input = bytes;
     }
     return file;
 }
@@ -107,7 +118,10 @@ static int read_contents(KableFile *file, int fd) {
 
 static int open_file(KableFile *file) {
     int flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK;
-    if (file->mode == KABLE_READ_FILE) return open(file->path, flags);
+    if (file->mode == KABLE_READ_FILE || file->mode == KABLE_OPEN_FILE) return open(file->path, flags);
+    if (file->mode == KABLE_CREATE_FILE) {
+        return open(file->path, O_WRONLY | O_CLOEXEC | O_CREAT | O_EXCL, 0666);
+    }
 
 #ifdef SYS_openat2
     struct open_how how = {
@@ -138,7 +152,29 @@ static int read_chunk(KableFile *file) {
     return UV_ECANCELED;
 }
 
-static void read_file(uv_work_t *request) {
+static int write_chunk(KableFile *file) {
+    if (file->offset > INT64_MAX || file->limit > INT64_MAX - file->offset) return UV_EFBIG;
+    uint64_t end = file->offset + file->limit;
+    if ((off_t)end < 0 || (uint64_t)(off_t)end != end) return UV_EFBIG;
+
+    while (file->len < file->limit) {
+        if (atomic_load_explicit(&file->cancelled, memory_order_relaxed)) return UV_ECANCELED;
+        size_t remaining = file->limit - file->len;
+        size_t count = remaining < SSIZE_MAX ? remaining : SSIZE_MAX;
+        ssize_t written = pwrite(file->fd, file->input + file->len, count, (off_t)(file->offset + file->len));
+        if (written < 0 && errno == EINTR) continue;
+        if (written < 0) return uv_translate_sys_error(errno);
+        if (!written) return UV_EIO;
+        file->len += (size_t)written;
+    }
+    return 0;
+}
+
+static int retains_descriptor(KableFile *file) {
+    return file->mode == KABLE_OPEN_BENEATH || file->mode == KABLE_OPEN_FILE || file->mode == KABLE_CREATE_FILE;
+}
+
+static void file_work(uv_work_t *request) {
     KableFile *file = request->data;
     if (file->status < 0 || atomic_load_explicit(&file->cancelled, memory_order_relaxed)) {
         return;
@@ -146,6 +182,10 @@ static void read_file(uv_work_t *request) {
 
     if (file->mode == READ_CHUNK) {
         file->status = read_chunk(file);
+        return;
+    }
+    if (file->mode == WRITE_CHUNK) {
+        file->status = write_chunk(file);
         return;
     }
 
@@ -162,7 +202,7 @@ static void read_file(uv_work_t *request) {
         file->status = UV_EINVAL;
     } else {
         file->size = (uint64_t)info.st_size;
-        if (file->mode == KABLE_OPEN_BENEATH) {
+        if (retains_descriptor(file)) {
             file->fd = fd;
             return;
         }
@@ -171,7 +211,7 @@ static void read_file(uv_work_t *request) {
     if (close(fd) != 0 && file->status == 0) file->status = uv_translate_sys_error(errno);
 }
 
-static void read_done(uv_work_t *request, int status) {
+static void file_done(uv_work_t *request, int status) {
     KableFile *file = request->data;
     file->queued = 0;
     if (status < 0) file->status = status;
@@ -182,7 +222,7 @@ int kable_file_start(KableFile *file, uv_loop_t *loop, void (*done)(void *), voi
     file->done = done;
     file->context = context;
     file->request.data = file;
-    int status = uv_queue_work(loop, &file->request, read_file, read_done);
+    int status = uv_queue_work(loop, &file->request, file_work, file_done);
     if (status == 0) file->queued = 1;
     return status;
 }
@@ -200,20 +240,28 @@ int kable_file_result(KableFile *file, uint8_t **data, size_t *len) {
     return file->status;
 }
 
+int kable_file_write_result(KableFile *file, size_t *written) {
+    if (file->mode != WRITE_CHUNK) return UV_EINVAL;
+    *written = file->len;
+    return file->status;
+}
+
 int kable_file_take_descriptor(KableFile *file, uint64_t *len) {
     if (file->status < 0) return file->status;
-    if (file->mode != KABLE_OPEN_BENEATH || file->fd < 0) return UV_EINVAL;
+    if (!retains_descriptor(file) || file->fd < 0) return UV_EINVAL;
     int fd = file->fd;
     file->fd = -1;
     *len = file->size;
     return fd;
 }
 
-void kable_file_close_descriptor(int32_t fd) { close(fd); }
+int32_t kable_file_close_descriptor(int32_t fd) {
+    return close(fd) == 0 ? 0 : uv_translate_sys_error(errno);
+}
 
 void kable_file_free(KableFile *file) {
     if (!file) return;
-    if (file->mode == KABLE_OPEN_BENEATH && file->fd >= 0) close(file->fd);
+    if (retains_descriptor(file) && file->fd >= 0) close(file->fd);
     free(file->path);
     free(file->data);
     free(file);

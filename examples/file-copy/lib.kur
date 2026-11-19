@@ -1,0 +1,89 @@
+use async::{CreateOutcome!, FileChunks!, FileWriteOutcome, OpenOutcome!, OutputFile!, Stream, StreamOutcome!,
+    create_file, open_file, run, run_with_deadline};
+use std::io::eprint_buffer;
+use std::option::{Option, Result};
+use std::parse::parse_u64;
+use std::process::Args;
+use std::slice::StaticRead;
+
+fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u64]) -> bool {
+    var offset: u64 = 0;
+    while &source.remaining() != 0 {
+        let (next, outcome) = run(source.next());
+        source = next;
+        let bytes = match outcome {
+            StreamOutcome!::Item(bytes) => bytes,
+            StreamOutcome!::End => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
+            StreamOutcome!::Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
+            StreamOutcome!::Failed(code) => {
+                eprint_buffer(f"file-copy: read failed ({code})\n");
+                return false;
+            },
+        };
+        let write = destination.write_chunk(offset, bytes);
+        let (file, bytes, outcome) = match deadline {
+            Option::Some(ms) => run_with_deadline(write, ms),
+            Option::None => run(write),
+        };
+        destination = file;
+        bytes.destroy();
+        match outcome {
+            FileWriteOutcome::Written(count) => { offset = offset + count as u64; },
+            FileWriteOutcome::Cancelled(count) => {
+                eprint_buffer(f"file-copy: write cancelled after {offset + count as u64} bytes\n");
+                return false;
+            },
+            FileWriteOutcome::Failed(count, code) => {
+                eprint_buffer(f"file-copy: write failed after {offset + count as u64} bytes ({code})\n");
+                return false;
+            },
+        }
+    }
+    true
+}
+
+fn usage() -> i32 {
+    eprint_buffer(f"usage: file-copy SOURCE DESTINATION [WRITE_DEADLINE_MS]\n");
+    2
+}
+
+fn main(args: Args) -> i32 {
+    if args.len() < 3 || args.len() > 4 { return usage(); }
+    let access = StaticRead::new();
+    let source = args.bytes(1).unwrap();
+    let destination = args.bytes(2).unwrap();
+    let deadline = match args.bytes(3) {
+        Option::None => Option::None,
+        Option::Some(value) => match parse_u64(&access, value) {
+            Option::Some(ms) => Option::Some.(ms),
+            Option::None => return usage(),
+        },
+    };
+
+    let input = match run(open_file(&access, source)) {
+        OpenOutcome!::Opened(file) => file,
+        OpenOutcome!::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
+        OpenOutcome!::Failed(code) => { eprint_buffer(f"file-copy: opening source failed ({code})\n"); return 1; },
+    };
+    let destination = match run(create_file(&access, destination)) {
+        CreateOutcome!::Created(file) => file,
+        CreateOutcome!::Cancelled => {
+            input.close();
+            eprint_buffer(f"file-copy: destination creation cancelled\n");
+            return 1;
+        },
+        CreateOutcome!::Failed(code) => {
+            input.close();
+            eprint_buffer(f"file-copy: creating destination failed ({code})\n");
+            return 1;
+        },
+    };
+    let size = &input.len();
+    let source = input.chunks(0, size);
+    let copied = transfer(&source, &destination, deadline);
+    source.close();
+    match destination.close() {
+        Result::Ok(unit) => if copied { 0 } else { 1 },
+        Result::Err(code) => { eprint_buffer(f"file-copy: closing destination failed ({code})\n"); 1 },
+    }
+}
