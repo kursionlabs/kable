@@ -1,7 +1,6 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
-use std::process::trap;
 use task::{Branch, JoinOutcome, Outcome, Plan, PlanDriver, PlanOutput, RaceOutcome, Resolution, ScopeState!, Sleep!, WithinOutcome,
     join, map, race, select, sleep, within};
 use task::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget, sequence};
@@ -27,18 +26,18 @@ struct Virtual! {
 }
 
 instance PlanDriver[Virtual!] {
-    fn timer(&scope: Virtual!, ms: u64) -> usize {
+    fn timer(&scope: Virtual!, ms: u64) -> Option[usize] {
         let { state, timers, cursor } = scope;
         let id = &state.add(Branch::Leaf, 0usize, 0usize);
-        let timers = if id == usize::MAX { timers } else { timers.push(Option::Some.(ms)) };
+        let timers = if id.is_some() { timers.push(Option::Some.(ms)) } else { timers };
         scope = Virtual!.{ state, timers, cursor };
         id
     }
 
-    fn pair(&scope: Virtual!, kind: Branch, first: usize, second: usize) -> usize {
+    fn pair(&scope: Virtual!, kind: Branch, first: usize, second: usize) -> Option[usize] {
         let { state, timers, cursor } = scope;
         let id = &state.add(kind, first, second);
-        let timers = if id == usize::MAX { timers } else { timers.push(Option::None) };
+        let timers = if id.is_some() { timers.push(Option::None) } else { timers };
         scope = Virtual!.{ state, timers, cursor };
         id
     }
@@ -47,32 +46,36 @@ instance PlanDriver[Virtual!] {
         let { state, timers, cursor } = scope;
         let result = &state.result(cursor);
         scope = Virtual!.{ state, timers, cursor: cursor + 1usize };
-        result
+        result.unwrap_or(Resolution::Failed.(-1i32))
     }
 }
 
-fn earliest(&timers: OwnedVec![Option[u64]]) -> (usize, u64) {
-    var id = usize::MAX;
-    var earliest = u64::MAX;
+fn earliest(&timers: OwnedVec![Option[u64]]) -> Option[(usize, u64)] {
+    var next = Option::None;
     var i = 0usize;
     while i < &timers.len() {
         match &timers.at(i) {
             Option::Some(ms) => {
-                if id == usize::MAX || ms < earliest {
-                    id = i;
-                    earliest = ms;
-                }
+                let sooner = match next {
+                    Option::Some(timer) => { let (id, due) = timer; ms < due },
+                    Option::None => true,
+                };
+                if sooner { next = Option::Some.((i, ms)); }
             },
             Option::None => (),
         }
         i = i + 1usize;
     }
-    (id, earliest)
+    next
 }
 
-fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) -> u64 {
+fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 {
     let { state, timers, cursor } = scope;
-    if !&state.begin(root) {
+    let valid = match root {
+        Option::Some(id) => &state.begin(id),
+        Option::None => false,
+    };
+    if !valid {
         scope = Virtual!.{ state, timers, cursor };
         return 0u64;
     }
@@ -92,10 +95,16 @@ fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) -> u64 {
 
     var elapsed = 0u64;
     while &state.pending() {
-        let (id, due) = earliest(&timers);
-        let next_deadline = match limit {
-            Option::Some(ms) => if ms <= due { Option::Some.(ms) } else { Option::None },
-            Option::None => Option::None,
+        let timer = earliest(&timers);
+        let next_deadline = match timer {
+            Option::Some(entry) => {
+                let (id, due) = entry;
+                match limit {
+                    Option::Some(ms) => if ms <= due { limit } else { Option::None },
+                    Option::None => Option::None,
+                }
+            },
+            Option::None => limit,
         };
         match next_deadline {
             Option::Some(ms) => {
@@ -105,7 +114,7 @@ fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) -> u64 {
                 limit = Option::None;
             },
             Option::None => {
-                if id == usize::MAX { trap(); }
+                let (id, due) = timer.unwrap();
                 elapsed = due;
                 &timers.set(id, Option::None);
                 let finished = &state.complete(id);
@@ -118,8 +127,8 @@ fn advance(&scope: Virtual!, root: usize, deadline: Option[u64]) -> u64 {
         }
 
         var cancelled = &state.take_cancel();
-        while cancelled != usize::MAX {
-            &timers.set(cancelled, Option::None);
+        while cancelled.is_some() {
+            &timers.set(cancelled.unwrap(), Option::None);
             &state.retired();
             cancelled = &state.take_cancel();
         }

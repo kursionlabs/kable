@@ -17,14 +17,14 @@ struct Node {
     kind: Branch,
     first: usize,
     second: usize,
-    parent: usize,
+    parent: Option[usize],
     result: Option[Resolution],
 }
 
 impl Node {
     fn reparent(self, parent: usize) -> Node {
         let { parent: old, ..rest } = self;
-        Node.{ parent, ..rest }
+        Node.{ parent: Option::Some.(parent), ..rest }
     }
 
     fn resolve(self, result: Resolution) -> Node {
@@ -38,7 +38,7 @@ impl Node {
 struct ScopeState! {
     nodes: OwnedVec![Node],
     stops: OwnedVec![usize],
-    root: usize,
+    root: Option[usize],
     pending: usize,
 }
 
@@ -46,18 +46,18 @@ impl ScopeState! {
     fn new() -> ScopeState! {
         ScopeState!.{
             nodes: OwnedVec!::new(), stops: OwnedVec!::new(),
-            root: usize::MAX, pending: 0usize,
+            root: Option::None, pending: 0usize,
         }
     }
 
-    fn add(&self, kind: Branch, first: usize, second: usize) -> usize {
+    fn add(&self, kind: Branch, first: usize, second: usize) -> Option[usize] {
         let { nodes, stops, root, pending } = self;
         var nodes = nodes;
         let index = &nodes.len();
         let leaf = match kind { Branch::Leaf => true, _ => false, };
-        let valid = root == usize::MAX && (leaf ||
+        let valid = root.is_none() && (leaf ||
             (first < index && second < index && first != second &&
-             (&nodes.at(first)).parent == usize::MAX && (&nodes.at(second)).parent == usize::MAX));
+             (&nodes.at(first)).parent.is_none() && (&nodes.at(second)).parent.is_none()));
         if valid {
             if !leaf {
                 let a = &nodes.at(first);
@@ -65,23 +65,23 @@ impl ScopeState! {
                 &nodes.set(first, a.reparent(index));
                 &nodes.set(second, b.reparent(index));
             }
-            nodes = nodes.push(Node.{ kind, first, second, parent: usize::MAX, result: Option::None });
+            nodes = nodes.push(Node.{ kind, first, second, parent: Option::None, result: Option::None });
         }
         self = ScopeState!.{ nodes, stops, root, pending };
-        if valid { index } else { usize::MAX }
+        if valid { Option::Some.(index) } else { Option::None }
     }
 
     fn begin(&self, root: usize) -> bool {
         let { nodes, stops, root: prior, pending } = self;
         let count = &nodes.len();
-        var valid = prior == usize::MAX && root < count;
+        var valid = prior.is_none() && root < count;
         var i = 0usize;
         while valid && i < count {
             let node = &nodes.at(i);
-            valid = (node.parent == usize::MAX) == (i == root);
+            valid = (node.parent.is_none()) == (i == root);
             i = i + 1usize;
         }
-        let root = if valid { root } else { prior };
+        let root = if valid { Option::Some.(root) } else { prior };
         self = ScopeState!.{ nodes, stops, root, pending };
         valid
     }
@@ -108,7 +108,7 @@ impl ScopeState! {
     fn complete(&self, id: usize) -> bool {
         let { nodes, stops, root, pending } = self;
         var resolved = false;
-        if root != usize::MAX && id < &nodes.len() {
+        if root.is_some() && id < &nodes.len() {
             let leaf = &nodes.at(id);
             match leaf.kind {
                 Branch::Leaf => { resolved = settle(&nodes, &stops, id); },
@@ -121,27 +121,30 @@ impl ScopeState! {
 
     fn cancel(&self) {
         let { nodes, stops, root, pending } = self;
-        if root != usize::MAX { cancel_branch(&nodes, &stops, root); }
+        match root {
+            Option::Some(root) => cancel_branch(&nodes, &stops, root),
+            Option::None => (),
+        };
         self = ScopeState!.{ nodes, stops, root, pending };
     }
 
-    fn take_cancel(&self) -> usize {
+    fn take_cancel(&self) -> Option[usize] {
         let { nodes, stops, root, pending } = self;
         let id = match &stops.pop() {
-            Popped!::Item(id) => id,
-            Popped!::Empty => usize::MAX,
+            Popped!::Item(id) => Option::Some.(id),
+            Popped!::Empty => Option::None,
         };
         self = ScopeState!.{ nodes, stops, root, pending };
         id
     }
 
-    fn result(&self, id: usize) -> Resolution {
+    fn result(&self, id: usize) -> Option[Resolution] {
         let { nodes, stops, root, pending } = self;
-        let result = if root != usize::MAX && pending == 0usize && id < &nodes.len() {
+        let result = if root.is_some() && pending == 0usize && id < &nodes.len() {
             (&nodes.at(id)).result
         } else { Option::None };
         self = ScopeState!.{ nodes, stops, root, pending };
-        result.unwrap_or(Resolution::Failed.(-1i32))
+        result
     }
 
     fn destroy(self) {
@@ -159,25 +162,34 @@ fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize)
     var index = root;
     while true {
         let node = &nodes.at(index);
-        var child = usize::MAX;
+        var child = Option::None;
         if node.result.is_none() {
             &nodes.set(index, node.resolve(Resolution::Cancelled));
             match node.kind {
                 Branch::Leaf => { stops = stops.push(index); },
-                _ => { child = node.first; },
+                _ => { child = Option::Some.(node.first); },
             }
         }
-        if child == usize::MAX {
-            while index != root && child == usize::MAX {
-                let node = &nodes.at(index);
-                let parent = &nodes.at(node.parent);
-                if index == parent.first { child = parent.second; }
-                index = node.parent;
-            }
-            if child == usize::MAX { return; }
+        let next = match child {
+            Option::Some(id) => Option::Some.(id),
+            Option::None => next_sibling(&nodes, root, index),
+        };
+        match next {
+            Option::Some(id) => { index = id; },
+            Option::None => return,
         }
-        index = child;
     }
+}
+
+fn next_sibling(&nodes: OwnedVec![Node], root: usize, start: usize) -> Option[usize] {
+    var index = start;
+    while index != root {
+        let parent_id = (&nodes.at(index)).parent.unwrap();
+        let parent = &nodes.at(parent_id);
+        if index == parent.first { return Option::Some.(parent.second); }
+        index = parent_id;
+    }
+    Option::None
 }
 
 fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bool {
@@ -187,9 +199,12 @@ fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bo
         let node = &nodes.at(index);
         if node.result.is_some() { return false; }
         &nodes.set(index, node.resolve(result));
-        if node.parent == usize::MAX { return true; }
+        let parent_id = match node.parent {
+            Option::Some(parent_id) => parent_id,
+            Option::None => return true,
+        };
 
-        let parent = &nodes.at(node.parent);
+        let parent = &nodes.at(parent_id);
         let first = index == parent.first;
         let other = if first { parent.second } else { parent.first };
         match parent.kind {
@@ -202,7 +217,7 @@ fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bo
                 result = Resolution::Completed;
             },
         }
-        index = node.parent;
+        index = parent_id;
     }
     false
 }

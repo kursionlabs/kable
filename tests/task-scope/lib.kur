@@ -1,10 +1,12 @@
+use std::option::Option;
 use task::{Branch, Resolution, ScopeState!};
 
 fn main() -> i32 {
     let scope = ScopeState!::new();
-    let first = &scope.add(Branch::Leaf, 0usize, 0usize);
-    let second = &scope.add(Branch::Leaf, 0usize, 0usize);
-    let root = &scope.add(Branch::Select, first, second);
+    let first = (&scope.add(Branch::Leaf, 0usize, 0usize)).unwrap();
+    let second = (&scope.add(Branch::Leaf, 0usize, 0usize)).unwrap();
+    let rejected = (&scope.add(Branch::Select, first, first)).is_none();
+    let root = (&scope.add(Branch::Select, first, second)).unwrap();
     let valid = &scope.begin(root);
     &scope.started();
     &scope.started();
@@ -21,11 +23,11 @@ fn main() -> i32 {
     let loser = &scope.result(second);
     let next_stop = &scope.take_cancel();
     scope.destroy();
-    let hidden_until_joined = match early { Resolution::Failed(code) => code < 0i32, _ => false, };
-    let first_won = match result { Resolution::First => true, _ => false, };
-    let winner_completed = match winner { Resolution::Completed => true, _ => false, };
-    let loser_cancelled = match loser { Resolution::Cancelled => true, _ => false, };
-    if valid && won && cancelled == second && !first_retired && still_pending &&
+    let hidden_until_joined = early.is_none();
+    let first_won = match result.unwrap() { Resolution::First => true, _ => false, };
+    let winner_completed = match winner.unwrap() { Resolution::Completed => true, _ => false, };
+    let loser_cancelled = match loser.unwrap() { Resolution::Cancelled => true, _ => false, };
+    if rejected && valid && won && cancelled.unwrap() == second && !first_retired && still_pending &&
         hidden_until_joined && !late && joined && first_won && winner_completed && loser_cancelled &&
-        next_stop == usize::MAX { 0i32 } else { 1i32 }
+        next_stop.is_none() { 0i32 } else { 1i32 }
 }

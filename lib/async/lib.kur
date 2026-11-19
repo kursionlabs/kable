@@ -73,7 +73,7 @@ unsafe fn add_branch(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
     let state = unsafe *ptr;
     let id = &state.add(branch, first, second);
     unsafe *ptr = state;
-    id
+    id.unwrap_or(usize::MAX)
 }
 
 // Messages sent by the libuv adapter. Only the portable state decides which
@@ -93,18 +93,25 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
         3u8 => if &state.pending() { 1usize } else { 0usize },
         4u8 => if &state.complete(id) { 1usize } else { 0usize },
         5u8 => { &state.cancel(); 0usize },
-        6u8 => &state.take_cancel(),
+        6u8 => (&state.take_cancel()).unwrap_or(usize::MAX),
         7u8 => match &state.result(id) {
-            Resolution::Cancelled => CANCELLED as usize,
-            Resolution::Completed => COMPLETED as usize,
-            Resolution::First => FIRST as usize,
-            Resolution::Second => SECOND as usize,
-            Resolution::Failed(code) => usize::MAX,
+            Option::Some(result) => match result {
+                Resolution::Cancelled => CANCELLED as usize,
+                Resolution::Completed => COMPLETED as usize,
+                Resolution::First => FIRST as usize,
+                Resolution::Second => SECOND as usize,
+                Resolution::Failed(code) => usize::MAX,
+            },
+            Option::None => usize::MAX,
         },
         _ => 0usize,
     };
     unsafe *ptr = state;
     result
+}
+
+fn registered(id: usize) -> Option[usize] {
+    if id == usize::MAX { Option::None } else { Option::Some.(id) }
 }
 
 impl Scope! {
@@ -116,20 +123,20 @@ impl Scope! {
         Scope!.{ raw }
     }
 
-    fn add(&self, kind: u8, ms: u64, first: usize, second: usize) -> usize {
+    fn add(&self, kind: u8, ms: u64, first: usize, second: usize) -> Option[usize] {
         let { raw } = self;
         let id = unsafe kable_scope_add(raw, kind, ms, first, second);
         self = Scope!.{ raw };
-        id
+        registered(id)
     }
 
-    fn add_file(&self, &path: Buffer!, limit: usize) -> usize {
+    fn add_file(&self, &path: Buffer!, limit: usize) -> Option[usize] {
         let { raw } = self;
         let bytes = unsafe &path.as_ptr();
         let len = &path.len();
         let id = unsafe kable_scope_add_file(raw, bytes, len, limit);
         self = Scope!.{ raw };
-        id
+        registered(id)
     }
 
     fn file_result(&self) -> FileOutcome! {
@@ -144,8 +151,9 @@ impl Scope! {
         FileOutcome!::Read.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
     }
 
-    fn run(&self, root: usize, deadline: Option[u64]) {
+    fn run(&self, root: Option[usize], deadline: Option[u64]) {
         let { raw } = self;
+        let root = root.unwrap_or(usize::MAX);
         match deadline {
             Option::Some(ms) => unsafe kable_scope_run(raw, root, ms, 1u8),
             Option::None => unsafe kable_scope_run(raw, root, 0u64, 0u8),
@@ -173,7 +181,7 @@ impl Scope! {
 instance PlanOutput[ReadFile! -> FileOutcome!] {}
 
 instance Plan[ReadFile!, Scope! -> FileOutcome!] {
-    fn stage(&task: ReadFile!, &scope: Scope!) -> usize {
+    fn stage(&task: ReadFile!, &scope: Scope!) -> Option[usize] {
         let { path, limit } = task;
         let id = &scope.add_file(&path, limit);
         task = ReadFile!.{ path, limit };
@@ -193,9 +201,9 @@ instance Plan[ReadFile!, Scope! -> FileOutcome!] {
 }
 
 instance PlanDriver[Scope!] {
-    fn timer(&scope: Scope!, ms: u64) -> usize { &scope.add(0u8, ms, 0usize, 0usize) }
+    fn timer(&scope: Scope!, ms: u64) -> Option[usize] { &scope.add(0u8, ms, 0usize, 0usize) }
 
-    fn pair(&scope: Scope!, kind: Branch, first: usize, second: usize) -> usize {
+    fn pair(&scope: Scope!, kind: Branch, first: usize, second: usize) -> Option[usize] {
         let tag = match kind {
             Branch::Leaf => 0u8,
             Branch::Select => 1u8,
@@ -208,7 +216,7 @@ instance PlanDriver[Scope!] {
 }
 
 forall Task.
-struct Prepared! { scope: Scope!, task: Task, root: usize }
+struct Prepared! { scope: Scope!, task: Task, root: Option[usize] }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn prepare(task: Task) -> Prepared![Task] {
@@ -224,7 +232,7 @@ impl Prepared![Task] {
         let { scope, task, root } = self;
         let { raw } = scope;
         self = Prepared!.{ scope: Scope!.{ raw }, task, root };
-        (raw, root)
+        (raw, root.unwrap_or(usize::MAX))
     }
 }
 
