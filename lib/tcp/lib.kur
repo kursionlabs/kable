@@ -6,7 +6,7 @@ use std::bytes::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{Completion, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Plan, Resolution};
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -33,22 +33,8 @@ extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan:
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
-struct ReadPlan! { next: NextRead! }
 struct NextRead! { connection: Connection!, id: Option[usize] }
 struct WritePlan! { connection: Connection!, bytes: Buffer!, request: *u8, id: Option[usize] }
-
-exposed enum ReadOutcome! {
-    Bytes(Connection!, Buffer!),
-    End(Connection!),
-    Cancelled(Connection!),
-    Failed(Connection!, i32),
-}
-
-exposed enum WriteOutcome! {
-    Written(Connection!, Buffer!),
-    Cancelled(Connection!, Buffer!),
-    Failed(Connection!, Buffer!, i32),
-}
 
 instance PlanOutput[NextRead! -> (Connection!, StreamOutcome![Buffer!])] {}
 
@@ -72,31 +58,9 @@ instance Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])] {
     }
 }
 
-instance PlanOutput[ReadPlan! -> ReadOutcome!] {}
+instance PlanOutput[WritePlan! -> (Connection!, Buffer!, Completion[()])] {}
 
-instance Plan[ReadPlan!, Scope! -> ReadOutcome!] {
-    fn stage(&task: ReadPlan!, &scope: Scope!) -> Option[usize] {
-        let { next } = task;
-        let id = Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])]::stage(&next, &scope);
-        task = ReadPlan!.{ next };
-        id
-    }
-
-    fn collect(task: ReadPlan!, &scope: Scope!) -> ReadOutcome! {
-        let { next } = task;
-        let (connection, outcome) = Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])]::collect(next, &scope);
-        match outcome {
-            StreamOutcome!::Item(bytes) => ReadOutcome!::Bytes.(connection, bytes),
-            StreamOutcome!::End => ReadOutcome!::End.(connection),
-            StreamOutcome!::Cancelled => ReadOutcome!::Cancelled.(connection),
-            StreamOutcome!::Failed(status) => ReadOutcome!::Failed.(connection, status),
-        }
-    }
-}
-
-instance PlanOutput[WritePlan! -> WriteOutcome!] {}
-
-instance Plan[WritePlan!, Scope! -> WriteOutcome!] {
+instance Plan[WritePlan!, Scope! -> (Connection!, Buffer!, Completion[()])] {
     fn stage(&task: WritePlan!, &scope: Scope!) -> Option[usize] {
         let { connection: { raw }, bytes, request, id } = task;
         let request = unsafe kable_tcp_new_scoped_write(raw, unsafe &bytes.as_ptr(), &bytes.len());
@@ -105,18 +69,18 @@ instance Plan[WritePlan!, Scope! -> WriteOutcome!] {
         id
     }
 
-    fn collect(task: WritePlan!, &scope: Scope!) -> WriteOutcome! {
+    fn collect(task: WritePlan!, &scope: Scope!) -> (Connection!, Buffer!, Completion[()]) {
         let { connection, bytes, request, id } = task;
         let status = unsafe kable_tcp_collect_scoped_write(request);
-        match &scope.result(id) {
+        let completion = match &scope.result(id) {
             Resolution::Completed => {
-                if status < 0 { WriteOutcome!::Failed.(connection, bytes, status) }
-                else { WriteOutcome!::Written.(connection, bytes) }
+                if status < 0 { Completion::Failed.(status) } else { Completion::Ready.(()) }
             },
-            Resolution::Cancelled => WriteOutcome!::Cancelled.(connection, bytes),
-            Resolution::Failed(code) => WriteOutcome!::Failed.(connection, bytes, code),
-            Resolution::First | Resolution::Second => WriteOutcome!::Failed.(connection, bytes, -1),
-        }
+            Resolution::Cancelled => Completion::Cancelled,
+            Resolution::Failed(code) => Completion::Failed.(code),
+            Resolution::First | Resolution::Second => Completion::Failed.(-1),
+        };
+        (connection, bytes, completion)
     }
 }
 
@@ -194,17 +158,6 @@ impl Connection! {
     /// Plans a read of the next available chunk of bytes.
     fn read(self) -> Read! { read(self) }
 
-    /// Plans a read that composes with other tasks on the listener's loop.
-    fn read_plan(self) -> ReadPlan! { ReadPlan!.{ next: self.next() } }
-
-    /// Writes the buffer on this connection's listener loop.
-    /// Every outcome returns the connection and buffer after the write joins.
-    /// Cancelling an in-flight write closes the socket. A failed or cancelled
-    /// write may have sent some of the bytes.
-    fn write_plan(self, bytes: Buffer!) -> WritePlan! {
-        WritePlan!.{ connection: self, bytes, request: null(), id: Option::None }
-    }
-
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { close(self) }
 }
@@ -214,14 +167,11 @@ instance Stream[Connection! -> NextRead!] {
     fn next(source: Connection!) -> NextRead! { NextRead!.{ connection: source, id: Option::None } }
 }
 
-instance Sink[Connection! -> Buffer!, Map![WritePlan!, WriteOutcome!, (Connection!, Buffer!, Completion[()]), ()]] {
-    fn write(connection: Connection!, bytes: Buffer!)
-        -> Map![WritePlan!, WriteOutcome!, (Connection!, Buffer!, Completion[()]), ()] {
-        connection.write_plan(bytes).map(|outcome| match outcome {
-            WriteOutcome!::Written(connection, bytes) => (connection, bytes, Completion::Ready.(())),
-            WriteOutcome!::Cancelled(connection, bytes) => (connection, bytes, Completion::Cancelled),
-            WriteOutcome!::Failed(connection, bytes, code) => (connection, bytes, Completion::Failed.(code)),
-        })
+instance Sink[Connection! -> Buffer!, WritePlan!] {
+    /// Returns the connection and buffer after the write joins. Cancelling an
+    /// in-flight write closes the socket. An interrupted write may be partial.
+    fn write(connection: Connection!, bytes: Buffer!) -> WritePlan! {
+        WritePlan!.{ connection, bytes, request: null(), id: Option::None }
     }
 }
 
