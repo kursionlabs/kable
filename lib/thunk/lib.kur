@@ -58,6 +58,15 @@ exposed enum Step {
     Suspended(Next),
 }
 
+/// An owned state whose type determines the input and output of one step.
+forall State -> Input, Output.
+trait Resumable {
+    /// Runs one step and transfers ownership of the result to the caller.
+    fn resume(state: State, input: Input) -> Step[State, Output];
+    /// Releases the state when the caller stops driving it.
+    fn discard(state: State) -> ();
+}
+
 /// An owned computation paused until its caller supplies the next input.
 forall State, Input, Output, Env.
 struct Suspension! {
@@ -72,18 +81,18 @@ fn suspend(state: State, step: closure[Env](State, Input) -> Step[State, Output]
 }
 
 forall State, Input, Output, Env where Copy[Env].
-impl Suspension![State, Input, Output, Env] {
-    /// Runs one step. A suspended result carries the next state and its cleanup.
-    fn resume(self, input: Input) -> Step[Suspension![State, Input, Output, Env], Output] {
-        let { pending: { state, evaluate, cleanup } } = self;
+instance Resumable[Suspension![State, Input, Output, Env] -> Input, Output] {
+    fn resume(suspension: Suspension![State, Input, Output, Env], input: Input)
+        -> Step[Suspension![State, Input, Output, Env], Output] {
+        let { pending: { state, evaluate, cleanup } } = suspension;
         match evaluate(state, input) {
             Step::Done(output) => Step::Done.(output),
             Step::Suspended(state) => Step::Suspended.(Suspension!.{ pending: Thunk!.{ state, evaluate, cleanup } }),
         }
     }
 
-    fn discard(self) {
-        let { pending } = self;
+    fn discard(suspension: Suspension![State, Input, Output, Env]) {
+        let { pending } = suspension;
         pending.discard();
     }
 }

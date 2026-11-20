@@ -5,7 +5,9 @@ use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!, defer};
-use thunk::{Step, Suspension!, suspend};
+use thunk::{Resumable, Step};
+
+struct LineReader! { pending: Buffer! }
 
 enum Lines! {
     Complete(Buffer!, Buffer!),
@@ -13,7 +15,7 @@ enum Lines! {
 }
 
 fn start(connection: Connection!) -> Action! {
-    read_line(connection, line_reader(Buffer!::new()), false)
+    read_line(connection, LineReader!.{ pending: Buffer!::new() }, false)
 }
 
 fn discard_line(pending: Buffer!) {
@@ -22,42 +24,46 @@ fn discard_line(pending: Buffer!) {
     eprint_buffer(f"Closed session with {length} buffered bytes.\n");
 }
 
-fn line_reader(pending: Buffer!) -> Suspension![Buffer!, Buffer!, Lines!, ()] {
-    suspend(pending, |pending, bytes| parse_lines(pending, bytes), discard_line)
-}
+instance Resumable[LineReader! -> Buffer!, Lines!] {
+    fn resume(reader: LineReader!, bytes: Buffer!) -> Step[LineReader!, Lines!] {
+        let { pending } = reader;
+        let pending = pending.push_buffer(bytes);
+        let exists 'k. (access, bytes, restore) = pending.open();
+        let span = Span::from_slice(bytes);
+        match span.rfind_byte(&access, b'\n') {
+            Option::None => {
+                let pending = restore.restore(access);
+                if &pending.len() > 16384 { Step::Done.(Lines!::TooLong.(pending)) }
+                else { Step::Suspended.(LineReader!.{ pending }) }
+            },
+            Option::Some(index) => {
+                let end = index + 1;
+                let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
+                let rest = span.skip(end);
+                let tail = Buffer!::new_with_cap(rest.len()).push_bytes(&access, rest);
+                restore.restore(access).destroy();
+                Step::Done.(Lines!::Complete.(complete, tail))
+            },
+        }
+    }
 
-fn parse_lines(pending: Buffer!, bytes: Buffer!) -> Step[Buffer!, Lines!] {
-    let pending = pending.push_buffer(bytes);
-    let exists 'k. (access, bytes, restore) = pending.open();
-    let span = Span::from_slice(bytes);
-    match span.rfind_byte(&access, b'\n') {
-        Option::None => {
-            let pending = restore.restore(access);
-            if &pending.len() > 16384 { Step::Done.(Lines!::TooLong.(pending)) }
-            else { Step::Suspended.(pending) }
-        },
-        Option::Some(index) => {
-            let end = index + 1;
-            let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
-            let rest = span.skip(end);
-            let tail = Buffer!::new_with_cap(rest.len()).push_bytes(&access, rest);
-            restore.restore(access).destroy();
-            Step::Done.(Lines!::Complete.(complete, tail))
-        },
+    fn discard(reader: LineReader!) {
+        let { pending } = reader;
+        discard_line(pending);
     }
 }
 
-fn close_session(connection: Connection!, reader: Suspension![Buffer!, Buffer!, Lines!, ()]) -> Action! {
+fn close_session(connection: Connection!, reader: LineReader!) -> Action! {
     reader.discard();
     connection.close()
 }
 
-fn read_line(connection: Connection!, reader: Suspension![Buffer!, Buffer!, Lines!, ()], retried: bool) -> Action! {
+fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Action! {
     defer(connection.next().within(Duration::from_secs(1)), |result| read_finished(result, reader, retried))
 }
 
 fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
-    reader: Suspension![Buffer!, Buffer!, Lines!, ()], retried: bool) -> Action! {
+    reader: LineReader!, retried: bool) -> Action! {
     let ((connection, outcome), deadline) = result;
     let chunk = match outcome {
         Completion::Ready(chunk) => chunk,
@@ -92,7 +98,7 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
             return connection.close();
         },
     };
-    let reader = line_reader(tail);
+    let reader = LineReader!.{ pending: tail };
     defer(connection.write(complete), |result| {
         let (connection, bytes, status) = result;
         bytes.destroy();

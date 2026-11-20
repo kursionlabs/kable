@@ -2,7 +2,7 @@ use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::Option;
 use std::process::trap;
-use thunk::{Step, defer, delay, suspend};
+use thunk::{Resumable, Step, defer, delay, suspend};
 
 fn check_force() -> bool {
     let calls = unsafe alloca[usize]();

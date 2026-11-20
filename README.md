@@ -183,11 +183,15 @@ input on `resume(input)`. For an abandoned call, `discard_with(context)`
 passes the state and context to cleanup. Task sequences use the context to
 return any prior result to the skipped handoff's cleanup callback.
 
-`thunk::suspend(state, step, cleanup)` stores a computation that needs input.
-`resume(input)` consumes it and returns `Step::Done(output)` or
-`Step::Suspended(next)`. The step supplies the updated state and the library
-packages it with the same step and cleanup functions. Put owned values in
-`state` and capture copyable configuration in `evaluate` or `step`.
+Import `thunk::Resumable` to call `resume(input)` and `discard()` on a
+suspended computation. Each resume consumes the current state and returns
+`Step::Done(output)` or `Step::Suspended(next)`. A named state can implement
+`Resumable[State -> Input, Output]` directly.
+
+`thunk::suspend(state, step, cleanup)` builds a `Suspension!` that implements
+`Resumable`. The step supplies the updated state and the library packages it
+with the same step and cleanup functions. Put owned values in `state` and
+capture copyable configuration in `evaluate` or `step`.
 
 The message example reads one line per resume until it sees a line containing
 only `.`. EOF before the dot discards the partial message. `--check` validates
@@ -453,11 +457,12 @@ Other connections can continue while either operation is pending.
 
 ### Connection-local state
 
-The session example gives each connection a suspended parser that owns its
-pending bytes. The read continuation resumes the parser with each chunk and
-carries it across one idle retry. When the parser returns complete lines,
-the write continuation holds a new parser for the trailing bytes until the
-write joins. Closing the session discards the parser and its pending bytes.
+The session example gives each connection a `LineReader!` that owns its
+pending bytes and implements `Resumable`. The read continuation resumes the
+reader with each chunk and carries it across one idle retry. When the reader
+returns complete lines, the write continuation holds a new reader for the
+trailing bytes until the write joins. Closing the session discards the reader
+and its pending bytes.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-session -o bin/tcp-session

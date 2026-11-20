@@ -3,7 +3,7 @@ use std::io::{Error, Input!, eprint, eprint_buffer, print_buffer, stdin};
 use std::option::{Option, Result};
 use std::process::Args;
 use std::slice::StaticRead;
-use thunk::{Step, Suspension!, delay, suspend};
+use thunk::{Resumable, Step, delay, suspend};
 
 fn read_line(body: Buffer!, line: Buffer!) -> Step[Buffer!, Buffer!] {
     let exists 'k. (access, bytes, restore) = line.open();
@@ -17,7 +17,8 @@ fn read_line(body: Buffer!, line: Buffer!) -> Step[Buffer!, Buffer!] {
     }
 }
 
-fn read_message(&input: Input!, pending: Suspension![Buffer!, Buffer!, Buffer!, ()]) -> Result[Option[Buffer!], Error] {
+forall Reader where Resumable[Reader -> Buffer!, Buffer!].
+fn read_message(&input: Input!, pending: Reader) -> Result[Option[Buffer!], Error] {
     let line = match &input.read_line() {
         Result::Ok(line) => line,
         Result::Err(error) => { pending.discard(); return Result::Err.(error); },
