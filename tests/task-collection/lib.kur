@@ -9,8 +9,6 @@ use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_seq
 
 struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
 
-instance PlanOutput[ReverseSelect! -> bool] {}
-
 forall Driver where PlanDriver[Driver].
 instance Plan[ReverseSelect!, Driver -> bool] {
     fn stage(&task: ReverseSelect!, &scope: Driver) -> Option[usize] {
@@ -49,8 +47,6 @@ instance Plan[ReverseSelect!, Driver -> bool] {
 }
 
 struct UnrootedTimer! { timer: Sleep!, bytes: Buffer! }
-
-instance PlanOutput[UnrootedTimer! -> (Buffer!, Completion[()])] {}
 
 forall Driver where PlanDriver[Driver].
 instance Plan[UnrootedTimer!, Driver -> (Buffer!, Completion[()])] {

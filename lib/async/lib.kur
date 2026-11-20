@@ -528,11 +528,11 @@ fn drive_on_loop(task: Task, deadline: Option[Duration], loop: RunLoop) -> Stage
 }
 
 /// Drives the plan to completion and joins its children before returning.
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn run(task: Task) -> Output { run_standalone(task, Option::None) }
 
 /// Includes setup time in the parent budget and joins all children before returning.
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn run_with_deadline(task: Task, duration: Duration) -> Output {
     let deadline = deadline_after(duration);
     run_standalone(task, Option::Some.(deadline))
@@ -543,14 +543,14 @@ struct Runner! { loop: *u8 }
 
 impl Runner! {
     /// Runs and joins one plan on this loop.
-    forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+    forall Task, Output where Plan[Task, Scope! -> Output].
     fn run(&self, task: Task) -> Output {
         let { output, deadline_expired } = &self.drive(task, Option::None);
         output
     }
 
     /// Includes setup time in the parent budget and joins all children before returning.
-    forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+    forall Task, Output where Plan[Task, Scope! -> Output].
     fn run_with_deadline(&self, task: Task, duration: Duration) -> Output {
         let deadline = deadline_after(duration);
         let { output, deadline_expired } = &self.drive(task, Option::Some.(deadline));

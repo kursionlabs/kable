@@ -3,7 +3,6 @@ use package::{Scope!, collect, native_scope};
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
 use std::option::Result;
-use task::PlanOutput;
 use task::driver::{Plan, Prepared!, prepare};
 
 struct HostedPlan! {
@@ -14,7 +13,7 @@ struct HostedPlan! {
 forall Task, Output, Env.
 struct Pending! { prepared: Prepared![Task, Scope!], resume: closure[Env](Output, *u8, u8) -> i32 }
 
-forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output, Env where Plan[Task, Scope! -> Output].
 fn prepare_hosted(task: Task, resume: closure[Env](Output, *u8, u8) -> i32) -> HostedPlan! {
     let prepared = prepare(task, Scope!::new());
     let (scope, root) = unsafe native_scope(&prepared);

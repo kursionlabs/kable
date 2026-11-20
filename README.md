@@ -226,10 +226,11 @@ The libuv runner uses a millisecond clock. It rounds positive timer
 durations up to whole milliseconds and preserves zero. The virtual clock
 advances in nanoseconds.
 
-`PlanOutput[Task -> Output]` determines the outcome type from the plan
-alone. The runner uses `Plan[Task, Driver -> Output]` to check whether its
-driver can run the plan and return that outcome. A file plan has a known
-outcome even when the selected driver cannot execute file reads.
+`PlanOutput[Task -> Output]` determines the outcome type from the plan alone
+for adapters such as `.map` and `.within`. The runners and `prepare_hosted`
+use `Plan[Task, Driver -> Output]` to determine the outcome on their selected
+driver. A file plan has a known outcome even when the selected driver cannot
+execute file reads.
 
 `run(sleep(duration))` returns a `Completion[()]`. To carry an owned value
 through the wait, capture it with `sleep(duration).map(|status| (value, status))`.

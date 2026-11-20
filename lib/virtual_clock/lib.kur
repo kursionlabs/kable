@@ -2,7 +2,7 @@
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::time::Duration;
-use task::{Failure, PlanOutput};
+use task::Failure;
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, drive_plan};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until, remaining_budget};
 
@@ -153,10 +153,10 @@ fn drive_timed(task: Task, deadline: Option[Duration]) -> (StageResult[Output], 
     (StageResult.{ output, deadline_expired }, elapsed)
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn run(task: Task) -> Output { drive(task, Option::None) }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn run_with_deadline(task: Task, duration: Duration) -> Output { drive(task, Option::Some.(duration)) }
 
 struct SequenceClock! { time: Duration }
