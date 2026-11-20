@@ -3,7 +3,7 @@ use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::time::Duration;
 use task::Failure;
-use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, drive_plan};
+use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until, remaining_budget};
 
 struct Virtual! {
@@ -148,7 +148,7 @@ fn drive(task: Task, deadline: Option[Duration]) -> Output {
 forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[Duration]) -> (StageResult[Output], Duration) {
     let scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
-    let (output, (elapsed, deadline_expired)) = drive_plan(task, scope,
+    let (output, (elapsed, deadline_expired)) = prepare(task, scope).drive(
         |&scope, root| advance(&scope, root, deadline), close_scope);
     (StageResult.{ output, deadline_expired }, elapsed)
 }

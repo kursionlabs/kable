@@ -8,7 +8,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, drive_plan};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
@@ -505,7 +505,7 @@ fn run_standalone(task: Task, deadline: Option[Duration]) -> Output {
 
 forall Task, Output where Plan[Task, Scope! -> Output].
 fn drive_on_loop(task: Task, deadline: Option[Duration], loop: RunLoop) -> StageResult[Output] {
-    let (output, deadline_expired) = drive_plan(task, Scope!::new(),
+    let (output, deadline_expired) = prepare(task, Scope!::new()).drive(
         |&scope, root| &scope.run(root, deadline, loop), Scope!::close);
     StageResult.{ output, deadline_expired }
 }

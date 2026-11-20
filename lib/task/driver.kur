@@ -52,19 +52,18 @@ fn prepare(task: Task, scope: Driver) -> Prepared![Task, Driver] {
     Prepared!.{ task, scope, root }
 }
 
-/// Stages a plan, drives it to a join, collects its outcome, and closes the scope.
-/// The drive callback receives the root even if staging failed and can report
-/// additional information such as elapsed time.
-forall Task, Driver, Output, Env, RunResult where Plan[Task, Driver -> Output].
-fn drive_plan(task: Task, scope: Driver, drive: closure[Env](&_: Driver, Option[usize]) -> RunResult,
-    close: fn(Driver) -> ()) -> (Output, RunResult) {
-    let prepared = prepare(task, scope);
-    let result = &prepared.with_scope(drive);
-    (prepared.collect(close), result)
-}
-
 forall Task, Driver.
 impl Prepared![Task, Driver] {
+    /// Drives a staged plan to a join, then collects its outcome and closes the scope.
+    /// The driver callback receives None when staging failed and can report
+    /// additional information such as elapsed time.
+    forall Output, Env, RunResult where Plan[Task, Driver -> Output].
+    fn drive(self, run: closure[Env](&_: Driver, Option[usize]) -> RunResult,
+        close: fn(Driver) -> ()) -> (Output, RunResult) {
+        let result = &self.with_scope(run);
+        (self.collect(close), result)
+    }
+
     /// Lends the scope and its staged root to the engine.
     forall Env, Value.
     fn with_scope(&self, body: closure[Env](&_: Driver, Option[usize]) -> Value) -> Value {

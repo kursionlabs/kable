@@ -301,17 +301,19 @@ The virtual clock is a reference driver for timer plans. It uses the same
    children before the pair. Implement `Plan` to stage and collect each
    engine-specific operation. `PlanOutput` exposes the outcome type for
    composition and callback inference.
-2. Call `prepare(task, scope)` and use `&prepared.with_scope(...)` to drive the
-   registered root. Validate it with `begin`. Report `started(resource)` for
-   each scheduled leaf or parent timer and `complete(id)` when an operation
-   finishes. Report `retired(resource)` after that resource is safe to
-   release. Drain `take_cancel` to stop leaves the policy cancelled. A
-   cancelled operation can still be in flight. Each resource transitions
-   from unstarted to active to retired once.
-3. Check `joined()` after the root resolves or a resource retires. Call
-   `prepared.collect(close)` after the scope joins, or to reclaim a plan
-   whose staging or submission failed. Collection calls `close` with the
-   scope before returning the plan's owned outcome.
+2. Use `prepare(task, scope).drive(run, close)` for a standalone run. The
+   `run` callback receives the scope and optional root. Validate the root
+   with `begin`. Report `started(resource)` for each scheduled leaf or parent
+   timer and `complete(id)` when an operation finishes. Report
+   `retired(resource)` after that resource is safe to release. Drain
+   `take_cancel` to stop leaves the policy cancelled. A cancelled operation
+   can still be in flight. Each resource transitions from unstarted to active
+   to retired once.
+3. Check `joined()` after the root resolves or a resource retires. Once
+   `run` returns, `.drive(...)` collects the owned outcome and closes the
+   scope. Hosted drivers can use `&prepared.with_scope(...)` to access the
+   scope and root, then call `prepared.collect(close)` after the scope joins
+   or when staging or submission fails.
 
 An engine that supports sequences also implements `Clock` and
 `StageDriver`. Pass an optional absolute deadline in the engine's clock to
