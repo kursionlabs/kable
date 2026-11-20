@@ -23,10 +23,6 @@ extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
 extern "C" fn kable_file_range(client: *u8, total: u64, offset: *u64, length: *u64) -> u16;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
-extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
-extern "C" fn kable_tcp_stream_schedule(connection: *u8,
-    scope: *u8, root: usize, plan: *u8, finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
-extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
@@ -156,53 +152,40 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
         file.close();
         return unsafe write_wire(client, headers);
     }
-    let connection = unsafe kable_client_connection(client);
-    let status = unsafe kable_tcp_stream_begin(connection, STREAM_IDLE);
-    if status < 0 {
-        headers.destroy();
-        file.close();
-        return status;
-    }
-    let connection = unsafe Connection!::from_raw(connection);
+    let raw = unsafe kable_client_connection(client);
+    let connection = match unsafe Connection!::begin_stream(raw, STREAM_IDLE) {
+        Result::Ok(connection) => connection,
+        Result::Err(error) => {
+            headers.destroy();
+            file.close();
+            return error;
+        },
+    };
     unsafe write_then_next(connection, headers, file.chunks(start, count))
 }
 
 unsafe fn write_then_next(connection: Connection!, bytes: Buffer!, stream: FileChunks!) -> i32 {
-    let raw = unsafe &connection.as_raw();
-    let write = prepare_hosted(connection.write(bytes), |result, host, flags| {
-        let (connection, bytes, completion) = result;
-        bytes.destroy();
-        match completion {
-            Completion::Ready => {
-                if &stream.remaining() == 0 {
-                    stream.close();
-                    let raw = unsafe connection.into_raw();
-                    unsafe kable_tcp_stream_end(raw)
-                } else {
-                    let raw = unsafe &connection.as_raw();
-                    let read = prepare_hosted(stream.next(), |result, host, flags| {
-                        unsafe chunk_joined(connection, result)
-                    });
-                    unsafe schedule_stream(raw, read)
-                }
-            },
-            Completion::Cancelled | Completion::Failed => {
-                stream.close();
-                unsafe connection.into_raw();
-                -1
-            },
-        }
-    });
-    unsafe schedule_stream(raw, write)
+    unsafe connection.submit_stream(|connection| {
+        prepare_hosted(connection.write(bytes), |result, host, flags| unsafe write_joined(result, stream))
+    })
 }
 
-unsafe fn schedule_stream(connection: *u8, task: HostedPlan!) -> i32 {
-    let submission = unsafe task.submit(connection, |scope, root, plan, finish| {
-        unsafe kable_tcp_stream_schedule(connection, scope, root, plan, finish)
-    });
-    submission.unwrap_or_else(|rejection| {
-        let (error, continued) = rejection;
-        error
+unsafe fn write_joined(result: (Connection!, Buffer!, Completion[()]), stream: FileChunks!) -> i32 {
+    let (connection, bytes, completion) = result;
+    bytes.destroy();
+    match completion {
+        Completion::Ready => (),
+        Completion::Cancelled | Completion::Failed => {
+            stream.close();
+            return unsafe connection.abort_stream();
+        },
+    }
+    if &stream.remaining() == 0 {
+        stream.close();
+        return unsafe connection.finish_stream();
+    }
+    unsafe connection.submit_stream(|connection| {
+        prepare_hosted(stream.next(), |result, host, flags| unsafe chunk_joined(connection, result))
     })
 }
 
@@ -212,8 +195,7 @@ unsafe fn chunk_joined(connection: Connection!, result: (FileChunks!, StreamOutc
         StreamOutcome!::Item(bytes) => bytes,
         StreamOutcome!::End | StreamOutcome!::Cancelled | StreamOutcome!::Failed => {
             stream.close();
-            unsafe connection.into_raw();
-            return -1;
+            return unsafe connection.abort_stream();
         },
     };
     unsafe write_then_next(connection, bytes, stream)

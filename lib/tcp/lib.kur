@@ -30,6 +30,10 @@ extern "C" fn kable_tcp_stop_scoped_write(request: *u8) -> u8;
 extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
+extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
+extern "C" fn kable_tcp_stream_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
+extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
@@ -142,22 +146,40 @@ fn write(bytes: Buffer!, next: Read!) -> Action! {
 fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
 
 impl Connection! {
-    /// Takes the connection from its native host. The host must keep the
-    /// pointer valid until the owner returns it and must provide a single owner.
-    unsafe fn from_raw(raw: *u8) -> Connection! { Connection!.{ raw } }
-
-    /// Borrows the raw pointer for submission to the native host. The caller
-    /// must keep the owned connection alive through the submitted scope.
-    unsafe fn as_raw(&self) -> *u8 {
-        let { raw } = self;
-        self = Connection!.{ raw };
-        raw
+    /// Begins a response on the host's idle connection. The host must keep
+    /// the pointer valid until the response finishes and give it one owner.
+    unsafe fn begin_stream(raw: *u8, idle_ms: u64) -> Result[Connection!, i32] {
+        let status = unsafe kable_tcp_stream_begin(raw, idle_ms);
+        if status < 0 { Result::Err.(status) }
+        else { Result::Ok.(Connection!.{ raw }) }
     }
 
-    /// Returns ownership to the native host once the last operation joins.
-    unsafe fn into_raw(self) -> *u8 {
+    /// Submits one stage of a response. The builder transfers the connection
+    /// into the plan or continuation. The host collects rejected plans too.
+    forall Env.
+    unsafe fn submit_stream(self, prepare: closure[Env](Connection!) -> HostedPlan!) -> i32 {
         let { raw } = self;
-        raw
+        let task = prepare(Connection!.{ raw });
+        let submission = unsafe task.submit(raw, |scope, root, plan, finish| {
+            unsafe kable_tcp_stream_schedule(raw, scope, root, plan, finish)
+        });
+        submission.unwrap_or_else(|rejection| {
+            let (error, continued) = rejection;
+            error
+        })
+    }
+
+    /// Returns the connection to the host for half-close and drain.
+    unsafe fn finish_stream(self) -> i32 {
+        let { raw } = self;
+        unsafe kable_tcp_stream_end(raw)
+    }
+
+    /// Returns ownership to the host. The caller must return the failure
+    /// status to that host so it closes the response.
+    unsafe fn abort_stream(self) -> i32 {
+        let { raw } = self;
+        -1
     }
 
     /// Plans a read of the next available chunk of bytes.
