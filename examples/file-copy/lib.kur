@@ -1,10 +1,10 @@
-use async::{Completion, FileChunks!, OutputFile!, Sink, Stream, StreamOutcome!,
-    create_file, open_file, run, run_with_deadline};
+use async::{FileChunks!, OutputFile!, create_file, open_file, run, run_with_deadline};
 use std::io::eprint_buffer;
 use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::StaticRead;
+use task::{Completion, Sink, Stream, StreamOutcome!};
 
 fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u64]) -> bool {
     while &source.remaining() != 0 {

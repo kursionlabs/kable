@@ -1,8 +1,8 @@
-use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
 use tcp::{Action!, Connection!, Listener!, defer};
 
 fn start(connection: Connection!) -> Action! {

@@ -1,6 +1,6 @@
-use async::{Completion, DeadlineStatus, OpenedFile!, open_file_beneath_cwd};
+use async::{OpenedFile!, open_file_beneath_cwd};
 use http::{Method, Request!, Response!};
-use server::{Action!, PlanOutput, RequestState, Server!, file_reply};
+use server::{Action!, RequestState, Server!, file_reply};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -8,6 +8,7 @@ use std::parse::parse_u64;
 use std::process::Args;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
+use task::{Completion, DeadlineStatus, PlanOutput};
 
 extern "C" fn uv_chdir(path: *u8) -> i32;
 extern "C" fn kable_static_file_status(error: i32) -> u16;

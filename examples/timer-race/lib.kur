@@ -1,8 +1,8 @@
-use async::{Completion, DeadlineStatus, PlanOutput, Side, join, run, run_with_deadline,
-    select, sleep};
+use async::{run, run_with_deadline};
 use std::buffer::Buffer!;
 use std::io::print_buffer;
 use std::process::trap;
+use task::{Completion, DeadlineStatus, PlanOutput, Side, join, select, sleep};
 
 fn main() -> i32 {
     let (value, status) = run(sleep(0u64, 7u32));

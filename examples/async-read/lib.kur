@@ -1,10 +1,11 @@
-use async::{Completion, join, read_file, run_with_deadline};
+use async::{read_file, run_with_deadline};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Option;
 use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::StaticRead;
+use task::{Completion, join};
 
 fn discard(result: Completion[Buffer!]) {
     match result {

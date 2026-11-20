@@ -1,10 +1,11 @@
 //! Reads two independent files under one local deadline.
-use async::{Completion, join, read_file};
+use async::read_file;
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file, timed_reply};
-use server::{Action!, PlanOutput};
+use server::Action!;
 use std::buffer::Buffer!;
 use std::slice::StaticRead;
+use task::{Completion, PlanOutput, join};
 
 fn serve() -> Action! {
     let access = StaticRead::new();

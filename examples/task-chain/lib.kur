@@ -1,9 +1,10 @@
-use task::sequence::sequence;
-use async::{Completion, PlanOutput, Sleep!, run_sequence, sleep};
+use async::run_sequence;
 use std::buffer::Buffer!;
 use std::io::print_buffer;
 use std::option::Option;
 use std::process::trap;
+use task::{Completion, PlanOutput, Sleep!, sleep};
+use task::sequence::sequence;
 
 fn append(suffix: Buffer!, prior: (Buffer!, Completion[()])) -> Option[Sleep![Buffer!]] {
     let (bytes, status) = prior;

@@ -117,7 +117,7 @@ by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
 Handlers run on the event loop and should return promptly. A handler bound with
-`Server!::bind_async` can import `server::PlanOutput` and return
+`Server!::bind_async` can import `task::PlanOutput` and return
 `plan.defer(|outcome, state| ...)`. The continuation runs once after the
 plan joins and receives its owned outcome. With `RequestState::Active`, it
 can return `Some(action)` to reply or defer another plan. With
@@ -181,6 +181,10 @@ Plans collect results by the node IDs they registered during staging.
 event. It builds and links without libuv. The integration suite builds
 the same timer program against both drivers and compares its outcomes.
 
+Import plans, combinators, and outcome types from `task`. For standalone
+execution, import `run`, `run_with_deadline`, or `run_sequence` from the
+runner. TCP and HTTP handlers submit plans through their listener.
+
 `PlanOutput[Task -> Output]` determines the outcome type from the plan
 alone. The runner uses `Plan[Task, Driver -> Output]` to check whether its
 driver can run the plan and return that outcome. A file plan has a known
@@ -227,12 +231,12 @@ cancelled the race, and `Failed(code)` reports a scope error. Every case gives
 the caller the inner output to reclaim. A local timeout leaves unrelated
 sibling plans running.
 
-Import `PlanOutput` to use both methods. Driver implementations use
+Import `task::PlanOutput` to use both methods. Driver implementations use
 `task::driver` for staging, collection, and scope policy.
 
 ### Pull-based streams
 
-Import `Stream` to call `source.next()`. It moves the source into a
+Import `task::Stream` to call `source.next()`. It moves the source into a
 one-shot plan. After the plan joins it returns the source alongside
 `StreamOutcome![Item]`, which carries an item, EOF, cancellation, or an
 error code. The caller decides when to request another item. File chunks
@@ -241,7 +245,7 @@ and the returned connection can still write.
 
 ### Sequential writes
 
-Import `Sink` to call `writer.write(bytes)` on an output file or a TCP
+Import `task::Sink` to call `writer.write(bytes)` on an output file or a TCP
 connection. The plan owns both values until it joins and returns
 `(writer, bytes, status)`. A `Completion::Ready` status means the writer
 accepted the full buffer. The caller can release or reuse the buffer on

@@ -1,13 +1,14 @@
 //! Chooses a footer from the first file's contents and appends it.
-use async::{Completion, read_file};
+use async::read_file;
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file};
-use server::{Action!, PlanOutput, RequestState};
+use server::{Action!, RequestState};
 use std::buffer::Buffer!;
 use std::io::eprint_buffer;
 use std::option::Option;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
+use task::{Completion, PlanOutput};
 
 fn serve() -> Action! {
     let access = StaticRead::new();
