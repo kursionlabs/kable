@@ -12,6 +12,7 @@ use task::sequence::{SequenceOutcome, sequence};
 
 extern "C" fn kable_test_loop_begin(error: i32) -> ();
 extern "C" fn kable_test_loop_end(expected_closes: u32) -> u8;
+extern "C" fn kable_test_advance_clock_on_init(nanoseconds: u64) -> ();
 
 fn never_started(failure: Failure) -> bool {
     match failure { Failure::NotStarted => true, _ => false }
@@ -113,6 +114,26 @@ fn check_runner_reuse() -> bool {
     loop_matched && length == 5 && cancelled && ready
 }
 
+fn check_sequence_expires_during_init() -> bool {
+    let owned = sleep(Duration::from_nanos(0), Buffer!::new().push_static("owned"));
+    let plan = sequence(join(owned, FailStart.{}));
+    unsafe kable_test_loop_begin(0);
+    unsafe kable_test_advance_clock_on_init(Duration::from_millis(10).as_nanos());
+    let result = run_sequence(plan, Option::Some.(Duration::from_millis(5)));
+    let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
+    match result {
+        SequenceOutcome::Finished(outcome) => {
+            let ((bytes, timer), unit, joined) = outcome;
+            let length = &bytes.len();
+            bytes.destroy();
+            let cancelled = match timer { Completion::Cancelled => true, _ => false };
+            let scope_cancelled = match joined { Completion::Cancelled => true, _ => false };
+            loop_matched && length == 5 && cancelled && scope_cancelled
+        },
+        _ => false,
+    }
+}
+
 fn pending() -> HostedPlan! {
     let bytes = Buffer!::new().push_static("owned");
     let plan = join(sleep(Duration::from_nanos(0), bytes), sleep(Duration::from_nanos(0), 7u8));
@@ -137,7 +158,7 @@ fn pending() -> HostedPlan! {
 
 fn main() -> i32 {
     if !check_startup_failure() || !check_sequence_loop(0) || !check_sequence_loop(-42) ||
-        !check_runner_reuse() { return 1; }
+        !check_runner_reuse() || !check_sequence_expires_during_init() { return 1; }
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let host = unsafe (count as *u8);

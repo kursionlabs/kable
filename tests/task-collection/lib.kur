@@ -1,9 +1,9 @@
-use async::{run, run_sequence};
+use async::{run, run_sequence, run_with_deadline};
 use std::buffer::Buffer!;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, select, sleep};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence, sequence};
 
@@ -83,6 +83,25 @@ fn check_unrooted_timer() -> bool {
     first.destroy();
     second.destroy();
     lengths_ok && invalid_plan(first_status) && invalid_plan(second_status) && invalid_plan(race_status)
+}
+
+fn check_cancelled_join() -> bool {
+    let first = sleep(Duration::from_nanos(0), Buffer!::new().push_static("first"));
+    let suffix = Buffer!::new().push_static(" returned");
+    let second = sleep(Duration::from_secs(30), Buffer!::new().push_static("second"))
+        .map(|outcome| {
+            let (bytes, status) = outcome;
+            (bytes.push_buffer(suffix), status)
+        });
+    let ((first, first_status), (second, second_status), status) =
+        run_with_deadline(join(first, second), Duration::from_millis(10));
+    let lengths_ok = &first.len() == 5 && &second.len() == 15;
+    first.destroy();
+    second.destroy();
+    let first_ready = match first_status { Completion::Ready => true, _ => false };
+    let second_cancelled = match second_status { Completion::Cancelled => true, _ => false };
+    let join_cancelled = match status { Completion::Cancelled => true, _ => false };
+    lengths_ok && first_ready && second_cancelled && join_cancelled
 }
 
 struct DeadlineDriver! { state: ScopeState!, timer: Option[usize], timer_result: Resolution }
@@ -226,6 +245,6 @@ fn check_local_timeout_handoff() -> bool {
 
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0), 1u8), second: sleep(Duration::from_secs(30), 2u8), id: Option::None };
-    if run(plan) && check_unrooted_timer() && check_deadline_timer_results() &&
+    if run(plan) && check_unrooted_timer() && check_cancelled_join() && check_deadline_timer_results() &&
         check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
 }

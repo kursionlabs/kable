@@ -9,11 +9,11 @@ use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, ScopeState!, prepare};
-use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence, remaining_budget};
+use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence};
 
 export host;
 
-extern "C" fn uv_hrtime() -> u64;
+extern "C" fn kable_now_millis() -> u64;
 
 extern "C" fn kable_scope_new(policy: *u8, add_leaf: unsafe fn(*u8) -> usize,
     add_pair: unsafe fn(*u8, u8, usize, usize) -> usize,
@@ -26,9 +26,9 @@ extern "C" fn kable_scope_add_write(scope: *u8, fd: i32, offset: u64, bytes: *u8
 extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> u8) -> usize;
-extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> u8;
+extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, deadline: u8) -> u8;
 extern "C" fn kable_runner_new() -> *u8;
-extern "C" fn kable_runner_run(loop: *u8, scope: *u8, root: usize, ms: u64, timed: u8) -> u8;
+extern "C" fn kable_runner_run(loop: *u8, scope: *u8, root: usize, ms: u64, deadline: u8) -> u8;
 extern "C" fn kable_runner_free(loop: *u8) -> ();
 extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
@@ -177,6 +177,15 @@ instance Stream[FileChunks! -> NextFileChunk!] {
 struct Scope! { raw: *u8 }
 
 enum RunLoop { Standalone, Reusable(*u8) }
+
+enum RunDeadline { None, After(Duration), At(Duration) }
+
+fn relative_deadline(duration: Option[Duration]) -> RunDeadline {
+    match duration {
+        Option::Some(duration) => RunDeadline::After.(duration),
+        Option::None => RunDeadline::None,
+    }
+}
 
 // Scalar encoding used by the native scope adapter.
 const CANCELLED: i32 = 0i32;
@@ -341,16 +350,17 @@ impl Scope! {
         if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
     }
 
-    fn run(&self, root: Option[usize], deadline: Option[Duration], loop: RunLoop) -> bool {
+    fn run(&self, root: Option[usize], deadline: RunDeadline, loop: RunLoop) -> bool {
         let { raw } = self;
         let root = root.unwrap_or(usize::MAX);
-        let (ms, timed) = match deadline {
-            Option::Some(duration) => (timer_millis(duration), 1u8),
-            Option::None => (0u64, 0u8),
+        let (ms, kind) = match deadline {
+            RunDeadline::None => (0u64, 0u8),
+            RunDeadline::After(duration) => (timer_millis(duration), 1u8),
+            RunDeadline::At(deadline) => (timer_millis(deadline), 2u8),
         };
         let expired = match loop {
-            RunLoop::Standalone => unsafe kable_scope_run(raw, root, ms, timed),
-            RunLoop::Reusable(loop) => unsafe kable_runner_run(loop, raw, root, ms, timed),
+            RunLoop::Standalone => unsafe kable_scope_run(raw, root, ms, kind),
+            RunLoop::Reusable(loop) => unsafe kable_runner_run(loop, raw, root, ms, kind),
         };
         self = Scope!.{ raw };
         expired != 0
@@ -539,12 +549,13 @@ fn collect(prepared: Prepared![Task, Scope!]) -> Output {
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn drive_plan(task: Task, deadline: Option[Duration]) -> Output {
-    let { output, deadline_expired } = run_prepared(prepare(task, Scope!::new()), deadline, RunLoop::Standalone);
+    let prepared = prepare(task, Scope!::new());
+    let { output, deadline_expired } = run_prepared(prepared, relative_deadline(deadline), RunLoop::Standalone);
     output
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run_prepared(prepared: Prepared![Task, Scope!], deadline: Option[Duration], loop: RunLoop) -> StageResult[Output] {
+fn run_prepared(prepared: Prepared![Task, Scope!], deadline: RunDeadline, loop: RunLoop) -> StageResult[Output] {
     let deadline_expired = &prepared.with_scope(|&scope, root| &scope.run(root, deadline, loop));
     StageResult.{ output: collect(prepared), deadline_expired }
 }
@@ -567,12 +578,12 @@ impl Runner! {
     forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
     fn run(&self, task: Task, deadline: Option[Duration]) -> Output {
         let prepared = prepare(task, Scope!::new());
-        let { output, deadline_expired } = &self.run_prepared(prepared, deadline);
+        let { output, deadline_expired } = &self.run_prepared(prepared, relative_deadline(deadline));
         output
     }
 
     forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-    fn run_prepared(&self, prepared: Prepared![Task, Scope!], deadline: Option[Duration]) -> StageResult[Output] {
+    fn run_prepared(&self, prepared: Prepared![Task, Scope!], deadline: RunDeadline) -> StageResult[Output] {
         let { loop } = self;
         self = Runner!.{ loop };
         run_prepared(prepared, deadline, RunLoop::Reusable.(loop))
@@ -591,9 +602,8 @@ fn with_runner(body: closure[Env](&_: Runner!) -> Output) -> Output {
 }
 
 instance Clock[Runner!] {
-    // Use the same millisecond ticks as libuv's timers when checking a handoff.
     fn now(&engine: Runner!) -> Duration {
-        Duration::from_millis((unsafe uv_hrtime()) / 1_000_000)
+        Duration::from_millis(unsafe kable_now_millis())
     }
 }
 
@@ -601,8 +611,11 @@ forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Outpu
 instance StageDriver[Task, Runner! -> Output] {
     fn drive(task: Task, &engine: Runner!, deadline: Option[Duration]) -> StageResult[Output] {
         let prepared = prepare(task, Scope!::new());
-        let remaining = remaining_budget(&engine, deadline);
-        &engine.run_prepared(prepared, remaining)
+        let deadline = match deadline {
+            Option::Some(end) => RunDeadline::At.(end),
+            Option::None => RunDeadline::None,
+        };
+        &engine.run_prepared(prepared, deadline)
     }
 }
 

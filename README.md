@@ -251,6 +251,29 @@ A local timeout leaves unrelated sibling plans running.
 Import `task::PlanOutput` to use both methods. Driver implementations use
 `task::driver` for staging, collection, and scope policy.
 
+### Implementing a driver
+
+The virtual clock is a reference driver for timer plans. It uses the same
+`ScopeState!` policy as libuv. [Virtual clock implementation](lib/virtual_clock/lib.kur)
+
+1. Implement `PlanDriver[Scope]` to register timers and pairs and report
+   joined results. Use the IDs assigned by `ScopeState!`. Register a pair's
+   children before the pair. For each engine-specific operation, implement
+   `PlanOutput` for its outcome type and `Plan` to stage and collect it.
+2. Call `prepare(task, scope)` and use `&prepared.with_scope(...)` to drive the
+   registered root. Validate it with `begin`. Report `started` for each
+   scheduled resource, `complete(id)` when an operation finishes, and
+   `retired` when its resource is safe to release. Drain `take_cancel` to stop
+   the leaves the policy cancelled. A cancelled operation can still be in
+   flight.
+3. Call `prepared.collect()` after the scope joins, or to reclaim a plan
+   whose staging or submission failed. Collection returns the plan's owned
+   outcome and the scope for teardown.
+
+An engine that supports sequences also implements `Clock` and
+`StageDriver`. Each stage uses the sequence's absolute deadline and reports
+parent deadline expiry alongside its joined output. [Driver interfaces](lib/task/driver.kur) · [Sequence interfaces](lib/task/sequence.kur)
+
 ### Pull-based streams
 
 Import `task::Stream` to call `source.next()`. It moves the source into a
