@@ -50,7 +50,7 @@ typedef struct {
     uv_loop_t loop;
     int start_error;
     int attempted;
-} SequenceLoop;
+} Runner;
 
 uint8_t *kable_scope_new(uint8_t *policy, policy_add_leaf add_leaf,
     policy_add_pair add_pair, policy_event event) {
@@ -292,8 +292,8 @@ uint8_t kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t timed) {
     return expired;
 }
 
-uint8_t *kable_sequence_loop_new(void) {
-    return (uint8_t *)calloc(1, sizeof(SequenceLoop));
+uint8_t *kable_runner_new(void) {
+    return (uint8_t *)calloc(1, sizeof(Runner));
 }
 
 static void require_closed_handle(uv_handle_t *handle, void *context) {
@@ -302,35 +302,35 @@ static void require_closed_handle(uv_handle_t *handle, void *context) {
     abort();
 }
 
-uint8_t kable_sequence_loop_run(uint8_t *raw_loop, uint8_t *raw_scope, size_t root, uint64_t ms, uint8_t timed) {
+uint8_t kable_runner_run(uint8_t *raw_runner, uint8_t *raw_scope, size_t root, uint64_t ms, uint8_t timed) {
     Scope *scope = (Scope *)raw_scope;
     if (!can_run(scope)) return 0;
 
-    SequenceLoop *sequence = (SequenceLoop *)raw_loop;
-    if (!sequence) {
+    Runner *runner = (Runner *)raw_runner;
+    if (!runner) {
         scope->start_error = UV_ENOMEM;
         return 0;
     }
-    if (!sequence->attempted) {
-        sequence->attempted = 1;
-        sequence->start_error = uv_loop_init(&sequence->loop);
+    if (!runner->attempted) {
+        runner->attempted = 1;
+        runner->start_error = uv_loop_init(&runner->loop);
     }
-    if (sequence->start_error < 0) {
-        scope->start_error = sequence->start_error;
+    if (runner->start_error < 0) {
+        scope->start_error = runner->start_error;
         return 0;
     }
 
-    uint8_t expired = run_scope(scope, root, &sequence->loop, ms, timed);
+    uint8_t expired = run_scope(scope, root, &runner->loop, ms, timed);
     /* Inactive handles also have to close before the scope's storage is freed. */
-    uv_walk(&sequence->loop, require_closed_handle, NULL);
+    uv_walk(&runner->loop, require_closed_handle, NULL);
     return expired;
 }
 
-void kable_sequence_loop_free(uint8_t *raw) {
-    SequenceLoop *sequence = (SequenceLoop *)raw;
-    if (!sequence) return;
-    if (sequence->attempted && sequence->start_error == 0 && uv_loop_close(&sequence->loop) != 0) abort();
-    free(sequence);
+void kable_runner_free(uint8_t *raw) {
+    Runner *runner = (Runner *)raw;
+    if (!runner) return;
+    if (runner->attempted && runner->start_error == 0 && uv_loop_close(&runner->loop) != 0) abort();
+    free(runner);
 }
 
 int32_t kable_scope_result(uint8_t *raw, size_t id) {

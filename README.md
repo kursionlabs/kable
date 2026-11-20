@@ -328,7 +328,12 @@ in argument order. Each file is limited to 64 KiB.
 bin/file-copy README.md README.copy.md
 ```
 
-The example pulls one chunk from `FileChunks!` and waits for
+The example uses `async::with_runner` to share one libuv loop across the
+open, create, read, and write operations. Inside the callback,
+`&runner.run(plan, deadline)` runs and joins one plan at a time. The optional
+`Duration` sets a parent deadline for that operation.
+
+The copy pulls one chunk from `FileChunks!` and waits for
 `destination.write(bytes)` to join before pulling the next. Each sequential
 write starts at the file's current position. The worker continues through
 short writes, and `&destination.position()` reports the total accepted even

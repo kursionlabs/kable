@@ -1,15 +1,15 @@
-use async::{FileChunks!, OutputFile!, create_file, open_file, run, run_with_deadline};
+use async::{FileChunks!, OutputFile!, Runner!, create_file, open_file, with_runner};
 use std::io::eprint_buffer;
 use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
-use std::slice::StaticRead;
+use std::slice::{Slice, StaticRead};
 use std::time::Duration;
 use task::{Completion, Sink, Stream, StreamOutcome!};
 
-fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[Duration]) -> bool {
+fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, deadline: Option[Duration]) -> bool {
     while &source.remaining() != 0 {
-        let (next, outcome) = run(source.next());
+        let (next, outcome) = &runner.run(source.next(), Option::None);
         source = next;
         let bytes = match outcome {
             StreamOutcome!::Item(bytes) => bytes,
@@ -20,11 +20,7 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[Du
                 return false;
             },
         };
-        let write = destination.write(bytes);
-        let (file, bytes, outcome) = match deadline {
-            Option::Some(duration) => run_with_deadline(write, duration),
-            Option::None => run(write),
-        };
+        let (file, bytes, outcome) = &runner.run(destination.write(bytes), deadline);
         destination = file;
         bytes.destroy();
         match outcome {
@@ -44,6 +40,36 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[Du
     true
 }
 
+fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'static], deadline: Option[Duration]) -> i32 {
+    let access = StaticRead::new();
+    let input = match &runner.run(open_file(&access, source), Option::None) {
+        Completion::Ready(file) => file,
+        Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
+        Completion::Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
+    };
+    let destination = match &runner.run(create_file(&access, destination), Option::None) {
+        Completion::Ready(file) => file,
+        Completion::Cancelled => {
+            input.close();
+            eprint_buffer(f"file-copy: destination creation cancelled\n");
+            return 1;
+        },
+        Completion::Failed(failure) => {
+            input.close();
+            eprint_buffer(f"file-copy: creating destination failed ({failure})\n");
+            return 1;
+        },
+    };
+    let size = &input.len();
+    let source = input.chunks(0, size);
+    let copied = transfer(&runner, &source, &destination, deadline);
+    source.close();
+    match destination.close() {
+        Result::Ok(unit) => if copied { 0 } else { 1 },
+        Result::Err(code) => { eprint_buffer(f"file-copy: closing destination failed ({code})\n"); 1 },
+    }
+}
+
 fn usage() -> i32 {
     eprint_buffer(f"usage: file-copy SOURCE DESTINATION [WRITE_DEADLINE_MS]\n");
     2
@@ -61,31 +87,5 @@ fn main(args: Args) -> i32 {
             Option::None => return usage(),
         },
     };
-
-    let input = match run(open_file(&access, source)) {
-        Completion::Ready(file) => file,
-        Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
-        Completion::Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
-    };
-    let destination = match run(create_file(&access, destination)) {
-        Completion::Ready(file) => file,
-        Completion::Cancelled => {
-            input.close();
-            eprint_buffer(f"file-copy: destination creation cancelled\n");
-            return 1;
-        },
-        Completion::Failed(failure) => {
-            input.close();
-            eprint_buffer(f"file-copy: creating destination failed ({failure})\n");
-            return 1;
-        },
-    };
-    let size = &input.len();
-    let source = input.chunks(0, size);
-    let copied = transfer(&source, &destination, deadline);
-    source.close();
-    match destination.close() {
-        Result::Ok(unit) => if copied { 0 } else { 1 },
-        Result::Err(code) => { eprint_buffer(f"file-copy: closing destination failed ({code})\n"); 1 },
-    }
+    with_runner(|&runner| copy(&runner, source, destination, deadline))
 }
