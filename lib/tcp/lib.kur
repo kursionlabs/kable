@@ -30,46 +30,63 @@ extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
 extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 
 struct Connection! { raw: *u8 }
-struct NextRead! { connection: Connection!, id: Option[usize] }
-struct WritePlan! { connection: Connection!, bytes: Buffer!, request: *u8, id: Option[usize] }
 
-instance PlanOutput[NextRead! -> (Connection!, Completion[Option[Buffer!]])] {}
+forall State, Output.
+struct OperationPlan! {
+    state: State,
+    prepare: fn(&_: State) -> *u8,
+    start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
+    stop: unsafe fn(*u8) -> u8,
+    finish: fn(State, *u8, Completion[()]) -> Output,
+    context: *u8,
+    id: Option[usize],
+}
 
-instance Plan[NextRead!, Scope! -> (Connection!, Completion[Option[Buffer!]])] {
-    fn stage(&task: NextRead!, &scope: Scope!) -> Option[usize] {
-        let { connection: { raw }, id } = task;
-        let id = unsafe &scope.add_operation(raw, kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read);
-        task = NextRead!.{ connection: Connection!.{ raw }, id };
+forall State, Output.
+instance PlanOutput[OperationPlan![State, Output] -> Output] {}
+
+forall State, Output.
+instance Plan[OperationPlan![State, Output], Scope! -> Output] {
+    fn stage(&task: OperationPlan![State, Output], &scope: Scope!) -> Option[usize] {
+        let { state, prepare, start, stop, finish, context, id } = task;
+        let context = prepare(&state);
+        let id = unsafe &scope.add_operation(context, start, stop);
+        task = OperationPlan!.{ state, prepare, start, stop, finish, context, id };
         id
     }
 
-    fn collect(task: NextRead!, &scope: Scope!) -> (Connection!, Completion[Option[Buffer!]]) {
-        let { connection: { raw }, id } = task;
-        let outcome = (&scope.result(id)).completion().and_then(|unit| unsafe read_result(raw));
-        (Connection!.{ raw }, outcome)
+    fn collect(task: OperationPlan![State, Output], &scope: Scope!) -> Output {
+        let { state, prepare, start, stop, finish, context, id } = task;
+        finish(state, context, (&scope.result(id)).completion())
     }
 }
 
-instance PlanOutput[WritePlan! -> (Connection!, Buffer!, Completion[()])] {}
+fn prepare_read(&connection: Connection!) -> *u8 {
+    let { raw } = connection;
+    connection = Connection!.{ raw };
+    raw
+}
 
-instance Plan[WritePlan!, Scope! -> (Connection!, Buffer!, Completion[()])] {
-    fn stage(&task: WritePlan!, &scope: Scope!) -> Option[usize] {
-        let { connection: { raw }, bytes, request, id } = task;
-        let request = unsafe kable_tcp_new_scoped_write(raw, unsafe &bytes.as_ptr(), &bytes.len());
-        let id = unsafe &scope.add_operation(request, kable_tcp_start_scoped_write, kable_tcp_stop_scoped_write);
-        task = WritePlan!.{ connection: Connection!.{ raw }, bytes, request, id };
-        id
-    }
+fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> (Connection!, Completion[Option[Buffer!]]) {
+    (connection, completion.and_then(|unit| unsafe read_result(context)))
+}
 
-    fn collect(task: WritePlan!, &scope: Scope!) -> (Connection!, Buffer!, Completion[()]) {
-        let { connection, bytes, request, id } = task;
-        // Collection frees the native request on every outcome.
-        let status = unsafe kable_tcp_collect_scoped_write(request);
-        let completion = (&scope.result(id)).completion().and_then(|unit| {
-            if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
-        });
-        (connection, bytes, completion)
-    }
+fn prepare_write(&state: (Connection!, Buffer!)) -> *u8 {
+    let ({ raw }, bytes) = state;
+    let request = unsafe kable_tcp_new_scoped_write(raw, unsafe &bytes.as_ptr(), &bytes.len());
+    state = (Connection!.{ raw }, bytes);
+    request
+}
+
+fn finish_write(state: (Connection!, Buffer!), request: *u8, completion: Completion[()])
+    -> (Connection!, Buffer!, Completion[()]) {
+    let (connection, bytes) = state;
+    // Collection frees the native request on every outcome.
+    let status = unsafe kable_tcp_collect_scoped_write(request);
+    let completion = completion.and_then(|unit| {
+        if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
+    });
+    (connection, bytes, completion)
 }
 
 unsafe fn read_result(raw: *u8) -> Completion[Option[Buffer!]] {
@@ -142,16 +159,25 @@ impl Connection! {
     fn close(self) -> Action! { close(self) }
 }
 
-instance Stream[Connection! -> NextRead!] {
+instance Stream[Connection! -> OperationPlan![Connection!, (Connection!, Completion[Option[Buffer!]])]] {
     /// Plans one read. EOF hands back the connection with its write side available.
-    fn next(source: Connection!) -> NextRead! { NextRead!.{ connection: source, id: Option::None } }
+    fn next(source: Connection!) -> OperationPlan![Connection!, (Connection!, Completion[Option[Buffer!]])] {
+        OperationPlan!.{
+            state: source, prepare: prepare_read, start: kable_tcp_start_scoped_read,
+            stop: kable_tcp_stop_scoped_read, finish: finish_read, context: null(), id: Option::None,
+        }
+    }
 }
 
-instance Sink[Connection! -> Buffer!, WritePlan!] {
+instance Sink[Connection! -> Buffer!, OperationPlan![(Connection!, Buffer!), (Connection!, Buffer!, Completion[()])]] {
     /// Returns the connection and buffer after the write joins. Cancelling an
     /// in-flight write closes the socket. An interrupted write may be partial.
-    fn write(connection: Connection!, bytes: Buffer!) -> WritePlan! {
-        WritePlan!.{ connection, bytes, request: null(), id: Option::None }
+    fn write(connection: Connection!, bytes: Buffer!)
+        -> OperationPlan![(Connection!, Buffer!), (Connection!, Buffer!, Completion[()])] {
+        OperationPlan!.{
+            state: (connection, bytes), prepare: prepare_write, start: kable_tcp_start_scoped_write,
+            stop: kable_tcp_stop_scoped_write, finish: finish_write, context: null(), id: Option::None,
+        }
     }
 }
 

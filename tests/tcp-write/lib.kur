@@ -1,8 +1,11 @@
+use async::host::prepare_hosted;
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
+use std::mem::alloca;
 use std::option::{Option, Result};
+use std::process::trap;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!, defer};
 
 fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
@@ -24,7 +27,29 @@ fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)
     connection.close()
 }
 
+fn discard_write(connection: Connection!) -> Connection! {
+    let returned = unsafe alloca[Option[Connection!]]();
+    unsafe *returned = Option::None;
+    let write = connection.write(Buffer!::new().push_static("discarded"));
+    let hosted = prepare_hosted(write, |result, host, state| {
+        let (connection, bytes, status) = result;
+        let length = &bytes.len();
+        bytes.destroy();
+        let unstarted = match status {
+            Completion::Failed(failure) => match failure { Failure::NotStarted => true, _ => false },
+            _ => false,
+        };
+        if !unstarted || length != 9 || state != 0 { trap(); }
+        let returned = unsafe (host as *Option[Connection!]);
+        unsafe *returned = Option::Some.(connection);
+        0
+    });
+    unsafe hosted.discard(unsafe (returned as *u8));
+    (unsafe *returned).unwrap()
+}
+
 fn send_after_eof(connection: Connection!) -> Action! {
+    let connection = discard_write(connection);
     defer(connection.write(Buffer!::new_with_cap(0)), |outcome| {
         let (connection, bytes, status) = outcome;
         bytes.destroy();
