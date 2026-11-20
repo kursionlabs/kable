@@ -1,9 +1,10 @@
 use async::run;
 use std::buffer::Buffer!;
 use std::option::Option;
+use std::process::trap;
 use std::time::Duration;
-use task::{Completion, Failure, PlanOutput, Sleep!, select, sleep};
-use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, select, sleep};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
 
@@ -83,7 +84,84 @@ fn check_unrooted_timer() -> bool {
     lengths_ok && invalid_plan(first_status) && invalid_plan(second_status) && invalid_plan(race_status)
 }
 
+struct DeadlineDriver! { state: ScopeState!, timer: Option[usize], timer_result: Resolution }
+
+instance PlanDriver[DeadlineDriver!] {
+    fn timer(&scope: DeadlineDriver!, duration: Duration) -> Option[usize] {
+        let { state, timer, timer_result } = scope;
+        let id = &state.add(Branch::Leaf);
+        let timer = if duration.is_zero() { id } else { timer };
+        scope = DeadlineDriver!.{ state, timer, timer_result };
+        id
+    }
+
+    fn pair(&scope: DeadlineDriver!, pair: Pair) -> Option[usize] {
+        let { state, timer, timer_result } = scope;
+        let id = &state.add(Branch::Pair.(pair));
+        scope = DeadlineDriver!.{ state, timer, timer_result };
+        id
+    }
+
+    fn result(&scope: DeadlineDriver!, id: Option[usize]) -> Resolution {
+        let { state, timer, timer_result } = scope;
+        let id = id.unwrap();
+        let result = (&state.result(id)).unwrap();
+        scope = DeadlineDriver!.{ state, timer, timer_result };
+        if id == timer.unwrap() { timer_result } else { result }
+    }
+}
+
+forall Task where Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)].
+fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
+    let driver = DeadlineDriver!.{ state: ScopeState!::new(), timer: Option::None, timer_result };
+    let root = Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)]::stage(&plan, &driver);
+    let { state, timer, timer_result } = driver;
+    if !&state.begin(root.unwrap()) { trap(); }
+    &state.started();
+    &state.started();
+    if !&state.complete(timer.unwrap()) { trap(); }
+    if (&state.take_cancel()).is_none() { trap(); }
+    &state.retired();
+    if !&state.retired() { trap(); }
+
+    let driver = DeadlineDriver!.{ state, timer, timer_result };
+    let ((bytes, status), deadline) =
+        Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)]::collect(plan, &driver);
+    let { state, timer, timer_result } = driver;
+    state.destroy();
+    let length = &bytes.len();
+    bytes.destroy();
+    match status {
+        Completion::Cancelled => { if length != 5 { trap(); } },
+        _ => trap(),
+    }
+    deadline
+}
+
+fn deadline_with_timer_result(timer_result: Resolution) -> DeadlineStatus {
+    let plan = sleep(Duration::from_secs(1), Buffer!::new().push_static("owned"));
+    run_deadline_test(plan.within(Duration::from_nanos(0)), timer_result)
+}
+
+fn check_deadline_timer_results() -> bool {
+    let deadline = deadline_with_timer_result(Resolution::Failed.(Failure::Operation.(-42)));
+    match deadline {
+        DeadlineStatus::Failed(failure) => match failure {
+            Failure::Operation(code) => { if code != -42 { return false; } },
+            _ => return false,
+        },
+        _ => return false,
+    }
+    match deadline_with_timer_result(Resolution::Cancelled) {
+        DeadlineStatus::Failed(failure) => match failure {
+            Failure::InvalidResult => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0), 1u8), second: sleep(Duration::from_secs(30), 2u8), id: Option::None };
-    if run(plan) && check_unrooted_timer() { 0 } else { 1 }
+    if run(plan) && check_unrooted_timer() && check_deadline_timer_results() { 0 } else { 1 }
 }

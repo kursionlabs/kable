@@ -14,7 +14,7 @@ trait PlanDriver {
     fn timer(&scope: Driver, duration: Duration) -> Option[usize];
     fn pair(&scope: Driver, pair: Pair) -> Option[usize];
     /// Gets a node's result after the engine has joined.
-    /// On failure, preserves the reason the scope could not provide a result.
+    /// Preserves failures from the operation or the scope.
     fn result(&scope: Driver, id: Option[usize]) -> Resolution;
 }
 

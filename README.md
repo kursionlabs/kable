@@ -243,10 +243,10 @@ capture owned state and runs once, including on cancellation or failure.
 `plan.within(duration)` races the plan against a local timer and returns
 `(output, deadline)` after both join. `DeadlineStatus::Completed` means the
 plan finished first, including when the operation reported an error.
-`TimedOut` means the local timer won, `Cancelled` means the enclosing scope
-cancelled the race, and `Failed(failure)` reports a scope error. Every case gives
-the caller the inner output to reclaim. A local timeout leaves unrelated
-sibling plans running.
+`TimedOut` means the local timer fired first. `Cancelled` means the enclosing
+scope cancelled the race. `Failed(failure)` reports an error from the scope or
+the winning timer. Every case gives the caller the inner output to reclaim.
+A local timeout leaves unrelated sibling plans running.
 
 Import `task::PlanOutput` to use both methods. Driver implementations use
 `task::driver` for staging, collection, and scope policy.

@@ -198,10 +198,14 @@ impl Task {
     fn within(self, duration: Duration)
         -> Map![Select![Sleep![()], Task], (((), Completion[()]), Input, Completion[Side]), (Input, DeadlineStatus), ()] {
         select(sleep(duration, ()), self).map(|result| {
-            let (timer, outcome, status) = result;
+            let ((unit, timer_status), outcome, status) = result;
             let deadline = match status {
                 Completion::Ready(side) => match side {
-                    Side::First => DeadlineStatus::TimedOut,
+                    Side::First => match timer_status {
+                        Completion::Ready => DeadlineStatus::TimedOut,
+                        Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
+                        Completion::Cancelled => DeadlineStatus::Failed.(Failure::InvalidResult),
+                    },
                     Side::Second => DeadlineStatus::Completed,
                 },
                 Completion::Cancelled => DeadlineStatus::Cancelled,
