@@ -4,9 +4,10 @@ use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::StaticRead;
+use std::time::Duration;
 use task::{Completion, Sink, Stream, StreamOutcome!};
 
-fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u64]) -> bool {
+fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[Duration]) -> bool {
     while &source.remaining() != 0 {
         let (next, outcome) = run(source.next());
         source = next;
@@ -21,7 +22,7 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u6
         };
         let write = destination.write(bytes);
         let (file, bytes, outcome) = match deadline {
-            Option::Some(ms) => run_with_deadline(write, ms),
+            Option::Some(duration) => run_with_deadline(write, duration),
             Option::None => run(write),
         };
         destination = file;
@@ -56,7 +57,7 @@ fn main(args: Args) -> i32 {
     let deadline = match args.bytes(3) {
         Option::None => Option::None,
         Option::Some(value) => match parse_u64(&access, value) {
-            Option::Some(ms) => Option::Some.(ms),
+            Option::Some(ms) => Option::Some.(Duration::from_millis(ms)),
             Option::None => return usage(),
         },
     };

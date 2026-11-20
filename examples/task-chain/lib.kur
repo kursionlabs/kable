@@ -3,6 +3,7 @@ use std::buffer::Buffer!;
 use std::io::print_buffer;
 use std::option::Option;
 use std::process::trap;
+use std::time::Duration;
 use task::{Completion, PlanOutput, Sleep!, sleep};
 use task::sequence::{SequenceOutcome, sequence};
 
@@ -12,7 +13,7 @@ fn append(suffix: Buffer!, prior: (Buffer!, Completion[()])) -> Option[Sleep![Bu
         Completion::Ready => (),
         _ => { bytes.destroy(); suffix.destroy(); trap(); },
     }
-    Option::Some.(sleep(150u64, bytes.push_buffer(suffix)))
+    Option::Some.(sleep(Duration::from_millis(150), bytes.push_buffer(suffix)))
 }
 
 fn stop(state: Buffer!, prior: (Buffer!, Completion[()])) -> Option[Sleep![Buffer!]] {
@@ -47,8 +48,8 @@ fn check_early_end(result: SequenceOutcome[(Buffer!, Completion[()])], cancelled
     }
 }
 
-fn check_chain(budget: Option[u64], should_finish: bool) {
-    let plan = sequence(sleep(65u64, Buffer!::new().push_static("first")))
+fn check_chain(budget: Option[Duration], should_finish: bool) {
+    let plan = sequence(sleep(Duration::from_millis(65), Buffer!::new().push_static("first")))
         .then_owned(Buffer!::new().push_static("second"),
             |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, budget);
@@ -69,8 +70,8 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
 }
 
 fn main() -> i32 {
-    let plan = sequence(sleep(0u64, 7u32).map(|outcome| outcome))
-        .then(|outcome| Option::Some.(sleep(0u64, outcome)));
+    let plan = sequence(sleep(Duration::from_nanos(0), 7u32).map(|outcome| outcome))
+        .then(|outcome| Option::Some.(sleep(Duration::from_nanos(0), outcome)));
     let result = run_sequence(plan, Option::None);
     match result {
         SequenceOutcome::Finished(outcome) => {
@@ -83,19 +84,19 @@ fn main() -> i32 {
     }
 
     check_chain(Option::None, true);
-    check_chain(Option::Some.(180u64), false);
+    check_chain(Option::Some.(Duration::from_millis(180)), false);
     print_buffer(f"The second stage used the original deadline.\n");
 
-    let plan = sequence(sleep(0u64, Buffer!::new()))
+    let plan = sequence(sleep(Duration::from_nanos(0), Buffer!::new()))
         .then_owned(Buffer!::new(), |state, prior| stop(state, prior), discard)
         .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, Option::None);
     check_early_end(result, false);
 
-    let plan = sequence(sleep(30_000u64, Buffer!::new()))
+    let plan = sequence(sleep(Duration::from_secs(30), Buffer!::new()))
         .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard)
         .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard);
-    let result = run_sequence(plan, Option::Some.(10u64));
+    let result = run_sequence(plan, Option::Some.(Duration::from_millis(10)));
     check_early_end(result, true);
     0i32
 }

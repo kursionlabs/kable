@@ -8,12 +8,11 @@ use std::parse::parse_u64;
 use std::process::Args;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
+use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput};
 
 extern "C" fn uv_chdir(path: *u8) -> i32;
 extern "C" fn kable_static_file_status(error: i32) -> u16;
-
-const OPEN_DEADLINE: u64 = 2000;
 
 fn serve(request: Request!) -> Action! {
     let { method, target, body } = request;
@@ -34,7 +33,7 @@ fn serve(request: Request!) -> Action! {
     let file = open_file_beneath_cwd(&access, bytes);
     restore.restore(access).destroy();
 
-    file.within(OPEN_DEADLINE).defer(|outcome, state| file_response(content_type, outcome, state))
+    file.within(Duration::from_secs(2)).defer(|outcome, state| file_response(content_type, outcome, state))
 }
 
 fn file_response(content_type: Slice[u8, 'static], result: (Completion[OpenedFile!], DeadlineStatus),

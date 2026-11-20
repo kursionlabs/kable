@@ -1,5 +1,6 @@
 //! Staging and collection for task drivers.
 use std::option::Option;
+use std::time::Duration;
 use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
 
 export Branch;
@@ -10,7 +11,7 @@ export ScopeState!;
 
 forall Driver.
 trait PlanDriver {
-    fn timer(&scope: Driver, ms: u64) -> Option[usize];
+    fn timer(&scope: Driver, duration: Duration) -> Option[usize];
     fn pair(&scope: Driver, pair: Pair) -> Option[usize];
     /// Gets a node's result after the engine has joined.
     /// On failure, preserves the reason the scope could not provide a result.

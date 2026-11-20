@@ -80,12 +80,14 @@ wait one second. `Server!::bind_async` takes a handler that returns either
 action.
 
 ```kursal
+use std::time::Duration;
+
 fn hello(request: Request!) -> Action! {
     let delayed = &request.path_is("/delay");
     request.destroy();
 
     if delayed {
-        Response!::text(200, "done\n").after(1000)
+        Response!::text(200, "done\n").after(Duration::from_secs(1))
     } else {
         Response!::text(200, "Hello from Kable!\n").reply()
     }
@@ -137,13 +139,15 @@ Request `/file-with-timeout` on the printed address to read the bundled
 `example.txt` with a 64 KiB limit and a one-second deadline.
 
 ```kursal
+use std::time::Duration;
+
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .within(1000)
+    .within(Duration::from_secs(1))
     .defer(|outcome, state| timed_reply(outcome, state, file_response, discard_file))
 ```
 
-`.within(1000)` adds the local deadline. If the timer wins, the continuation
+`.within(...)` adds the local deadline. If the timer wins, the continuation
 gets `DeadlineStatus::TimedOut` after the worker joins, releases any buffer,
 and replies 504 while the request is active. If the request ends first, the
 continuation releases the outcome and closes the connection. `/file` uses
@@ -153,10 +157,10 @@ pending.
 ### Two independent file reads
 
 `/file-join` starts reads of `example.txt` and `footer.txt` together using
-`join(first, second).within(1000)` and the same `.defer(...)` handoff.
-Both reads have a 64 KiB
-limit and share the one-second deadline. The response appends the footer
-after the first file’s bytes regardless of which read finishes first.
+`join(first, second).within(Duration::from_secs(1))` and the same `.defer(...)`
+handoff. Both reads have a 64 KiB limit and share the one-second deadline.
+The response appends the footer after the first file’s bytes regardless of
+which read finishes first.
 A timeout returns 504 after both workers retire, and the handler destroys
 any buffer it received. [Parallel file handler](examples/http-file/file_join.kur)
 
@@ -185,12 +189,17 @@ Import plans, combinators, and outcome types from `task`. For standalone
 execution, import `run`, `run_with_deadline`, or `run_sequence` from the
 runner. TCP and HTTP handlers submit plans through their listener.
 
+Timers, deadlines, and sequence budgets take `std::time::Duration`.
+The libuv runner uses a millisecond clock. It rounds positive timer
+durations up to whole milliseconds and preserves zero. The virtual clock
+advances in nanoseconds.
+
 `PlanOutput[Task -> Output]` determines the outcome type from the plan
 alone. The runner uses `Plan[Task, Driver -> Output]` to check whether its
 driver can run the plan and return that outcome. A file plan has a known
 outcome even when the selected driver cannot execute file reads.
 
-`run(sleep(ms, value))` returns `(value, status)`. The caller regains the
+`run(sleep(duration, value))` returns `(value, status)`. The caller regains the
 original value even if the timer is cancelled or fails to start.
 `run(join(first, second))` returns `(first_output, second_output, status)`
 after both children join. The outputs are in input order and each carries
@@ -202,7 +211,7 @@ in input order. On selection, `Completion::Ready(side)` identifies the winner
 as `Side::First` or `Side::Second`. Cancellation and failure also return both
 outputs. Both combinators accept nested plans and operations supported by the driver.
 
-`run_with_deadline(plan, ms)` adds a parent deadline that cancels every
+`run_with_deadline(plan, duration)` adds a parent deadline that cancels every
 pending child, including children of nested joins. The scope closes all timer handles before returning.
 The outcome hands ownership of the values back to the caller on readiness,
 cancellation, or startup failure. A cancelled join preserves the individual
@@ -231,7 +240,7 @@ nested waits.
 `plan.map(transform)` converts the plan's joined outcome. Its closure can
 capture owned state and runs once, including on cancellation or failure.
 
-`plan.within(ms)` races the plan against a local timer and returns
+`plan.within(duration)` races the plan against a local timer and returns
 `(output, deadline)` after both join. `DeadlineStatus::Completed` means the
 plan finished first, including when the operation reported an error.
 `TimedOut` means the local timer won, `Cancelled` means the enclosing scope
@@ -276,8 +285,8 @@ consume them and any available outcome if the handoff is skipped. The
 `resume` closure’s own captures must be copyable.
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
-Its optional millisecond budget applies to the whole chain. Match the result
-using `task::sequence::SequenceOutcome`.
+The budget is an `Option[Duration]` that applies to the whole chain.
+Match the result using `task::sequence::SequenceOutcome`.
 
 - `Finished(output)` returns the final stage's joined output, including any
   cancellation or failure reported by that stage.
@@ -333,12 +342,13 @@ the destination contains the bytes written so far.
 `lib/tcp/` runs a loopback listener with one in-flight operation per
 connection. `Listener!::bind_connections(port, read_next)` calls
 `read_next(connection)` once per accepted connection. The echo handler runs
-`connection.next().within(1000)`
-with `tcp::defer` on the listener loop. When it receives bytes, it defers
-`connection.write(bytes).within(1000)`. Its continuation releases the buffer
-and starts the next read only if the write succeeded within the deadline.
+`connection.next().within(Duration::from_secs(1))` with `tcp::defer` on the
+listener loop. When it receives bytes, it defers
+`connection.write(bytes).within(Duration::from_secs(1))`. Its continuation
+releases the buffer and starts the next read only if the write succeeded
+within the deadline.
 
-Omitting `.within(ms)` gives the write the connection's lifetime. The
+Omitting `.within(...)` gives the write the connection's lifetime. The
 continuation can hand the connection back to `read_next` after the write joins.
 
 ```kursal

@@ -6,6 +6,7 @@ use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::slice::StaticRead;
+use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput};
 
 const FILE_LIMIT: usize = 65_536;
@@ -14,7 +15,7 @@ fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
     if timed {
-        return file.within(1000).defer(|outcome, state| {
+        return file.within(Duration::from_secs(1)).defer(|outcome, state| {
             timed_reply(outcome, state, file_response, discard_file)
         });
     }

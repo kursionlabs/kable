@@ -1,6 +1,7 @@
 use async::run;
 use std::buffer::Buffer!;
 use std::option::Option;
+use std::time::Duration;
 use task::{Completion, Failure, PlanOutput, Sleep!, select, sleep};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 
@@ -73,8 +74,8 @@ fn invalid_plan(status: Completion[T]) -> bool {
 }
 
 fn check_unrooted_timer() -> bool {
-    let first = UnrootedTimer!.{ timer: sleep(0, Buffer!::new().push_static("first")) };
-    let second = sleep(0, Buffer!::new().push_static("second"));
+    let first = UnrootedTimer!.{ timer: sleep(Duration::from_nanos(0), Buffer!::new().push_static("first")) };
+    let second = sleep(Duration::from_nanos(0), Buffer!::new().push_static("second"));
     let ((first, first_status), (second, second_status), race_status) = run(select(first, second));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
@@ -83,6 +84,6 @@ fn check_unrooted_timer() -> bool {
 }
 
 fn main() -> i32 {
-    let plan = ReverseSelect!.{ first: sleep(0u64, 1u8), second: sleep(30_000u64, 2u8), id: Option::None };
+    let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0), 1u8), second: sleep(Duration::from_secs(30), 2u8), id: Option::None };
     if run(plan) && check_unrooted_timer() { 0 } else { 1 }
 }

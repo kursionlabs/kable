@@ -5,6 +5,7 @@ use package::{FILE_LIMIT, append_file, discard_file, timed_reply};
 use server::Action!;
 use std::buffer::Buffer!;
 use std::slice::StaticRead;
+use std::time::Duration;
 use task::{Completion, PlanOutput, join};
 
 fn serve() -> Action! {
@@ -12,7 +13,7 @@ fn serve() -> Action! {
     let first = read_file(&access, "example.txt", FILE_LIMIT);
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
-    join(first, second).within(1000).defer(|outcome, state| {
+    join(first, second).within(Duration::from_secs(1)).defer(|outcome, state| {
         timed_reply(outcome, state, joined_response, discard_join)
     })
 }

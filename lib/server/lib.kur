@@ -9,6 +9,7 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
+use std::time::Duration;
 use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome!, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
@@ -50,8 +51,8 @@ impl Response! {
     fn reply(self) -> Action! { Action!::Reply.(self) }
 
     /// Sends this response after a request-scoped timer.
-    fn after(self, ms: u64) -> Action! {
-        sleep(ms, self).defer(|outcome, state| {
+    fn after(self, duration: Duration) -> Action! {
+        sleep(duration, self).defer(|outcome, state| {
             let (response, status) = outcome;
             match state {
                 RequestState::Cancelled => { response.destroy(); Option::None },

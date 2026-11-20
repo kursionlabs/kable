@@ -5,6 +5,7 @@ use std::mem::alloca;
 use std::option::{Option, Result};
 use std::ptr::null;
 use std::process::trap;
+use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, join, sleep};
 use task::driver::Plan;
 
@@ -41,10 +42,10 @@ fn startup_failed(status: Completion[()]) -> bool {
 }
 
 fn check_startup_failure() -> bool {
-    let first = sleep(30_000, Buffer!::new().push_static("first"));
-    let second = sleep(30_000, Buffer!::new().push_static("second"));
+    let first = sleep(Duration::from_secs(30), Buffer!::new().push_static("first"));
+    let second = sleep(Duration::from_secs(30), Buffer!::new().push_static("second"));
     let plan = join(first, join(second, FailStart.{}));
-    let (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(1000));
+    let (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(Duration::from_secs(1)));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
     second.destroy();
@@ -61,8 +62,8 @@ fn check_startup_failure() -> bool {
 
 fn pending() -> HostedPlan! {
     let bytes = Buffer!::new().push_static("owned");
-    let plan = join(sleep(0, bytes), sleep(0, 7u8));
-    prepare_hosted(plan.within(1000), |outcome, host, state| {
+    let plan = join(sleep(Duration::from_nanos(0), bytes), sleep(Duration::from_nanos(0), 7u8));
+    prepare_hosted(plan.within(Duration::from_secs(1)), |outcome, host, state| {
         let (((bytes, first), (value, second), status), deadline) = outcome;
         let length = &bytes.len();
         bytes.destroy();

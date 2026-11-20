@@ -1,21 +1,22 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
+use std::time::Duration;
 use task::{Failure, PlanOutput};
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
 
 struct Virtual! {
     state: ScopeState!,
-    timers: OwnedVec![Option[u64]],
+    timers: OwnedVec![Option[Duration]],
     invalid_plan: bool,
 }
 
 instance PlanDriver[Virtual!] {
-    fn timer(&scope: Virtual!, ms: u64) -> Option[usize] {
+    fn timer(&scope: Virtual!, duration: Duration) -> Option[usize] {
         let { state, timers, invalid_plan } = scope;
         let id = &state.add(Branch::Leaf);
-        let timers = if id.is_some() { timers.push(Option::Some.(ms)) } else { timers };
+        let timers = if id.is_some() { timers.push(Option::Some.(duration)) } else { timers };
         scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
         id
     }
@@ -40,17 +41,17 @@ instance PlanDriver[Virtual!] {
     }
 }
 
-fn earliest(&timers: OwnedVec![Option[u64]]) -> Option[(usize, u64)] {
+fn earliest(&timers: OwnedVec![Option[Duration]]) -> Option[(usize, Duration)] {
     var next = Option::None;
     var i = 0usize;
     while i < &timers.len() {
         match &timers.at(i) {
-            Option::Some(ms) => {
+            Option::Some(duration) => {
                 let sooner = match next {
-                    Option::Some(timer) => { let (id, due) = timer; ms < due },
+                    Option::Some(timer) => { let (id, due) = timer; duration.as_nanos() < due.as_nanos() },
                     Option::None => true,
                 };
-                if sooner { next = Option::Some.((i, ms)); }
+                if sooner { next = Option::Some.((i, duration)); }
             },
             Option::None => (),
         }
@@ -59,7 +60,7 @@ fn earliest(&timers: OwnedVec![Option[u64]]) -> Option[(usize, u64)] {
     next
 }
 
-fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 {
+fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> Duration {
     let { state, timers, invalid_plan } = scope;
     let valid = match root {
         Option::Some(id) => !invalid_plan && &state.begin(id),
@@ -67,13 +68,13 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 
     };
     if !valid {
         scope = Virtual!.{ state, timers, invalid_plan: true };
-        return 0u64;
+        return Duration::from_nanos(0);
     }
-    let expired = match deadline { Option::Some(ms) => ms == 0u64, Option::None => false, };
+    let expired = match deadline { Option::Some(duration) => duration.is_zero(), Option::None => false, };
     if expired {
         &state.cancel();
         scope = Virtual!.{ state, timers, invalid_plan };
-        return 0u64;
+        return Duration::from_nanos(0);
     }
     var limit = deadline;
     if limit.is_some() { &state.started(); }
@@ -83,22 +84,22 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 
         i = i + 1usize;
     }
 
-    var elapsed = 0u64;
+    var elapsed = Duration::from_nanos(0);
     while &state.pending() {
         let timer = earliest(&timers);
         let next_deadline = match timer {
             Option::Some(entry) => {
                 let (id, due) = entry;
                 match limit {
-                    Option::Some(ms) => if ms <= due { limit } else { Option::None },
+                    Option::Some(duration) => if duration.as_nanos() <= due.as_nanos() { limit } else { Option::None },
                     Option::None => Option::None,
                 }
             },
             Option::None => limit,
         };
         match next_deadline {
-            Option::Some(ms) => {
-                elapsed = ms;
+            Option::Some(duration) => {
+                elapsed = duration;
                 &state.cancel();
                 &state.retired();
                 limit = Option::None;
@@ -127,16 +128,16 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 
     elapsed
 }
 
-fn ignore_timer(timer: Option[u64]) {}
+fn ignore_timer(timer: Option[Duration]) {}
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
-fn drive(task: Task, deadline: Option[u64]) -> Output {
+fn drive(task: Task, deadline: Option[Duration]) -> Output {
     let (result, elapsed) = drive_timed(task, deadline);
     result
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
-fn drive_timed(task: Task, deadline: Option[u64]) -> (Output, u64) {
+fn drive_timed(task: Task, deadline: Option[Duration]) -> (Output, Duration) {
     var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
     let root = Plan[Task, Virtual! -> Output]::stage(&task, &scope);
     let elapsed = advance(&scope, root, deadline);
@@ -151,12 +152,12 @@ forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Out
 fn run(task: Task) -> Output { drive(task, Option::None) }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
-fn run_with_deadline(task: Task, ms: u64) -> Output { drive(task, Option::Some.(ms)) }
+fn run_with_deadline(task: Task, duration: Duration) -> Output { drive(task, Option::Some.(duration)) }
 
-struct SequenceClock! { time: u64 }
+struct SequenceClock! { time: Duration }
 
 instance Clock[SequenceClock!] {
-    fn now(&engine: SequenceClock!) -> u64 {
+    fn now(&engine: SequenceClock!) -> Duration {
         let { time } = engine;
         engine = SequenceClock!.{ time };
         time
@@ -165,19 +166,19 @@ instance Clock[SequenceClock!] {
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 instance StageDriver[Task, SequenceClock! -> Output] {
-    fn drive(task: Task, &engine: SequenceClock!, deadline: Option[u64]) -> Output {
+    fn drive(task: Task, &engine: SequenceClock!, deadline: Option[Duration]) -> Output {
         let remaining = remaining_budget(&engine, deadline);
         let { time } = engine;
         let (result, elapsed) = drive_timed(task, remaining);
-        let time = if elapsed > u64::MAX - time { u64::MAX } else { time + elapsed };
+        let time = time.add(elapsed);
         engine = SequenceClock!.{ time };
         result
     }
 }
 
 forall Stages, Output where Chain[Stages, SequenceClock! -> Output].
-fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> SequenceOutcome[Output] {
-    let clock = SequenceClock!.{ time: 0u64 };
+fn run_sequence(plan: Sequence![Stages], budget: Option[Duration]) -> SequenceOutcome[Output] {
+    let clock = SequenceClock!.{ time: Duration::from_nanos(0) };
     let result = drive_sequence(plan, &clock, budget);
     let { time } = clock;
     result

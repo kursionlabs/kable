@@ -6,6 +6,7 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
+use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
@@ -230,6 +231,13 @@ fn registered(id: usize) -> Option[usize] {
     if id == usize::MAX { Option::None } else { Option::Some.(id) }
 }
 
+// Round up so a positive timeout never becomes an immediate deadline.
+fn timer_millis(duration: Duration) -> u64 {
+    let nanos = duration.as_nanos();
+    let millis = duration.as_millis();
+    if nanos % 1_000_000 == 0 { millis } else { millis + 1 }
+}
+
 impl Scope! {
     fn new() -> Scope! {
         let policy = HeapAllocator::alloc(sizeof[ScopeState!]()).into_raw();
@@ -330,11 +338,11 @@ impl Scope! {
         if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
     }
 
-    fn run(&self, root: Option[usize], deadline: Option[u64]) {
+    fn run(&self, root: Option[usize], deadline: Option[Duration]) {
         let { raw } = self;
         let root = root.unwrap_or(usize::MAX);
         match deadline {
-            Option::Some(ms) => unsafe kable_scope_run(raw, root, ms, 1u8),
+            Option::Some(duration) => unsafe kable_scope_run(raw, root, timer_millis(duration), 1u8),
             Option::None => unsafe kable_scope_run(raw, root, 0u64, 0u8),
         };
         self = Scope!.{ raw };
@@ -483,7 +491,9 @@ instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()
 }
 
 instance PlanDriver[Scope!] {
-    fn timer(&scope: Scope!, ms: u64) -> Option[usize] { &scope.add(0u8, ms, 0usize, 0usize) }
+    fn timer(&scope: Scope!, duration: Duration) -> Option[usize] {
+        &scope.add(0u8, timer_millis(duration), 0usize, 0usize)
+    }
 
     fn pair(&scope: Scope!, pair: Pair) -> Option[usize] {
         let { kind, first, second } = pair;
@@ -527,12 +537,12 @@ fn collect(prepared: Prepared![Task]) -> Output {
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn drive_plan(task: Task, deadline: Option[u64]) -> Output {
+fn drive_plan(task: Task, deadline: Option[Duration]) -> Output {
     run_prepared(prepare(task), deadline)
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run_prepared(prepared: Prepared![Task], deadline: Option[u64]) -> Output {
+fn run_prepared(prepared: Prepared![Task], deadline: Option[Duration]) -> Output {
     let { scope, task, root } = prepared;
     &scope.run(root, deadline);
     collect(Prepared!.{ scope, task, root })
@@ -544,27 +554,30 @@ fn run(task: Task) -> Output { drive_plan(task, Option::None) }
 
 /// Cancels unfinished children when the parent deadline expires, then joins them.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run_with_deadline(task: Task, ms: u64) -> Output {
-    drive_plan(task, Option::Some.(ms))
+fn run_with_deadline(task: Task, duration: Duration) -> Output {
+    drive_plan(task, Option::Some.(duration))
 }
 
 struct SequenceClock {}
 
 instance Clock[SequenceClock] {
-    fn now(&engine: SequenceClock) -> u64 { (unsafe uv_hrtime()) / 1_000_000u64 }
+    // Use the same millisecond ticks as libuv's timers when checking a handoff.
+    fn now(&engine: SequenceClock) -> Duration {
+        Duration::from_millis((unsafe uv_hrtime()) / 1_000_000)
+    }
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 instance StageDriver[Task, SequenceClock -> Output] {
-    fn drive(task: Task, &engine: SequenceClock, deadline: Option[u64]) -> Output {
+    fn drive(task: Task, &engine: SequenceClock, deadline: Option[Duration]) -> Output {
         let prepared = prepare(task);
         run_prepared(prepared, remaining_budget(&engine, deadline))
     }
 }
 
-/// Runs a sequence with an optional shared budget in milliseconds.
+/// Runs a sequence with an optional shared time budget.
 forall Stages, Output where Chain[Stages, SequenceClock -> Output].
-fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> SequenceOutcome[Output] {
+fn run_sequence(plan: Sequence![Stages], budget: Option[Duration]) -> SequenceOutcome[Output] {
     let clock = SequenceClock.{};
     drive_sequence(plan, &clock, budget)
 }

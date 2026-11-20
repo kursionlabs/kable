@@ -2,13 +2,14 @@ use http::{Request!, Response!};
 use server::{Action!, Server!};
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
+use std::time::Duration;
 
 fn hello(request: Request!) -> Action! {
     let delayed = &request.path_is("/delay");
     request.destroy();
 
     if delayed {
-        Response!::text(200, "done\n").after(1000)
+        Response!::text(200, "done\n").after(Duration::from_secs(1))
     } else {
         Response!::text(200, "Hello from Kable!\n").reply()
     }

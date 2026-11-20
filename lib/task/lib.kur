@@ -1,6 +1,7 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
 use std::fmt::{Format, Writable, write_i64};
 use std::option::Option;
+use std::time::Duration;
 use package::{driver, sequence};
 export driver;
 export sequence;
@@ -66,11 +67,11 @@ exposed enum StreamOutcome! {
 }
 
 forall T.
-struct Sleep! { ms: u64, value: T, id: Option[usize] }
+struct Sleep! { duration: Duration, value: T, id: Option[usize] }
 
 /// Returns the original value alongside the timer status after the scope joins.
 forall T.
-fn sleep(ms: u64, value: T) -> Sleep![T] { Sleep!.{ ms, value, id: Option::None } }
+fn sleep(duration: Duration, value: T) -> Sleep![T] { Sleep!.{ duration, value, id: Option::None } }
 
 forall First, Second.
 struct Select! { first: First, second: Second, id: Option[usize] }
@@ -112,14 +113,14 @@ fn completion(result: Resolution) -> Completion[()] {
 forall T, Driver where PlanDriver[Driver].
 instance Plan[Sleep![T], Driver -> (T, Completion[()])] {
     fn stage(&task: Sleep![T], &scope: Driver) -> Option[usize] {
-        let { ms, value, id } = task;
-        let id = PlanDriver[Driver]::timer(&scope, ms);
-        task = Sleep!.{ ms, value, id };
+        let { duration, value, id } = task;
+        let id = PlanDriver[Driver]::timer(&scope, duration);
+        task = Sleep!.{ duration, value, id };
         id
     }
 
     fn collect(task: Sleep![T], &scope: Driver) -> (T, Completion[()]) {
-        let { ms, value, id } = task;
+        let { duration, value, id } = task;
         (value, completion(PlanDriver[Driver]::result(&scope, id)))
     }
 }
@@ -194,9 +195,9 @@ impl Task {
     }
 
     /// Races this plan against a local timer and returns the outcome after both join.
-    fn within(self, ms: u64)
+    fn within(self, duration: Duration)
         -> Map![Select![Sleep![()], Task], (((), Completion[()]), Input, Completion[Side]), (Input, DeadlineStatus), ()] {
-        select(sleep(ms, ()), self).map(|result| {
+        select(sleep(duration, ()), self).map(|result| {
             let (timer, outcome, status) = result;
             let deadline = match status {
                 Completion::Ready(side) => match side {

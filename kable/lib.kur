@@ -6,6 +6,7 @@ use std::option::{Option, Result};
 use std::process::Args;
 use std::raw::Span;
 use std::slice::{ReadBytes, Slice, StaticRead};
+use std::time::Duration;
 
 fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
@@ -36,7 +37,7 @@ fn handle(request: Request!) -> Action! {
         match method {
             Method::Get | Method::Head => {
                 if delay {
-                    return Response!::text(200, "done\n").after(1000);
+                    return Response!::text(200, "done\n").after(Duration::from_secs(1));
                 }
                 let message = if home { "Kable\n" } else { "ok\n" };
                 Response!::text(200, message).reply()

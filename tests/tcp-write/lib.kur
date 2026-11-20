@@ -1,6 +1,7 @@
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
+use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
 use tcp::{Action!, Connection!, Listener!, defer};
 
@@ -29,7 +30,7 @@ fn send_after_eof(connection: Connection!) -> Action! {
         bytes.destroy();
         match status { Completion::Ready => (), _ => return connection.close() };
         let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
-        defer(connection.write(bytes).within(1500), |result| finish_write(result))
+        defer(connection.write(bytes).within(Duration::from_millis(1500)), |result| finish_write(result))
     })
 }
 

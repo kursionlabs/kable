@@ -1,17 +1,19 @@
 //! Explicit sequential adapters. Engines drive one fully scoped stage at a time.
 use package::PlanOutput;
 use std::option::Option;
+use std::time::Duration;
 
 forall Engine.
 trait Clock {
-    fn now(&engine: Engine) -> u64;
+    /// Elapsed time since the engine's monotonic clock origin.
+    fn now(&engine: Engine) -> Duration;
 }
 
 forall Task, Engine -> Output.
 trait StageDriver {
     /// Joins the stage and returns its outcome. The deadline uses the same
     /// clock as now, so preparation time also counts against the budget.
-    fn drive(task: Task, &engine: Engine, deadline: Option[u64]) -> Output;
+    fn drive(task: Task, &engine: Engine, deadline: Option[Duration]) -> Output;
 }
 
 forall Task.
@@ -81,15 +83,15 @@ impl Sequence![Stages] {
 
 forall Stages, Engine -> Output.
 trait Chain {
-    fn drive(stages: Stages, &engine: Engine, deadline: Option[u64]) -> SequenceOutcome[Output];
+    fn drive(stages: Stages, &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output];
 }
 
 forall Engine where Clock[Engine].
-fn remaining_budget(&engine: Engine, deadline: Option[u64]) -> Option[u64] {
+fn remaining_budget(&engine: Engine, deadline: Option[Duration]) -> Option[Duration] {
     match deadline {
         Option::Some(end) => {
             let now = Clock[Engine]::now(&engine);
-            Option::Some.(if now < end { end - now } else { 0u64 })
+            Option::Some.(end.sub(now))
         },
         Option::None => Option::None,
     }
@@ -97,7 +99,7 @@ fn remaining_budget(&engine: Engine, deadline: Option[u64]) -> Option[u64] {
 
 forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Engine -> Output].
 instance Chain[First![Task], Engine -> Output] {
-    fn drive(stages: First![Task], &engine: Engine, deadline: Option[u64]) -> SequenceOutcome[Output] {
+    fn drive(stages: First![Task], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output] {
         let { task } = stages;
         SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline))
     }
@@ -106,7 +108,7 @@ instance Chain[First![Task], Engine -> Output] {
 forall Previous, State, Input, Task, Env, Output, Engine
     where Copy[Env], Clock[Engine], Chain[Previous, Engine -> Input], StageDriver[Task, Engine -> Output].
 instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
-    fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[u64])
+    fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[Duration])
         -> SequenceOutcome[Output] {
         let { previous, handoff: { state, resume, cancel } } = stages;
         let input = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
@@ -121,7 +123,7 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
             },
         };
         let expired = match remaining_budget(&engine, deadline) {
-            Option::Some(ms) => ms == 0u64,
+            Option::Some(duration) => duration.is_zero(),
             Option::None => false,
         };
         if expired {
@@ -137,13 +139,10 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
 
 /// Drives the chain with one absolute deadline for all stages and handoffs.
 forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Engine -> Output].
-fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u64]) -> SequenceOutcome[Output] {
+fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[Duration]) -> SequenceOutcome[Output] {
     let { stages } = sequence;
     let deadline = match budget {
-        Option::Some(ms) => {
-            let now = Clock[Engine]::now(&engine);
-            Option::Some.(if ms > u64::MAX - now { u64::MAX } else { now + ms })
-        },
+        Option::Some(duration) => Option::Some.(Clock[Engine]::now(&engine).add(duration)),
         Option::None => Option::None,
     };
     Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline)

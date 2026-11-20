@@ -5,6 +5,7 @@ use std::option::Option;
 use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::StaticRead;
+use std::time::Duration;
 use task::{Completion, join};
 
 fn discard(result: Completion[Buffer!]) {
@@ -55,10 +56,10 @@ fn main(args: Args) -> i32 {
     };
     let deadline = match args.bytes(3usize) {
         Option::Some(value) => match parse_u64(&access, value) {
-            Option::Some(ms) => ms,
+            Option::Some(ms) => Duration::from_millis(ms),
             Option::None => return usage(),
         },
-        Option::None => 5000u64,
+        Option::None => Duration::from_secs(5),
     };
     let plan = join(read_file(&access, left, 65_536usize), read_file(&access, right, 65_536usize));
     let (left, right, status) = run_with_deadline(plan, deadline);
