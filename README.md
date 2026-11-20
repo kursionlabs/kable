@@ -200,11 +200,12 @@ alone. The runner uses `Plan[Task, Driver -> Output]` to check whether its
 driver can run the plan and return that outcome. A file plan has a known
 outcome even when the selected driver cannot execute file reads.
 
-`run(sleep(duration, value))` returns `(value, status)`. The caller regains the
-original value even if the timer is cancelled or fails to start.
+`run(sleep(duration))` returns a `Completion[()]`. To carry an owned value
+through the wait, capture it with `sleep(duration).map(|status| (value, status))`.
+The mapping runs even if the timer is cancelled or fails to start.
 `run(join(first, second))` returns `(first_output, second_output, status)`
 after both children join. The outputs are in input order and each carries
-its own result. In both tuples, `status` is a `Completion[()]`.
+its own result. The join status is a `Completion[()]`.
 
 `select` takes the first child to complete, which may report an error, then
 cancels and joins the loser. It returns `(first_output, second_output, status)`

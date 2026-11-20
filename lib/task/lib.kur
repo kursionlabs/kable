@@ -66,12 +66,10 @@ exposed enum StreamOutcome! {
     Failed(Failure),
 }
 
-forall T.
-struct Sleep! { duration: Duration, value: T, id: Option[usize] }
+struct Sleep! { duration: Duration, id: Option[usize] }
 
-/// Returns the original value alongside the timer status after the scope joins.
-forall T.
-fn sleep(duration: Duration, value: T) -> Sleep![T] { Sleep!.{ duration, value, id: Option::None } }
+/// Returns the timer status after the scope joins.
+fn sleep(duration: Duration) -> Sleep! { Sleep!.{ duration, id: Option::None } }
 
 forall First, Second, Status.
 struct PairPlan! {
@@ -111,24 +109,23 @@ fn select_result(result: Resolution) -> Completion[Side] {
 
 fn join_result(result: Resolution) -> Completion[()] { result.completion() }
 
-forall T.
-instance PlanOutput[Sleep![T] -> (T, Completion[()])] {}
+instance PlanOutput[Sleep! -> Completion[()]] {}
 
 forall First, Second, A, B, Status where PlanOutput[First -> A], PlanOutput[Second -> B].
 instance PlanOutput[PairPlan![First, Second, Status] -> (A, B, Completion[Status])] {}
 
-forall T, Driver where PlanDriver[Driver].
-instance Plan[Sleep![T], Driver -> (T, Completion[()])] {
-    fn stage(&task: Sleep![T], &scope: Driver) -> Option[usize] {
-        let { duration, value, id } = task;
+forall Driver where PlanDriver[Driver].
+instance Plan[Sleep!, Driver -> Completion[()]] {
+    fn stage(&task: Sleep!, &scope: Driver) -> Option[usize] {
+        let { duration, id } = task;
         let id = PlanDriver[Driver]::timer(&scope, duration);
-        task = Sleep!.{ duration, value, id };
+        task = Sleep!.{ duration, id };
         id
     }
 
-    fn collect(task: Sleep![T], &scope: Driver) -> (T, Completion[()]) {
-        let { duration, value, id } = task;
-        (value, PlanDriver[Driver]::result(&scope, id).completion())
+    fn collect(task: Sleep!, &scope: Driver) -> Completion[()] {
+        let { duration, id } = task;
+        PlanDriver[Driver]::result(&scope, id).completion()
     }
 }
 
@@ -175,9 +172,9 @@ impl Task {
 
     /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, duration: Duration)
-        -> Map![PairPlan![Sleep![()], Task, Side], (((), Completion[()]), Input, Completion[Side]), (Input, DeadlineStatus), ()] {
-        select(sleep(duration, ()), self).map(|result| {
-            let ((unit, timer_status), outcome, status) = result;
+        -> Map![PairPlan![Sleep!, Task, Side], (Completion[()], Input, Completion[Side]), (Input, DeadlineStatus), ()] {
+        select(sleep(duration), self).map(|result| {
+            let (timer_status, outcome, status) = result;
             let deadline = match status {
                 Completion::Ready(side) => match side {
                     Side::First => match timer_status {

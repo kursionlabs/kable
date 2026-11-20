@@ -51,8 +51,10 @@ fn startup_failed(status: Completion[()]) -> bool {
 }
 
 fn check_startup_failure() -> bool {
-    let first = sleep(Duration::from_secs(30), Buffer!::new().push_static("first"));
-    let second = sleep(Duration::from_secs(30), Buffer!::new().push_static("second"));
+    let first = Buffer!::new().push_static("first");
+    let second = Buffer!::new().push_static("second");
+    let first = sleep(Duration::from_secs(30)).map(|status| (first, status));
+    let second = sleep(Duration::from_secs(30)).map(|status| (second, status));
     let plan = join(first, join(second, FailStart.{}));
     let (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(Duration::from_secs(1)));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
@@ -99,11 +101,18 @@ fn sequence_stage_status(status: Completion[()], failed: bool) -> bool {
     match status { Completion::Ready => true, _ => false }
 }
 
+fn check_one_shot_loop(error: i32) -> bool {
+    unsafe kable_test_loop_begin(error);
+    let status = run(sleep(Duration::from_nanos(0)));
+    let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
+    loop_matched && sequence_stage_status(status, error != 0)
+}
+
 fn check_sequence_loop(error: i32) -> bool {
     let immediate = Duration::from_nanos(0);
     let bytes = Buffer!::new().push_static("owned");
-    let plan = sequence(sleep(immediate, bytes))
-        .then_owned((), |unit, prior| Option::Some.(sleep(immediate, prior)), discard_sequence);
+    let plan = sequence(sleep(immediate).map(|status| (bytes, status)))
+        .then_owned((), |unit, prior| Option::Some.(sleep(immediate).map(|status| (prior, status))), discard_sequence);
     unsafe kable_test_loop_begin(error);
     let result = run_sequence(plan, Option::None);
     let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
@@ -124,8 +133,10 @@ fn check_runner_reuse() -> bool {
     unsafe kable_test_loop_begin(0);
     let (bytes, first, second) = with_runner(|&runner| {
         let bytes = Buffer!::new().push_static("owned");
-        let (bytes, first) = &runner.run(sleep(Duration::from_secs(30), bytes), Option::Some.(immediate));
-        let (bytes, second) = &runner.run(sleep(immediate, bytes), Option::None);
+        let slow = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
+        let (bytes, first) = &runner.run(slow, Option::Some.(immediate));
+        let quick = sleep(immediate).map(|status| (bytes, status));
+        let (bytes, second) = &runner.run(quick, Option::None);
         (bytes, first, second)
     });
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
@@ -137,7 +148,8 @@ fn check_runner_reuse() -> bool {
 }
 
 fn check_sequence_expires_during_init() -> bool {
-    let owned = sleep(Duration::from_nanos(0), Buffer!::new().push_static("owned"));
+    let bytes = Buffer!::new().push_static("owned");
+    let owned = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
     let plan = sequence(join(owned, FailStart.{}));
     unsafe kable_test_loop_begin(0);
     unsafe kable_test_advance_clock_on_init(Duration::from_millis(10).as_nanos());
@@ -158,9 +170,10 @@ fn check_sequence_expires_during_init() -> bool {
 
 fn pending() -> HostedPlan! {
     let bytes = Buffer!::new().push_static("owned");
-    let plan = join(sleep(Duration::from_nanos(0), bytes), sleep(Duration::from_nanos(0), 7u8));
+    let first = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
+    let plan = join(first, sleep(Duration::from_nanos(0)));
     prepare_hosted(plan.within(Duration::from_secs(1)), |outcome, host, state| {
-        let (((bytes, first), (value, second), status), deadline) = outcome;
+        let (((bytes, first), second, status), deadline) = outcome;
         let length = &bytes.len();
         bytes.destroy();
         let count = unsafe (host as *usize);
@@ -170,7 +183,7 @@ fn pending() -> HostedPlan! {
             _ => false,
         };
         if deadline_failed && not_started(status) && not_started(first) && not_started(second)
-            && length == 5 && value == 7 && state == 0 {
+            && length == 5 && state == 0 {
             17
         } else {
             -1
@@ -180,6 +193,7 @@ fn pending() -> HostedPlan! {
 
 fn main() -> i32 {
     if !check_startup_failure() || !check_partial_start_retirement() ||
+        !check_one_shot_loop(0) || !check_one_shot_loop(-42) ||
         !check_sequence_loop(0) || !check_sequence_loop(-42) ||
         !check_runner_reuse() || !check_sequence_expires_during_init() { return 1; }
     let count = unsafe alloca[usize]();

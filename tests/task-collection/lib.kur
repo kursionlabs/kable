@@ -7,7 +7,7 @@ use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
 use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence, sequence};
 
-struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
+struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
 
 instance PlanOutput[ReverseSelect! -> bool] {}
 
@@ -15,8 +15,8 @@ forall Driver where PlanDriver[Driver].
 instance Plan[ReverseSelect!, Driver -> bool] {
     fn stage(&task: ReverseSelect!, &scope: Driver) -> Option[usize] {
         let { first, second, id: old } = task;
-        let a = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::stage(&first, &scope);
-        let b = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::stage(&second, &scope);
+        let a = Plan[Sleep!, Driver -> Completion[()]]::stage(&first, &scope);
+        let b = Plan[Sleep!, Driver -> Completion[()]]::stage(&second, &scope);
         let id = match a {
             Option::Some(a) => match b {
                 Option::Some(b) => PlanDriver[Driver]::pair(&scope, Pair.{ kind: PairKind::Select, first: a, second: b }),
@@ -34,36 +34,36 @@ instance Plan[ReverseSelect!, Driver -> bool] {
             Resolution::First => true,
             _ => false,
         };
-        let (value, status) = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::collect(second, &scope);
+        let status = Plan[Sleep!, Driver -> Completion[()]]::collect(second, &scope);
         let cancelled = match status {
-            Completion::Cancelled => value == 2u8,
+            Completion::Cancelled => true,
             _ => false,
         };
-        let (value, status) = Plan[Sleep![u8], Driver -> (u8, Completion[()])]::collect(first, &scope);
+        let status = Plan[Sleep!, Driver -> Completion[()]]::collect(first, &scope);
         let completed = match status {
-            Completion::Ready => value == 1u8,
+            Completion::Ready => true,
             _ => false,
         };
         selected && cancelled && completed
     }
 }
 
-struct UnrootedTimer! { timer: Sleep![Buffer!] }
+struct UnrootedTimer! { timer: Sleep!, bytes: Buffer! }
 
 instance PlanOutput[UnrootedTimer! -> (Buffer!, Completion[()])] {}
 
 forall Driver where PlanDriver[Driver].
 instance Plan[UnrootedTimer!, Driver -> (Buffer!, Completion[()])] {
     fn stage(&task: UnrootedTimer!, &scope: Driver) -> Option[usize] {
-        let { timer } = task;
-        Plan[Sleep![Buffer!], Driver -> (Buffer!, Completion[()])]::stage(&timer, &scope);
-        task = UnrootedTimer!.{ timer };
+        let { timer, bytes } = task;
+        Plan[Sleep!, Driver -> Completion[()]]::stage(&timer, &scope);
+        task = UnrootedTimer!.{ timer, bytes };
         Option::None
     }
 
     fn collect(task: UnrootedTimer!, &scope: Driver) -> (Buffer!, Completion[()]) {
-        let { timer } = task;
-        Plan[Sleep![Buffer!], Driver -> (Buffer!, Completion[()])]::collect(timer, &scope)
+        let { timer, bytes } = task;
+        (bytes, Plan[Sleep!, Driver -> Completion[()]]::collect(timer, &scope))
     }
 }
 
@@ -76,8 +76,9 @@ fn invalid_plan(status: Completion[T]) -> bool {
 }
 
 fn check_unrooted_timer() -> bool {
-    let first = UnrootedTimer!.{ timer: sleep(Duration::from_nanos(0), Buffer!::new().push_static("first")) };
-    let second = sleep(Duration::from_nanos(0), Buffer!::new().push_static("second"));
+    let first = UnrootedTimer!.{ timer: sleep(Duration::from_nanos(0)), bytes: Buffer!::new().push_static("first") };
+    let bytes = Buffer!::new().push_static("second");
+    let second = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
     let ((first, first_status), (second, second_status), race_status) = run(select(first, second));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
@@ -86,13 +87,11 @@ fn check_unrooted_timer() -> bool {
 }
 
 fn check_cancelled_join() -> bool {
-    let first = sleep(Duration::from_nanos(0), Buffer!::new().push_static("first"));
+    let first = Buffer!::new().push_static("first");
+    let second = Buffer!::new().push_static("second");
     let suffix = Buffer!::new().push_static(" returned");
-    let second = sleep(Duration::from_secs(30), Buffer!::new().push_static("second"))
-        .map(|outcome| {
-            let (bytes, status) = outcome;
-            (bytes.push_buffer(suffix), status)
-        });
+    let first = sleep(Duration::from_nanos(0)).map(|status| (first, status));
+    let second = sleep(Duration::from_secs(30)).map(|status| (second.push_buffer(suffix), status));
     let ((first, first_status), (second, second_status), status) =
         run_with_deadline(join(first, second), Duration::from_millis(10));
     let lengths_ok = &first.len() == 5 && &second.len() == 15;
@@ -160,7 +159,8 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
 }
 
 fn deadline_with_timer_result(timer_result: Resolution) -> DeadlineStatus {
-    let plan = sleep(Duration::from_secs(1), Buffer!::new().push_static("owned"));
+    let bytes = Buffer!::new().push_static("owned");
+    let plan = sleep(Duration::from_secs(1)).map(|status| (bytes, status));
     run_deadline_test(plan.within(Duration::from_nanos(0)), timer_result)
 }
 
@@ -226,26 +226,23 @@ fn check_reported_deadline() -> bool {
 
 fn check_local_timeout_handoff() -> bool {
     let immediate = Duration::from_nanos(0);
-    let stage = sleep(Duration::from_secs(30), 7u8).within(immediate);
+    let stage = sleep(Duration::from_secs(30)).within(immediate);
     let plan = sequence(stage).then(|outcome| {
-        let ((value, status), deadline) = outcome;
+        let (status, deadline) = outcome;
         match status { Completion::Cancelled => (), _ => trap() };
         match deadline {
-            DeadlineStatus::TimedOut => Option::Some.(sleep(immediate, value)),
+            DeadlineStatus::TimedOut => Option::Some.(sleep(immediate)),
             _ => trap(),
         }
     });
     match run_sequence(plan, Option::None) {
-        SequenceOutcome::Finished(outcome) => {
-            let (value, status) = outcome;
-            match status { Completion::Ready => value == 7, _ => false }
-        },
+        SequenceOutcome::Finished(status) => match status { Completion::Ready => true, _ => false },
         _ => false,
     }
 }
 
 fn main() -> i32 {
-    let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0), 1u8), second: sleep(Duration::from_secs(30), 2u8), id: Option::None };
+    let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0)), second: sleep(Duration::from_secs(30)), id: Option::None };
     if run(plan) && check_unrooted_timer() && check_cancelled_join() && check_deadline_timer_results() &&
         check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
 }
