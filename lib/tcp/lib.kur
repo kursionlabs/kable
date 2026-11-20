@@ -137,10 +137,7 @@ impl Connection! {
         let { raw } = self;
         let plan = prepare(Connection!.{ raw });
         let submission = unsafe plan.submit(raw, 0, kable_tcp_schedule);
-        submission.unwrap_or_else(|rejection| {
-            let (error, continued) = rejection;
-            error
-        })
+        submission.unwrap_or_else(|rejection| rejection.scheduler_error)
     }
 
     /// Returns the connection to the host for half-close and drain.
@@ -197,10 +194,7 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
     match action {
         Action!::Scoped(plan) => {
             let submission = unsafe plan.submit(connection, 0, kable_tcp_schedule);
-            submission.unwrap_or_else(|rejection| {
-                let (error, continued) = rejection;
-                continued
-            })
+            submission.unwrap_or_else(|rejection| rejection.continuation_status)
         },
         Action!::Close(connection) => {
             let { raw } = connection;

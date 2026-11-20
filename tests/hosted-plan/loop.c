@@ -1,5 +1,6 @@
-#include <stdint.h>
-#include <uv.h>
+#include <stdlib.h>
+
+#include "../../lib/async/native/scope.h"
 
 static int32_t init_error;
 static unsigned init_count;
@@ -67,6 +68,18 @@ uint8_t kable_test_loop_end(uint32_t expected_closes) {
     advance_on_allocation = 0;
     advance_on_init = 0;
     return init_count == 1 && close_count == expected_closes;
+}
+
+int32_t kable_test_schedule_immediate(uint8_t *host, uint8_t *scope, size_t root,
+    uint8_t *plan, KablePlanFinish finish, uint8_t flags) {
+    uv_loop_t loop;
+    int status = uv_loop_init(&loop);
+    if (status < 0) return status;
+
+    if (kable_scope_start(scope, root, &loop, 0, 0, NULL, NULL)) abort();
+    if (finish(plan, host, flags) != -17) abort();
+    if (uv_loop_close(&loop) != 0) abort();
+    return 0;
 }
 
 int32_t kable_test_deferred_start(uint8_t *operation, uint8_t *loop,

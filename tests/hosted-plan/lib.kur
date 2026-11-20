@@ -15,6 +15,8 @@ extern "C" fn kable_test_loop_end(expected_closes: u32) -> u8;
 extern "C" fn kable_test_advance_clock_on_init(nanoseconds: u64) -> ();
 extern "C" fn kable_test_advance_clock_on_allocation(nanoseconds: u64) -> ();
 extern "C" fn kable_test_advance_clock(nanoseconds: u64) -> ();
+extern "C" fn kable_test_schedule_immediate(host: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_test_deferred_start(operation: *u8, loop: *u8,
     ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
 extern "C" fn kable_test_deferred_stop(operation: *u8) -> u8;
@@ -271,6 +273,27 @@ unsafe fn reject_submission(host: *u8, scope: *u8, root: usize, plan: *u8,
     if flags == 6 && (unsafe *count) == 0 { -42 } else { -1 }
 }
 
+fn check_synchronous_submission() -> bool {
+    let count = unsafe alloca[usize]();
+    unsafe *count = 0;
+    let bytes = Buffer!::new().push_static("owned");
+    let first = FailStart.{ stage_nanos: 0 };
+    let plan = join(first, sleep(Duration::from_secs(30))).map(|outcome| (bytes, outcome));
+    let hosted = prepare_hosted(plan, |outcome, host, state| {
+        let (bytes, (unit, timer, joined)) = outcome;
+        let length = &bytes.len();
+        bytes.destroy();
+        let calls = unsafe (host as *usize);
+        unsafe *calls = (unsafe *calls) + 1;
+        if length == 5 && state == 6 && startup_failed(timer) && startup_failed(joined) { -17 } else { -1 }
+    });
+    let host = unsafe (count as *u8);
+    match unsafe hosted.submit(host, 6, kable_test_schedule_immediate) {
+        Result::Ok(status) => status == 0 && (unsafe *count) == 1,
+        Result::Err => false,
+    }
+}
+
 fn main() -> i32 {
     let zero = Duration::from_nanos(0);
     let tiny = Duration::from_nanos(1);
@@ -282,7 +305,7 @@ fn main() -> i32 {
         !check_one_shot_deadline(tiny, Duration::from_millis(1), false) ||
         !check_sequence_loop(0) || !check_sequence_loop(-42) || !check_runner_reuse() || !check_runner_sequence() ||
         !check_sequence_expires_during_setup(setup_time, zero) ||
-        !check_sequence_expires_during_setup(zero, setup_time) { return 1; }
+        !check_sequence_expires_during_setup(zero, setup_time) || !check_synchronous_submission() { return 1; }
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let host = unsafe (count as *u8);
@@ -291,8 +314,8 @@ fn main() -> i32 {
     match submission {
         Result::Ok => return 1,
         Result::Err(rejection) => {
-            let (error, continued) = rejection;
-            if error != -42 || continued != 17 || (unsafe *count) != 1 { return 1; }
+            if rejection.scheduler_error != -42 || rejection.continuation_status != 17 ||
+                (unsafe *count) != 1 { return 1; }
         },
     };
 

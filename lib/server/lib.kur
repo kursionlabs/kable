@@ -125,10 +125,7 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
         Action!::Deferred(plan) => {
             let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
             let submission = unsafe plan.submit(client, flags, kable_schedule);
-            submission.unwrap_or_else(|rejection| {
-                let (error, continued) = rejection;
-                error
-            })
+            submission.unwrap_or_else(|rejection| rejection.scheduler_error)
         },
         Action!::File(reply) => unsafe write_file(client, reply, head, http10),
     }

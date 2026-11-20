@@ -10,6 +10,12 @@ struct HostedPlan! {
     finish: unsafe fn(*u8, *u8, u8) -> i32,
 }
 
+/// The scheduler error and the status returned by the cleanup continuation.
+exposed struct SubmissionError {
+    scheduler_error: i32,
+    continuation_status: i32,
+}
+
 forall Task, Output, Env.
 struct Pending! { prepared: Prepared![Task, Scope!], resume: closure[Env](Output, *u8, u8) -> i32 }
 
@@ -46,17 +52,17 @@ impl HostedPlan! {
 
     /// Passes the host pointer and flags to the scheduler. On acceptance the
     /// scheduler owns the plan until it calls finish once with the same host
-    /// pointer after the scope joins.
-    /// On rejection, collects the plan with host state zero and returns
-    /// (scheduler_error, continuation_status) after cleanup.
+    /// pointer after the scope joins. It may finish before returning.
+    /// On rejection, collects the plan with host state zero and returns both
+    /// statuses after cleanup.
     unsafe fn submit(self, host: *u8, flags: u8,
         schedule: unsafe fn(*u8, *u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32, u8) -> i32)
-        -> Result[i32, (i32, i32)] {
+        -> Result[i32, SubmissionError] {
         let { scope, root, plan, finish } = self;
         let status = unsafe schedule(host, scope, root, plan, finish, flags);
         if status < 0 {
-            let continued = unsafe finish(plan, host, 0);
-            Result::Err.((status, continued))
+            let continuation_status = unsafe finish(plan, host, 0);
+            Result::Err.(SubmissionError.{ scheduler_error: status, continuation_status })
         } else {
             Result::Ok.(status)
         }
