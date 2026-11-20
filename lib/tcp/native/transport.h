@@ -41,7 +41,7 @@ int32_t kable_tcp_collect_scoped_write(uint8_t *request);
 /* Submits a plan on an idle connection or between streaming response stages.
    A successful submission owns the plan until finish runs after the scope joins. */
 int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish);
+    KablePlanFinish finish, uint8_t flags);
 /* An external operation holds the connection until it joins. While parked,
    incoming bytes are discarded, and a close or read error requests
    cancellation. Unpark returns whether the socket can reply. */

@@ -44,15 +44,16 @@ impl HostedPlan! {
         unsafe finish(plan, host, 0);
     }
 
-    /// A successful start owns the plan and must finish it exactly once after
-    /// the scope joins, with the matching host pointer.
-    /// A rejected start leaves the plan here to be collected with host state zero.
-    /// On rejection, returns (start_error, continuation_status) after cleanup.
-    forall Env.
-    unsafe fn submit(self, host: *u8,
-        start: closure[Env](*u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32) -> i32) -> Result[i32, (i32, i32)] {
+    /// Passes the host pointer and flags to the scheduler. On acceptance the
+    /// scheduler owns the plan until it calls finish once with the same host
+    /// pointer after the scope joins.
+    /// On rejection, collects the plan with host state zero and returns
+    /// (scheduler_error, continuation_status) after cleanup.
+    unsafe fn submit(self, host: *u8, flags: u8,
+        schedule: unsafe fn(*u8, *u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32, u8) -> i32)
+        -> Result[i32, (i32, i32)] {
         let { scope, root, plan, finish } = self;
-        let status = start(scope, root, plan, finish);
+        let status = unsafe schedule(host, scope, root, plan, finish, flags);
         if status < 0 {
             let continued = unsafe finish(plan, host, 0);
             Result::Err.((status, continued))

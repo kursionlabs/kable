@@ -265,6 +265,12 @@ fn pending() -> HostedPlan! {
     })
 }
 
+unsafe fn reject_submission(host: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32 {
+    let count = unsafe (host as *usize);
+    if flags == 6 && (unsafe *count) == 0 { -42 } else { -1 }
+}
+
 fn main() -> i32 {
     let zero = Duration::from_nanos(0);
     let tiny = Duration::from_nanos(1);
@@ -281,7 +287,7 @@ fn main() -> i32 {
     unsafe *count = 0;
     let host = unsafe (count as *u8);
 
-    let submission = unsafe pending().submit(host, |scope, root, plan, finish| -42);
+    let submission = unsafe pending().submit(host, 6, reject_submission);
     match submission {
         Result::Ok => return 1,
         Result::Err(rejection) => {

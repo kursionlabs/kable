@@ -25,7 +25,7 @@ extern "C" fn kable_tcp_start_scoped_write(request: *u8, loop: *u8,
 extern "C" fn kable_tcp_stop_scoped_write(request: *u8) -> u8;
 extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
+    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
 extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 
@@ -135,8 +135,8 @@ impl Connection! {
     forall Env.
     unsafe fn submit_stream(self, prepare: closure[Env](Connection!) -> HostedPlan!) -> i32 {
         let { raw } = self;
-        let task = prepare(Connection!.{ raw });
-        let submission = unsafe submit_hosted(raw, task);
+        let plan = prepare(Connection!.{ raw });
+        let submission = unsafe plan.submit(raw, 0, kable_tcp_schedule);
         submission.unwrap_or_else(|rejection| {
             let (error, continued) = rejection;
             error
@@ -196,7 +196,7 @@ unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, cod
 unsafe fn apply(connection: *u8, action: Action!) -> i32 {
     match action {
         Action!::Scoped(plan) => {
-            let submission = unsafe submit_hosted(connection, plan);
+            let submission = unsafe plan.submit(connection, 0, kable_tcp_schedule);
             submission.unwrap_or_else(|rejection| {
                 let (error, continued) = rejection;
                 continued
@@ -208,12 +208,6 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
             0i32
         },
     }
-}
-
-unsafe fn submit_hosted(connection: *u8, plan: HostedPlan!) -> Result[i32, (i32, i32)] {
-    unsafe plan.submit(connection, |scope, root, plan, finish| {
-        unsafe kable_tcp_schedule(connection, scope, root, plan, finish)
-    })
 }
 
 struct Listener! { raw: *u8, context: *u8 }

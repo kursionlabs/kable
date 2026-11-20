@@ -124,9 +124,7 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
         Action!::Reply(response) => unsafe write_wire(client, response.encode(head, http10)),
         Action!::Deferred(plan) => {
             let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
-            let submission = unsafe plan.submit(client, |scope, root, plan, finish| {
-                unsafe kable_schedule(client, scope, root, plan, finish, flags)
-            });
+            let submission = unsafe plan.submit(client, flags, kable_schedule);
             submission.unwrap_or_else(|rejection| {
                 let (error, continued) = rejection;
                 error

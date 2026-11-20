@@ -402,7 +402,8 @@ static int queue_write(Connection *connection, uint8_t *bytes, size_t len) {
 }
 
 int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish) {
+    KablePlanFinish finish, uint8_t flags) {
+    (void)flags;
     Connection *connection = (Connection *)raw;
     if (socket_closing(connection)) return UV_ECANCELED;
     switch (connection->phase) {
