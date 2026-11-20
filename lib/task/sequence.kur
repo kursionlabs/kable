@@ -17,44 +17,21 @@ trait StageDriver {
 forall Task.
 struct First! { task: Task }
 
-/// A joined stage can still have an operation-level cancellation outcome.
-/// Cancelled here means the enclosing lifetime prevents another stage.
+/// How the sequence ended. Finished carries the final stage's joined output.
+/// Stopped means a continuation returned None. Cancelled means the shared
+/// deadline prevented a handoff.
 forall Output.
-exposed enum StageResult {
-    Joined(Output),
+exposed enum SequenceOutcome {
+    Finished(Output),
     Stopped,
-    Cancelled(Option[Output]),
+    Cancelled,
 }
-
-forall Task.
-enum NextStage { Start(Task), Stop, Cancel }
 
 forall State, Input, Task, Env.
 struct Handoff! {
     state: State,
     resume: closure[Env](State, Input) -> Option[Task],
     cancel: fn(State, Option[Input]) -> (),
-}
-
-forall State, Input, Task, Env where Copy[Env].
-impl Handoff![State, Input, Task, Env] {
-    fn advance(self, result: StageResult[Input]) -> NextStage[Task] {
-        let { state, resume, cancel } = self;
-        match result {
-            StageResult::Joined(input) => match resume(state, input) {
-                Option::Some(task) => NextStage::Start.(task),
-                Option::None => NextStage::Stop,
-            },
-            StageResult::Stopped => {
-                cancel(state, Option::None);
-                NextStage::Stop
-            },
-            StageResult::Cancelled(prior) => {
-                cancel(state, prior);
-                NextStage::Cancel
-            },
-        }
-    }
 }
 
 forall Previous, State, Input, Task, Env.
@@ -104,7 +81,7 @@ impl Sequence![Stages] {
 
 forall Stages, Engine -> Output.
 trait Chain {
-    fn drive(stages: Stages, &engine: Engine, deadline: Option[u64]) -> StageResult[Output];
+    fn drive(stages: Stages, &engine: Engine, deadline: Option[u64]) -> SequenceOutcome[Output];
 }
 
 forall Engine where Clock[Engine].
@@ -120,44 +97,47 @@ fn remaining_budget(&engine: Engine, deadline: Option[u64]) -> Option[u64] {
 
 forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Engine -> Output].
 instance Chain[First![Task], Engine -> Output] {
-    fn drive(stages: First![Task], &engine: Engine, deadline: Option[u64]) -> StageResult[Output] {
+    fn drive(stages: First![Task], &engine: Engine, deadline: Option[u64]) -> SequenceOutcome[Output] {
         let { task } = stages;
-        StageResult::Joined.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline))
+        SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline))
     }
 }
 
 forall Previous, State, Input, Task, Env, Output, Engine
     where Copy[Env], Clock[Engine], Chain[Previous, Engine -> Input], StageDriver[Task, Engine -> Output].
 instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
-    fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[u64]) -> StageResult[Output] {
-        let { previous, handoff } = stages;
-        let result = Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline);
-        let result = match result {
-            StageResult::Joined(output) => {
-                let expired = match remaining_budget(&engine, deadline) {
-                    Option::Some(ms) => ms == 0u64,
-                    Option::None => false,
-                };
-                if expired { StageResult::Cancelled.(Option::Some.(output)) }
-                else { StageResult::Joined.(output) }
+    fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[u64])
+        -> SequenceOutcome[Output] {
+        let { previous, handoff: { state, resume, cancel } } = stages;
+        let input = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
+            SequenceOutcome::Finished(input) => input,
+            SequenceOutcome::Stopped => {
+                cancel(state, Option::None);
+                return SequenceOutcome::Stopped;
             },
-            StageResult::Stopped => StageResult::Stopped,
-            StageResult::Cancelled(prior) => StageResult::Cancelled.(prior),
+            SequenceOutcome::Cancelled => {
+                cancel(state, Option::None);
+                return SequenceOutcome::Cancelled;
+            },
         };
-        match handoff.advance(result) {
-            NextStage::Start(task) => StageResult::Joined.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline)),
-            NextStage::Stop => StageResult::Stopped,
-            NextStage::Cancel => StageResult::Cancelled.(Option::None),
+        let expired = match remaining_budget(&engine, deadline) {
+            Option::Some(ms) => ms == 0u64,
+            Option::None => false,
+        };
+        if expired {
+            cancel(state, Option::Some.(input));
+            return SequenceOutcome::Cancelled;
+        }
+        match resume(state, input) {
+            Option::Some(task) => SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline)),
+            Option::None => SequenceOutcome::Stopped,
         }
     }
 }
 
-/// Owns one continuation for a hosted stage. The host consumes it by
-/// resuming or cancelling after that stage has joined.
-/// Uses one absolute deadline for the whole chain. None means the final
-/// stage was never constructed. Otherwise it returns that stage's outcome.
+/// Drives the chain with one absolute deadline for all stages and handoffs.
 forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Engine -> Output].
-fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u64]) -> Option[Output] {
+fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u64]) -> SequenceOutcome[Output] {
     let { stages } = sequence;
     let deadline = match budget {
         Option::Some(ms) => {
@@ -166,9 +146,5 @@ fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[u
         },
         Option::None => Option::None,
     };
-    match Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline) {
-        StageResult::Joined(output) => Option::Some.(output),
-        StageResult::Stopped => Option::None,
-        StageResult::Cancelled(prior) => prior,
-    }
+    Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline)
 }

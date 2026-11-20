@@ -8,7 +8,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use task::{Completion, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
-use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
+use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
 
 export host;
 
@@ -559,7 +559,7 @@ instance StageDriver[Task, SequenceClock -> Output] {
 
 /// Runs a sequence with an optional shared budget in milliseconds.
 forall Stages, Output where Chain[Stages, SequenceClock -> Output].
-fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> Option[Output] {
+fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> SequenceOutcome[Output] {
     let clock = SequenceClock.{};
     drive_sequence(plan, &clock, budget)
 }

@@ -4,7 +4,7 @@ use std::io::print_buffer;
 use std::option::Option;
 use std::process::trap;
 use task::{Completion, PlanOutput, Sleep!, sleep};
-use task::sequence::sequence;
+use task::sequence::{SequenceOutcome, sequence};
 
 fn append(suffix: Buffer!, prior: (Buffer!, Completion[()])) -> Option[Sleep![Buffer!]] {
     let (bytes, status) = prior;
@@ -39,10 +39,11 @@ fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
     }
 }
 
-fn expect_stop(result: Option[(Buffer!, Completion[()])]) {
+fn check_early_end(result: SequenceOutcome[(Buffer!, Completion[()])], cancelled: bool) {
     match result {
-        Option::None => (),
-        Option::Some(outcome) => { let (bytes, status) = outcome; bytes.destroy(); trap(); },
+        SequenceOutcome::Stopped => { if cancelled { trap(); } },
+        SequenceOutcome::Cancelled => { if !cancelled { trap(); } },
+        SequenceOutcome::Finished(outcome) => { let (bytes, status) = outcome; bytes.destroy(); trap(); },
     }
 }
 
@@ -52,7 +53,7 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
             |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, budget);
     match result {
-        Option::Some(outcome) => {
+        SequenceOutcome::Finished(outcome) => {
             let (bytes, status) = outcome;
             let length = &bytes.len();
             bytes.destroy();
@@ -63,7 +64,7 @@ fn check_chain(budget: Option[u64], should_finish: bool) {
             };
             if length != 11usize || ready != should_finish { trap(); }
         },
-        Option::None => trap(),
+        SequenceOutcome::Stopped | SequenceOutcome::Cancelled => trap(),
     }
 }
 
@@ -72,13 +73,13 @@ fn main() -> i32 {
         .then(|outcome| Option::Some.(sleep(0u64, outcome)));
     let result = run_sequence(plan, Option::None);
     match result {
-        Option::Some(outcome) => {
+        SequenceOutcome::Finished(outcome) => {
             let ((value, first), second) = outcome;
             match first { Completion::Ready => (), _ => trap() };
             match second { Completion::Ready => (), _ => trap() };
             if value != 7 { trap(); }
         },
-        Option::None => trap(),
+        SequenceOutcome::Stopped | SequenceOutcome::Cancelled => trap(),
     }
 
     check_chain(Option::None, true);
@@ -89,12 +90,12 @@ fn main() -> i32 {
         .then_owned(Buffer!::new(), |state, prior| stop(state, prior), discard)
         .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, Option::None);
-    expect_stop(result);
+    check_early_end(result, false);
 
     let plan = sequence(sleep(30_000u64, Buffer!::new()))
         .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard)
         .then_owned(Buffer!::new(), |state, prior| append(state, prior), discard);
     let result = run_sequence(plan, Option::Some.(10u64));
-    expect_stop(result);
+    check_early_end(result, true);
     0i32
 }

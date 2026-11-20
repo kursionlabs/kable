@@ -268,9 +268,14 @@ consume them and any available outcome if the handoff is skipped. The
 `resume` closure’s own captures must be copyable.
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
-Its optional millisecond budget applies to the whole chain. It returns
-`None` when the last stage was never constructed and `Some(outcome)` when
-that stage produced an outcome, including cancellation during the stage.
+Its optional millisecond budget applies to the whole chain. Match the result
+using `task::sequence::SequenceOutcome`.
+
+- `Finished(output)` returns the final stage's joined output, including any
+  cancellation or failure reported by that stage.
+- `Stopped` means a continuation returned `None`.
+- `Cancelled` means the shared deadline prevented a handoff. The skipped
+  stages release their owned state through their cleanup callbacks.
 
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain

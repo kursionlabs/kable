@@ -3,7 +3,7 @@ use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use task::PlanOutput;
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!};
-use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
+use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
 
 struct Virtual! {
     state: ScopeState!,
@@ -174,7 +174,7 @@ instance StageDriver[Task, SequenceClock! -> Output] {
 }
 
 forall Stages, Output where Chain[Stages, SequenceClock! -> Output].
-fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> Option[Output] {
+fn run_sequence(plan: Sequence![Stages], budget: Option[u64]) -> SequenceOutcome[Output] {
     let clock = SequenceClock!.{ time: 0u64 };
     let result = drive_sequence(plan, &clock, budget);
     let { time } = clock;
