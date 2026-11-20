@@ -1,4 +1,4 @@
-use async::{Scope!, run};
+use async::{Scope!, run, run_sequence};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
@@ -8,6 +8,10 @@ use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, join, sleep};
 use task::driver::Plan;
+use task::sequence::{SequenceOutcome, sequence};
+
+extern "C" fn kable_test_loop_begin(error: i32) -> ();
+extern "C" fn kable_test_loop_end(expected_closes: u32) -> u8;
 
 fn never_started(failure: Failure) -> bool {
     match failure { Failure::NotStarted => true, _ => false }
@@ -60,6 +64,38 @@ fn check_startup_failure() -> bool {
         && startup_failed(inner) && startup_failed(outer) && deadline_failed
 }
 
+fn discard_sequence(unit: (), prior: Option[(Buffer!, Completion[()])]) {
+    match prior {
+        Option::Some(outcome) => { let (bytes, status) = outcome; bytes.destroy(); },
+        Option::None => (),
+    }
+}
+
+fn sequence_stage_status(status: Completion[()], failed: bool) -> bool {
+    if failed { return startup_failed(status); }
+    match status { Completion::Ready => true, _ => false }
+}
+
+fn check_sequence_loop(error: i32) -> bool {
+    let immediate = Duration::from_nanos(0);
+    let bytes = Buffer!::new().push_static("owned");
+    let plan = sequence(sleep(immediate, bytes))
+        .then_owned((), |unit, prior| Option::Some.(sleep(immediate, prior)), discard_sequence);
+    unsafe kable_test_loop_begin(error);
+    let result = run_sequence(plan, Option::None);
+    let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
+    match result {
+        SequenceOutcome::Finished(outcome) => {
+            let ((bytes, first), second) = outcome;
+            let length = &bytes.len();
+            bytes.destroy();
+            loop_matched && length == 5 && sequence_stage_status(first, error != 0)
+                && sequence_stage_status(second, error != 0)
+        },
+        _ => false,
+    }
+}
+
 fn pending() -> HostedPlan! {
     let bytes = Buffer!::new().push_static("owned");
     let plan = join(sleep(Duration::from_nanos(0), bytes), sleep(Duration::from_nanos(0), 7u8));
@@ -83,7 +119,7 @@ fn pending() -> HostedPlan! {
 }
 
 fn main() -> i32 {
-    if !check_startup_failure() { return 1; }
+    if !check_startup_failure() || !check_sequence_loop(0) || !check_sequence_loop(-42) { return 1; }
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let host = unsafe (count as *u8);

@@ -27,6 +27,9 @@ extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> u8) -> usize;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, timed: u8) -> u8;
+extern "C" fn kable_sequence_loop_new() -> *u8;
+extern "C" fn kable_sequence_loop_run(loop: *u8, scope: *u8, root: usize, ms: u64, timed: u8) -> u8;
+extern "C" fn kable_sequence_loop_free(loop: *u8) -> ();
 extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
 extern "C" fn kable_scope_write_result(scope: *u8, id: usize, written: *usize) -> i32;
@@ -172,6 +175,8 @@ instance Stream[FileChunks! -> NextFileChunk!] {
 // The scope is lent only while staging operations or reading their outcomes.
 // Owned payloads stay in Kursal throughout the native event loop.
 struct Scope! { raw: *u8 }
+
+enum RunLoop { Standalone, Sequence(*u8) }
 
 // Scalar encoding used by the native scope adapter.
 const CANCELLED: i32 = 0i32;
@@ -336,12 +341,16 @@ impl Scope! {
         if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
     }
 
-    fn run(&self, root: Option[usize], deadline: Option[Duration]) -> bool {
+    fn run(&self, root: Option[usize], deadline: Option[Duration], loop: RunLoop) -> bool {
         let { raw } = self;
         let root = root.unwrap_or(usize::MAX);
-        let expired = match deadline {
-            Option::Some(duration) => unsafe kable_scope_run(raw, root, timer_millis(duration), 1u8),
-            Option::None => unsafe kable_scope_run(raw, root, 0u64, 0u8),
+        let (ms, timed) = match deadline {
+            Option::Some(duration) => (timer_millis(duration), 1u8),
+            Option::None => (0u64, 0u8),
+        };
+        let expired = match loop {
+            RunLoop::Standalone => unsafe kable_scope_run(raw, root, ms, timed),
+            RunLoop::Sequence(loop) => unsafe kable_sequence_loop_run(loop, raw, root, ms, timed),
         };
         self = Scope!.{ raw };
         expired != 0
@@ -530,13 +539,13 @@ fn collect(prepared: Prepared![Task, Scope!]) -> Output {
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn drive_plan(task: Task, deadline: Option[Duration]) -> Output {
-    let { output, deadline_expired } = run_prepared(prepare(task, Scope!::new()), deadline);
+    let { output, deadline_expired } = run_prepared(prepare(task, Scope!::new()), deadline, RunLoop::Standalone);
     output
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run_prepared(prepared: Prepared![Task, Scope!], deadline: Option[Duration]) -> StageResult[Output] {
-    let deadline_expired = &prepared.with_scope(|&scope, root| &scope.run(root, deadline));
+fn run_prepared(prepared: Prepared![Task, Scope!], deadline: Option[Duration], loop: RunLoop) -> StageResult[Output] {
+    let deadline_expired = &prepared.with_scope(|&scope, root| &scope.run(root, deadline, loop));
     StageResult.{ output: collect(prepared), deadline_expired }
 }
 
@@ -550,26 +559,32 @@ fn run_with_deadline(task: Task, duration: Duration) -> Output {
     drive_plan(task, Option::Some.(duration))
 }
 
-struct SequenceClock {}
+struct SequenceRunner! { loop: *u8 }
 
-instance Clock[SequenceClock] {
+instance Clock[SequenceRunner!] {
     // Use the same millisecond ticks as libuv's timers when checking a handoff.
-    fn now(&engine: SequenceClock) -> Duration {
+    fn now(&engine: SequenceRunner!) -> Duration {
         Duration::from_millis((unsafe uv_hrtime()) / 1_000_000)
     }
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-instance StageDriver[Task, SequenceClock -> Output] {
-    fn drive(task: Task, &engine: SequenceClock, deadline: Option[Duration]) -> StageResult[Output] {
+instance StageDriver[Task, SequenceRunner! -> Output] {
+    fn drive(task: Task, &engine: SequenceRunner!, deadline: Option[Duration]) -> StageResult[Output] {
         let prepared = prepare(task, Scope!::new());
-        run_prepared(prepared, remaining_budget(&engine, deadline))
+        let remaining = remaining_budget(&engine, deadline);
+        let { loop } = engine;
+        engine = SequenceRunner!.{ loop };
+        run_prepared(prepared, remaining, RunLoop::Sequence.(loop))
     }
 }
 
 /// Runs a sequence with an optional shared time budget.
-forall Stages, Output where Chain[Stages, SequenceClock -> Output].
+forall Stages, Output where Chain[Stages, SequenceRunner! -> Output].
 fn run_sequence(plan: Sequence![Stages], budget: Option[Duration]) -> SequenceOutcome[Output] {
-    let clock = SequenceClock.{};
-    drive_sequence(plan, &clock, budget)
+    let engine = SequenceRunner!.{ loop: unsafe kable_sequence_loop_new() };
+    let result = drive_sequence(plan, &engine, budget);
+    let { loop } = engine;
+    unsafe kable_sequence_loop_free(loop);
+    result
 }

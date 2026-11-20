@@ -3,6 +3,8 @@ name="hosted_plan_test"
 source_root="."
 kind="executable"
 entry="main"
+c_sources=["loop.c"]
+link_flags=["-Wl,--wrap=uv_loop_init,--wrap=uv_loop_close"]
 
 [dependencies.std]
 path="../../../kursal/lib/std"
