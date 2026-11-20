@@ -9,6 +9,8 @@ enum { TIMER, PAIR, FILE_IO, OPERATION };
 enum { DEADLINE_NONE, DEADLINE_AFTER, DEADLINE_AT };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY };
+/* STARTED and RETIRED use a leaf ID or this separate parent timer ID. */
+static const size_t PARENT_TIMER_ID = SIZE_MAX;
 /* Matches the status decoding in async/lib.kur. Negative codes are backend startup errors. */
 enum { SCOPE_COMPLETED = 1, SCOPE_NOT_STARTED = 4, SCOPE_INVALID_PLAN, SCOPE_INVALID_RESULT };
 
@@ -164,7 +166,7 @@ static void cancel_operations(Scope *scope) {
         else if (node->kind == FILE_IO) kable_file_cancel(node->file);
         else if (node->kind == OPERATION && node->active) {
             node->active = 0;
-            if (!node->stop(node->operation)) report(scope, RETIRED, 0);
+            if (!node->stop(node->operation)) report(scope, RETIRED, id);
         }
     }
 }
@@ -176,15 +178,15 @@ static void deadline_ready(void *context) {
     cancel_operations(scope);
 }
 
-static void joined(Scope *scope) {
-    if (report(scope, RETIRED, 0) && scope->done) scope->done(scope->context);
+static void retire_resource(Scope *scope, size_t id) {
+    if (report(scope, RETIRED, id) && scope->done) scope->done(scope->context);
 }
 
 static void deadline_closed(void *context, int fired) {
     (void)fired;
     Scope *scope = context;
     scope->deadline = NULL;
-    joined(scope);
+    retire_resource(scope, PARENT_TIMER_ID);
 }
 
 static void task_ready(void *context) {
@@ -198,13 +200,13 @@ static void clear_timer(void *context, int fired) {
     (void)fired;
     Node *node = context;
     node->timer = NULL;
-    joined(node->scope);
+    retire_resource(node->scope, node->id);
 }
 
 static void leaf_done(void *context) {
     Node *node = context;
     task_ready(node);
-    joined(node->scope);
+    retire_resource(node->scope, node->id);
 }
 
 static void operation_done(uint8_t *context) {
@@ -257,22 +259,22 @@ static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
         if (deadline == DEADLINE_AFTER) uv_update_time(loop);
         scope->start_error = kable_timer_start(loop, ms, deadline_ready, deadline_closed,
             scope, &scope->deadline);
-        if (scope->start_error == 0) report(scope, STARTED, 0);
+        if (scope->start_error == 0) report(scope, STARTED, PARENT_TIMER_ID);
     }
     for (size_t i = 0; i < scope->count && scope->start_error == 0; i++) {
         Node *node = &scope->nodes[i];
         if (node->kind == TIMER) {
             scope->start_error = kable_timer_start(loop, node->ms, task_ready,
                 clear_timer, node, &node->timer);
-            if (scope->start_error == 0) report(scope, STARTED, 0);
+            if (scope->start_error == 0) report(scope, STARTED, node->id);
         } else if (node->kind == FILE_IO) {
             scope->start_error = kable_file_start(node->file, loop, leaf_done, node);
-            if (scope->start_error == 0) report(scope, STARTED, 0);
+            if (scope->start_error == 0) report(scope, STARTED, node->id);
         } else if (node->kind == OPERATION) {
             scope->start_error = node->start(node->operation, (uint8_t *)loop, operation_done, (uint8_t *)node);
             if (scope->start_error == 0) {
                 node->active = 1;
-                report(scope, STARTED, 0);
+                report(scope, STARTED, node->id);
             }
         }
     }

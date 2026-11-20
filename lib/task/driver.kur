@@ -2,12 +2,13 @@
 use std::option::Option;
 use std::time::Duration;
 use package::{Completion, Failure, PlanOutput};
-use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
+use package::scope::{Branch, Pair, PairKind, Resolution, Resource, ScopeState!};
 
 export Branch;
 export Pair;
 export PairKind;
 export Resolution;
+export Resource;
 export ScopeState!;
 
 impl Resolution {

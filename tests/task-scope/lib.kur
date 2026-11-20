@@ -1,5 +1,5 @@
 use std::option::Option;
-use task::driver::{Branch, Pair, PairKind, Resolution, ScopeState!};
+use task::driver::{Branch, Pair, PairKind, Resolution, Resource, ScopeState!};
 
 fn main() -> i32 {
     let scope = ScopeState!::new();
@@ -10,16 +10,23 @@ fn main() -> i32 {
     let already_parented = Pair.{ kind: PairKind::Join, first, second: root };
     let refused_reparent = (&scope.add(Branch::Pair.(already_parented))).is_none();
     let valid = &scope.begin(root);
-    &scope.started();
-    &scope.started();
+    &scope.started(Resource::Leaf.(first));
+    &scope.started(Resource::Leaf.(first));
+    &scope.started(Resource::Leaf.(second));
+    &scope.started(Resource::ParentTimer);
     let won = &scope.complete(first);
     let cancelled = &scope.take_cancel();
-    let first_retired = &scope.retired();
+    let first_retired = &scope.retired(Resource::Leaf.(first));
+    let duplicate_leaf = &scope.retired(Resource::Leaf.(first));
+    let timer_retired = &scope.retired(Resource::ParentTimer);
+    let duplicate_timer = &scope.retired(Resource::ParentTimer);
+    let pair_retired = &scope.retired(Resource::Leaf.(root));
     let still_pending = &scope.pending();
     let early = &scope.result(root);
     // A late event from the cancelled child cannot replace the winner.
     let late = &scope.complete(second);
-    let joined = &scope.retired();
+    &scope.started(Resource::Leaf.(first));
+    let joined = &scope.retired(Resource::Leaf.(second));
     let result = &scope.result(root);
     let winner = &scope.result(first);
     let loser = &scope.result(second);
@@ -29,7 +36,8 @@ fn main() -> i32 {
     let first_won = match result.unwrap() { Resolution::First => true, _ => false, };
     let winner_completed = match winner.unwrap() { Resolution::Completed => true, _ => false, };
     let loser_cancelled = match loser.unwrap() { Resolution::Cancelled => true, _ => false, };
-    if rejected && refused_reparent && valid && won && cancelled.unwrap() == second && !first_retired && still_pending &&
+    if rejected && refused_reparent && valid && won && cancelled.unwrap() == second && !first_retired &&
+        !duplicate_leaf && !timer_retired && !duplicate_timer && !pair_retired && still_pending &&
         hidden_until_joined && !late && joined && first_won && winner_completed && loser_cancelled &&
         next_stop.is_none() { 0i32 } else { 1i32 }
 }

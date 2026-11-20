@@ -14,6 +14,9 @@ exposed struct Pair {
 
 exposed enum Branch { Leaf, Pair(Pair) }
 
+/// A resource whose lifetime can keep a scope pending.
+exposed enum Resource { Leaf(usize), ParentTimer }
+
 /// The outcome of a node after its scope joins.
 exposed enum Resolution {
     Completed,
@@ -23,10 +26,13 @@ exposed enum Resolution {
     Failed(Failure),
 }
 
+enum Lifetime { Unstarted, Active, Retired }
+
 struct Node {
     branch: Branch,
     parent: Option[usize],
     result: Option[Resolution],
+    lifetime: Lifetime,
 }
 
 impl Node {
@@ -48,18 +54,19 @@ struct ScopeState! {
     stops: OwnedVec![usize],
     root: Option[usize],
     pending: usize,
+    parent_timer: Lifetime,
 }
 
 impl ScopeState! {
     fn new() -> ScopeState! {
         ScopeState!.{
             nodes: OwnedVec!::new(), stops: OwnedVec!::new(),
-            root: Option::None, pending: 0usize,
+            root: Option::None, pending: 0usize, parent_timer: Lifetime::Unstarted,
         }
     }
 
     fn add(&self, branch: Branch) -> Option[usize] {
-        let { nodes, stops, root, pending } = self;
+        let { nodes, root, ..rest } = self;
         var nodes = nodes;
         let index = &nodes.len();
         let valid = if root.is_none() {
@@ -80,14 +87,16 @@ impl ScopeState! {
             }
         } else { false };
         if valid {
-            nodes = nodes.push(Node.{ branch, parent: Option::None, result: Option::None });
+            nodes = nodes.push(Node.{
+                branch, parent: Option::None, result: Option::None, lifetime: Lifetime::Unstarted,
+            });
         }
-        self = ScopeState!.{ nodes, stops, root, pending };
+        self = ScopeState!.{ nodes, root, ..rest };
         if valid { Option::Some.(index) } else { Option::None }
     }
 
     fn begin(&self, root: usize) -> bool {
-        let { nodes, stops, root: prior, pending } = self;
+        let { nodes, root: prior, ..rest } = self;
         let count = &nodes.len();
         var valid = prior.is_none() && root < count;
         var i = 0usize;
@@ -97,31 +106,43 @@ impl ScopeState! {
             i = i + 1usize;
         }
         let root = if valid { Option::Some.(root) } else { prior };
-        self = ScopeState!.{ nodes, stops, root, pending };
+        self = ScopeState!.{ nodes, root, ..rest };
         valid
     }
 
-    fn started(&self) {
-        let { nodes, stops, root, pending } = self;
-        self = ScopeState!.{ nodes, stops, root, pending: pending + 1usize };
+    /// Tracks a resource after the engine starts it successfully.
+    fn started(&self, resource: Resource) {
+        &self.update_resource(resource, true);
     }
 
-    fn retired(&self) -> bool {
-        let { nodes, stops, root, pending } = self;
-        let joined = pending == 1usize;
-        let pending = if pending == 0usize { 0usize } else { pending - 1usize };
-        self = ScopeState!.{ nodes, stops, root, pending };
-        joined
+    /// Returns true when this report retires the last active resource.
+    fn retired(&self, resource: Resource) -> bool {
+        &self.update_resource(resource, false)
+    }
+
+    fn update_resource(&self, resource: Resource, starting: bool) -> bool {
+        let { nodes, root, pending, parent_timer, ..rest } = self;
+        let changed = if root.is_some() {
+            match resource {
+                Resource::Leaf(id) => update_leaf(&nodes, id, starting),
+                Resource::ParentTimer => update_lifetime(&parent_timer, starting),
+            }
+        } else { false };
+        let pending = if changed {
+            if starting { pending + 1usize } else { pending - 1usize }
+        } else { pending };
+        self = ScopeState!.{ nodes, root, pending, parent_timer, ..rest };
+        changed && pending == 0usize
     }
 
     fn pending(&self) -> bool {
-        let { nodes, stops, root, pending } = self;
-        self = ScopeState!.{ nodes, stops, root, pending };
+        let { pending, ..rest } = self;
+        self = ScopeState!.{ pending, ..rest };
         pending != 0usize
     }
 
     fn complete(&self, id: usize) -> bool {
-        let { nodes, stops, root, pending } = self;
+        let { nodes, stops, root, ..rest } = self;
         var resolved = false;
         if root.is_some() && id < &nodes.len() {
             let leaf = &nodes.at(id);
@@ -130,39 +151,69 @@ impl ScopeState! {
                 _ => (),
             }
         }
-        self = ScopeState!.{ nodes, stops, root, pending };
+        self = ScopeState!.{ nodes, stops, root, ..rest };
         resolved
     }
 
     fn cancel(&self) {
-        let { nodes, stops, root, pending } = self;
+        let { nodes, stops, root, ..rest } = self;
         match root {
             Option::Some(root) => cancel_branch(&nodes, &stops, root),
             Option::None => (),
         };
-        self = ScopeState!.{ nodes, stops, root, pending };
+        self = ScopeState!.{ nodes, stops, root, ..rest };
     }
 
     fn take_cancel(&self) -> Option[usize] {
-        let { nodes, stops, root, pending } = self;
+        let { stops, ..rest } = self;
         let id = &stops.pop();
-        self = ScopeState!.{ nodes, stops, root, pending };
+        self = ScopeState!.{ stops, ..rest };
         id
     }
 
     fn result(&self, id: usize) -> Option[Resolution] {
-        let { nodes, stops, root, pending } = self;
+        let { nodes, root, pending, ..rest } = self;
         let result = if root.is_some() && pending == 0usize && id < &nodes.len() {
             (&nodes.at(id)).result
         } else { Option::None };
-        self = ScopeState!.{ nodes, stops, root, pending };
+        self = ScopeState!.{ nodes, root, pending, ..rest };
         result
     }
 
     fn destroy(self) {
-        let { nodes, stops, root, pending } = self;
+        let { nodes, stops, root, pending, parent_timer } = self;
         nodes.destroy(ignore_node);
         stops.destroy(ignore_id);
+    }
+}
+
+fn update_leaf(&nodes: OwnedVec![Node], id: usize, starting: bool) -> bool {
+    if id >= &nodes.len() { return false; }
+    let node = &nodes.at(id);
+    match node.branch {
+        Branch::Leaf => {
+            let { lifetime, ..rest } = node;
+            let changed = update_lifetime(&lifetime, starting);
+            if changed { &nodes.set(id, Node.{ lifetime, ..rest }); }
+            changed
+        },
+        Branch::Pair => false,
+    }
+}
+
+fn update_lifetime(&lifetime: Lifetime, starting: bool) -> bool {
+    match lifetime {
+        Lifetime::Unstarted => {
+            if !starting { return false; }
+            lifetime = Lifetime::Active;
+            true
+        },
+        Lifetime::Active => {
+            if starting { return false; }
+            lifetime = Lifetime::Retired;
+            true
+        },
+        Lifetime::Retired => false,
     }
 }
 

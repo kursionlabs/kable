@@ -4,7 +4,7 @@ use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select, sleep};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
 use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence, sequence};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
@@ -137,12 +137,13 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
     let root = Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)]::stage(&plan, &driver);
     let { state, timer, timer_result } = driver;
     if !&state.begin(root.unwrap()) { trap(); }
-    &state.started();
-    &state.started();
-    if !&state.complete(timer.unwrap()) { trap(); }
-    if (&state.take_cancel()).is_none() { trap(); }
-    &state.retired();
-    if !&state.retired() { trap(); }
+    &state.started(Resource::Leaf.(0));
+    &state.started(Resource::Leaf.(1));
+    let winner = timer.unwrap();
+    if !&state.complete(winner) { trap(); }
+    let loser = (&state.take_cancel()).unwrap();
+    &state.retired(Resource::Leaf.(winner));
+    if !&state.retired(Resource::Leaf.(loser)) { trap(); }
 
     let driver = DeadlineDriver!.{ state, timer, timer_result };
     let ((bytes, status), deadline) =

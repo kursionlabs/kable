@@ -261,11 +261,12 @@ The virtual clock is a reference driver for timer plans. It uses the same
    children before the pair. For each engine-specific operation, implement
    `PlanOutput` for its outcome type and `Plan` to stage and collect it.
 2. Call `prepare(task, scope)` and use `&prepared.with_scope(...)` to drive the
-   registered root. Validate it with `begin`. Report `started` for each
-   scheduled resource, `complete(id)` when an operation finishes, and
-   `retired` when its resource is safe to release. Drain `take_cancel` to stop
-   the leaves the policy cancelled. A cancelled operation can still be in
-   flight.
+   registered root. Validate it with `begin`. Report `started(resource)` for
+   each scheduled leaf or parent timer and `complete(id)` when an operation
+   finishes. Report `retired(resource)` after that resource is safe to
+   release. Drain `take_cancel` to stop leaves the policy cancelled. A
+   cancelled operation can still be in flight. Each resource transitions
+   from unstarted to active to retired once.
 3. Call `prepared.collect()` after the scope joins, or to reclaim a plan
    whose staging or submission failed. Collection returns the plan's owned
    outcome and the scope for teardown.

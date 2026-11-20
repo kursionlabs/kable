@@ -3,7 +3,7 @@ use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::time::Duration;
 use task::{Failure, PlanOutput};
-use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!, prepare};
+use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence, remaining_budget};
 
 struct Virtual! {
@@ -77,10 +77,10 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
         return (Duration::from_nanos(0), true);
     }
     var limit = deadline;
-    if limit.is_some() { &state.started(); }
+    if limit.is_some() { &state.started(Resource::ParentTimer); }
     var i = 0usize;
     while i < &timers.len() {
-        if (&timers.at(i)).is_some() { &state.started(); }
+        if (&timers.at(i)).is_some() { &state.started(Resource::Leaf.(i)); }
         i = i + 1usize;
     }
 
@@ -103,7 +103,7 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
                 elapsed = duration;
                 deadline_expired = true;
                 &state.cancel();
-                &state.retired();
+                &state.retired(Resource::ParentTimer);
                 limit = Option::None;
             },
             Option::None => {
@@ -111,9 +111,9 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
                 elapsed = due;
                 &timers.set(id, Option::None);
                 let finished = &state.complete(id);
-                &state.retired();
+                &state.retired(Resource::Leaf.(id));
                 if finished && limit.is_some() {
-                    &state.retired();
+                    &state.retired(Resource::ParentTimer);
                     limit = Option::None;
                 }
             },
@@ -121,8 +121,9 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
 
         var cancelled = &state.take_cancel();
         while cancelled.is_some() {
-            &timers.set(cancelled.unwrap(), Option::None);
-            &state.retired();
+            let id = cancelled.unwrap();
+            &timers.set(id, Option::None);
+            &state.retired(Resource::Leaf.(id));
             cancelled = &state.take_cancel();
         }
     }
