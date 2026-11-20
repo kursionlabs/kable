@@ -111,23 +111,15 @@ enum Action! {
     Close(Connection!),
 }
 
-/// Runs a plan on the connection's listener and resumes after it joins.
-forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn defer(task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
-    let hosted = prepare_hosted(task, |outcome, connection, flags| unsafe apply(connection, resume(outcome)));
-    Action!::Scoped.(hosted)
-}
-
 forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
     /// Runs a plan on the connection's listener and resumes after it joins.
     forall Env where Plan[Task, Scope! -> Output].
     fn defer_tcp(self, resume: closure[Env](Output) -> Action!) -> Action! {
-        defer(self, resume)
+        let hosted = prepare_hosted(self, |outcome, connection, flags| unsafe apply(connection, resume(outcome)));
+        Action!::Scoped.(hosted)
     }
 }
-
-fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
 
 impl Connection! {
     /// Begins a response on the host's idle connection. The host must keep
@@ -165,7 +157,7 @@ impl Connection! {
     }
 
     /// Closes the connection when the listener handles the returned action.
-    fn close(self) -> Action! { close(self) }
+    fn close(self) -> Action! { Action!::Close.(self) }
 }
 
 instance Stream[Connection! -> OperationPlan![Connection!, (Connection!, Completion[Option[Buffer!]])]] {

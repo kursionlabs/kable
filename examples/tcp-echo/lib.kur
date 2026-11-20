@@ -23,20 +23,20 @@ fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineSt
         },
         DeadlineStatus::Failed => false,
     };
-    let chunk = match outcome {
-        Completion::Ready(chunk) => chunk,
-        Completion::Cancelled | Completion::Failed => return connection.close(),
-    };
-    match chunk {
-        Option::Some(bytes) => {
-            if active {
-                return connection.write(bytes).within(Duration::from_secs(1)).defer_tcp(|result| write_finished(result));
-            }
-            bytes.destroy();
-            connection.close()
+    match outcome {
+        Completion::Ready(chunk) => match chunk {
+            Option::Some(bytes) => {
+                if active {
+                    return connection.write(bytes).within(Duration::from_secs(1))
+                        .defer_tcp(|result| write_finished(result));
+                }
+                bytes.destroy();
+            },
+            Option::None => (),
         },
-        Option::None => connection.close(),
-    }
+        Completion::Cancelled | Completion::Failed => (),
+    };
+    connection.close()
 }
 
 fn write_finished(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {

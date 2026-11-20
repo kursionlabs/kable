@@ -6,7 +6,7 @@ use std::option::{Option, Result};
 use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream};
-use tcp::{Action!, Connection!, Listener!, defer};
+use tcp::{Action!, Connection!, Listener!};
 
 fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
     let ((connection, bytes, completion), deadline) = result;
@@ -50,17 +50,17 @@ fn discard_write(connection: Connection!) -> Connection! {
 
 fn send_after_eof(connection: Connection!) -> Action! {
     let connection = discard_write(connection);
-    defer(connection.write(Buffer!::new_with_cap(0)), |outcome| {
+    connection.write(Buffer!::new_with_cap(0)).defer_tcp(|outcome| {
         let (connection, bytes, status) = outcome;
         bytes.destroy();
         match status { Completion::Ready => (), _ => return connection.close() };
         let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
-        defer(connection.write(bytes).within(Duration::from_millis(1500)), |result| finish_write(result))
+        connection.write(bytes).within(Duration::from_millis(1500)).defer_tcp(|result| finish_write(result))
     })
 }
 
 fn serve(connection: Connection!) -> Action! {
-    defer(connection.next(), |result| {
+    connection.next().defer_tcp(|result| {
         let (connection, outcome) = result;
         match outcome {
             Completion::Ready(chunk) => match chunk {

@@ -65,29 +65,29 @@ fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Act
 fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
     reader: LineReader!, retried: bool) -> Action! {
     let ((connection, outcome), deadline) = result;
-    let chunk = match outcome {
-        Completion::Ready(chunk) => chunk,
-        Completion::Cancelled => return match deadline {
-            DeadlineStatus::TimedOut => {
-                if retried { return close_session(connection, reader); }
-                eprint_buffer(f"Retrying idle read.\n");
-                read_line(connection, reader, true)
+    match outcome {
+        Completion::Ready(chunk) => match chunk {
+            Option::Some(bytes) => match deadline {
+                DeadlineStatus::Completed => return match reader.resume(bytes) {
+                    Step::Suspended(next) => read_line(connection, next, false),
+                    Step::Done(lines) => write_lines(connection, lines),
+                },
+                _ => bytes.destroy(),
             },
-            _ => close_session(connection, reader),
+            Option::None => (),
         },
-        Completion::Failed => return close_session(connection, reader),
-    };
-    let bytes = match chunk {
-        Option::Some(bytes) => bytes,
-        Option::None => return close_session(connection, reader),
-    };
-    match deadline {
-        DeadlineStatus::Completed => match reader.resume(bytes) {
-            Step::Suspended(next) => read_line(connection, next, false),
-            Step::Done(lines) => write_lines(connection, lines),
+        Completion::Cancelled => match deadline {
+            DeadlineStatus::TimedOut => {
+                if !retried {
+                    eprint_buffer(f"Retrying idle read.\n");
+                    return read_line(connection, reader, true);
+                }
+            },
+            _ => (),
         },
-        _ => { bytes.destroy(); close_session(connection, reader) },
-    }
+        Completion::Failed => (),
+    };
+    close_session(connection, reader)
 }
 
 fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
