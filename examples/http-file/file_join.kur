@@ -1,7 +1,7 @@
 //! Reads two independent files under one local deadline.
 use async::read_file;
 use http::Response!;
-use package::{FILE_LIMIT, append_file, discard_file, timed_reply};
+use package::{FILE_LIMIT, append_file, discard_file};
 use server::Action!;
 use std::buffer::Buffer!;
 use std::slice::StaticRead;
@@ -13,9 +13,10 @@ fn serve() -> Action! {
     let first = read_file(&access, "example.txt", FILE_LIMIT);
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
-    join(first, second).within(Duration::from_secs(1)).defer(|outcome, state| {
-        timed_reply(outcome, state, joined_response, discard_join)
-    })
+    join(first, second)
+        .respond_with(joined_response, discard_join)
+        .within(Duration::from_secs(1))
+        .reply()
 }
 
 fn joined_response(files: (Completion[Buffer!], Completion[Buffer!], Completion[()])) -> Response! {

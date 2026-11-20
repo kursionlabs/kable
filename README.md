@@ -139,26 +139,30 @@ Request `/file-with-timeout` on the printed address to read the bundled
 `example.txt` with a 64 KiB limit and a one-second deadline.
 
 ```kursal
+use async::read_file;
+use std::slice::StaticRead;
 use std::time::Duration;
+use task::PlanOutput;
 
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
+    .respond_with(file_response, discard_file)
     .within(Duration::from_secs(1))
-    .defer(|outcome, state| timed_reply(outcome, state, file_response, discard_file))
+    .reply()
 ```
 
-`.within(...)` adds the local deadline. If the timer wins, the continuation
-gets `DeadlineStatus::TimedOut` after the worker joins, releases any buffer,
-and replies 504 while the request is active. If the request ends first, the
-continuation releases the outcome and closes the connection. `/file` uses
-the request deadline alone, and `/health` remains available while a read is
-pending.
+`respond_with` takes two functions that can consume the joined outcome.
+`file_response` builds a response for an active request. `discard_file`
+releases the outcome when the request ends or the local deadline wins.
+`.reply()` builds the action. If the local timer wins while the request is
+active, the server replies 504 after the worker joins. `/file` uses the
+request deadline alone, and `/health` remains available during a pending read.
 
 ### Two independent file reads
 
 `/file-join` starts reads of `example.txt` and `footer.txt` together using
-`join(first, second).within(Duration::from_secs(1))` and the same `.defer(...)`
-handoff. Both reads have a 64 KiB limit and share the one-second deadline.
+`join(first, second)` and uses the same reply builder. Both reads have a
+64 KiB limit and share the one-second deadline.
 The response appends the footer after the first file’s bytes regardless of
 which read finishes first.
 A timeout returns 504 after both workers retire, and the handler destroys

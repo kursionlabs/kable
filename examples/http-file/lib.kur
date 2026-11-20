@@ -1,13 +1,13 @@
 use async::read_file;
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
-use server::{Action!, RequestState, Server!};
+use server::{Action!, Server!};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
-use std::option::{Option, Result};
+use std::option::Result;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput};
+use task::{Completion, PlanOutput};
 
 const FILE_LIMIT: usize = 65_536;
 
@@ -15,35 +15,11 @@ fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
     if timed {
-        return file.within(Duration::from_secs(1)).defer(|outcome, state| {
-            timed_reply(outcome, state, file_response, discard_file)
-        });
+        return file.respond_with(file_response, discard_file)
+            .within(Duration::from_secs(1))
+            .reply();
     }
-    file.defer(|outcome, state| {
-        let response = file_response(outcome);
-        match state {
-            RequestState::Active => Option::Some.(response.reply()),
-            RequestState::Cancelled => { response.destroy(); Option::None },
-        }
-    })
-}
-
-forall Output.
-fn timed_reply(result: (Output, DeadlineStatus), state: RequestState,
-    reply: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Option[Action!] {
-    let (outcome, deadline) = result;
-    match state {
-        RequestState::Cancelled => { discard(outcome); return Option::None; },
-        RequestState::Active => (),
-    }
-    let status = match deadline {
-        DeadlineStatus::Completed => return Option::Some.(reply(outcome).reply()),
-        DeadlineStatus::TimedOut => 504,
-        DeadlineStatus::Cancelled => 408,
-        DeadlineStatus::Failed => 500,
-    };
-    discard(outcome);
-    Option::Some.(Response!::rejected(status).reply())
+    file.respond_with(file_response, discard_plain_file).reply()
 }
 
 fn file_response(outcome: Completion[Buffer!]) -> Response! {
@@ -58,10 +34,20 @@ fn file_response(outcome: Completion[Buffer!]) -> Response! {
 }
 
 fn discard_file(outcome: Completion[Buffer!]) {
+    release_file(outcome, false);
+}
+
+fn discard_plain_file(outcome: Completion[Buffer!]) {
+    release_file(outcome, true);
+}
+
+fn release_file(outcome: Completion[Buffer!], report_cancelled: bool) {
     match outcome {
         Completion::Ready(bytes) => bytes.destroy(),
-        Completion::Cancelled => (),
-        Completion::Failed(code) => (),
+        Completion::Cancelled => {
+            if report_cancelled { eprint_buffer(f"File request cancelled.\n"); }
+        },
+        Completion::Failed => (),
     }
 }
 

@@ -10,7 +10,7 @@ use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, PlanOutput, Sink, Stream, sleep};
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
 
@@ -75,8 +75,23 @@ enum Handler {
 
 exposed enum RequestState { Active, Cancelled }
 
+forall Task, Output.
+struct ReplyBuilder! {
+    task: Task,
+    respond: fn(Output) -> Response!,
+    discard: fn(Output) -> (),
+    timeout: Option[Duration],
+}
+
 forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
+    /// Uses `respond` for a completed plan while the request is active.
+    /// Uses `discard` to release the joined outcome otherwise.
+    fn respond_with(self, respond: fn(Output) -> Response!, discard: fn(Output) -> ())
+        -> ReplyBuilder![Task, Output] {
+        ReplyBuilder!.{ task: self, respond, discard, timeout: Option::None }
+    }
+
     /// Runs once after the plan joins, including when the request has ended.
     /// Return None when the request is cancelled or should close without a reply.
     forall Env where Plan[Task, Scope! -> Output].
@@ -98,6 +113,46 @@ impl Task {
         });
         Action!::Deferred.(hosted)
     }
+}
+
+forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+impl ReplyBuilder![Task, Output] {
+    /// Sets a local deadline for the plan.
+    fn within(self, duration: Duration) -> ReplyBuilder![Task, Output] {
+        let { timeout: previous, ..rest } = self;
+        ReplyBuilder!.{ timeout: Option::Some.(duration), ..rest }
+    }
+
+    /// Returns an action that replies after the plan joins.
+    fn reply(self) -> Action! {
+        let { task, respond, discard, timeout } = self;
+        match timeout {
+            Option::Some(duration) => task.within(duration).defer(|result, state| {
+                let (outcome, deadline) = result;
+                finish_reply(outcome, state, deadline, respond, discard)
+            }),
+            Option::None => task.defer(|outcome, state| {
+                finish_reply(outcome, state, DeadlineStatus::Completed, respond, discard)
+            }),
+        }
+    }
+}
+
+forall Output.
+fn finish_reply(outcome: Output, state: RequestState, deadline: DeadlineStatus,
+    respond: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Option[Action!] {
+    match state {
+        RequestState::Cancelled => { discard(outcome); return Option::None; },
+        RequestState::Active => (),
+    }
+    let status = match deadline {
+        DeadlineStatus::Completed => return Option::Some.(respond(outcome).reply()),
+        DeadlineStatus::TimedOut => 504,
+        DeadlineStatus::Cancelled => 408,
+        DeadlineStatus::Failed => 500,
+    };
+    discard(outcome);
+    Option::Some.(Response!::rejected(status).reply())
 }
 
 unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {

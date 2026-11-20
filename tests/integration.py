@@ -599,7 +599,7 @@ def check_http_file(command, directory, check_request_timeout=False):
         process.terminate()
         assert process.wait(timeout=5) == 0, process.stderr.read()
 
-    for pending, reply_calls in ((request, 1), (timed, 0)):
+    for pending, cancellation_logs in ((request, 1), (timed, 0)):
         with gated_file_server(command, directory, library) as (process, port, started, permit):
             with connect(port) as client:
                 start_held_read(client, pending, started)
@@ -610,7 +610,7 @@ def check_http_file(command, directory, check_request_timeout=False):
                 assert os.write(permit, b"R") == 1
                 assert client.recv(1) == b"", "shutdown sent a cancelled file response"
                 assert process.wait(timeout=5) == 0, process.stderr.read()
-                assert process.stderr.read().count(b"File request cancelled.") == reply_calls
+                assert process.stderr.read().count(b"File request cancelled.") == cancellation_logs
 
     if check_request_timeout:
         with gated_file_server(command, directory, library) as (process, port, started, permit):
