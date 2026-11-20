@@ -3,7 +3,7 @@ use async::{Completion, join, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file, timed_reply};
 use server::{Action!, PlanOutput};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::slice::StaticRead;
 
 fn serve() -> Action! {

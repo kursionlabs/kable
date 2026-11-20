@@ -5,8 +5,10 @@ connection lifetimes and llhttp for incremental HTTP request parsing.
 
 ## Build and run
 
-Build the adjacent `../kursal` repository first and install the libuv and
-llhttp development packages. From this repository, run these commands.
+Build the adjacent `../kursal` checkout with `scripts/bootstrap.sh` and
+install the libuv and llhttp development packages. Rebuild the compiler
+after updating Kursal so format strings use the same standard-library
+paths as Kable. From this repository, run these commands.
 
 ```sh
 pkg-config --modversion libuv libllhttp

@@ -1,5 +1,5 @@
 use async::{Completion, PlanOutput, Sink, create_file, run};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::process::trap;
 use std::slice::StaticRead;
 

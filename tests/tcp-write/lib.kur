@@ -1,5 +1,5 @@
 use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use tcp::{Action!, Connection!, Listener!, defer};

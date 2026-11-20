@@ -1,5 +1,5 @@
 //! Request ownership and HTTP response serialization.
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::option::Option;
 use std::raw::Span;
 use std::slice::Slice;

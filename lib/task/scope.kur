@@ -1,5 +1,5 @@
 //! Engine-independent task selection and resource lifetime bookkeeping.
-use std::collections::vec::{OwnedVec!, Popped!};
+use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::process::trap;
 
@@ -144,10 +144,7 @@ impl ScopeState! {
 
     fn take_cancel(&self) -> Option[usize] {
         let { nodes, stops, root, pending } = self;
-        let id = match &stops.pop() {
-            Popped!::Item(id) => Option::Some.(id),
-            Popped!::Empty => Option::None,
-        };
+        let id = &stops.pop();
         self = ScopeState!.{ nodes, stops, root, pending };
         id
     }

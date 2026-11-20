@@ -1,8 +1,8 @@
 //! Scoped TCP reads and writes on a listener's event loop.
 use async::Scope!;
 use async::host::{HostedPlan!, prepare_hosted};
-use std::alloc::heap::HeapAllocator;
-use std::bytes::buffer::Buffer!;
+use std::heap::HeapAllocator;
+use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};

@@ -1,7 +1,7 @@
 //! Structured waits, joins, and bounded file operations on libuv.
 use package::host;
-use std::alloc::heap::HeapAllocator;
-use std::bytes::buffer::Buffer!;
+use std::heap::HeapAllocator;
+use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;

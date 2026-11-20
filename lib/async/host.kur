@@ -1,6 +1,6 @@
 //! Runs a prepared libuv plan under a host that already owns an event loop.
 use package::{Prepared!, Scope!, collect, prepare};
-use std::alloc::heap::HeapAllocator;
+use std::heap::HeapAllocator;
 use std::mem::sizeof;
 use std::option::Result;
 use task::PlanOutput;

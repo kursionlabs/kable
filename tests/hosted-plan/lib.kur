@@ -1,6 +1,6 @@
 use async::{Completion, DeadlineStatus, PlanOutput, join, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::Result;
 

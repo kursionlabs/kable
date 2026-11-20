@@ -2,7 +2,7 @@ use async::{Completion, DeadlineStatus, read_file};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
 use server::{Action!, PlanOutput, RequestState, Server!};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::slice::StaticRead;

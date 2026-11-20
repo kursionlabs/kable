@@ -1,5 +1,5 @@
 use async::{Completion, join, read_file, run_with_deadline};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Option;
 use std::parse::parse_u64;

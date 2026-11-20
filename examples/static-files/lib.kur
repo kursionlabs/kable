@@ -1,7 +1,7 @@
 use async::{Completion, DeadlineStatus, OpenedFile!, open_file_beneath_cwd};
 use http::{Method, Request!, Response!};
 use server::{Action!, PlanOutput, RequestState, Server!, file_reply};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::parse::parse_u64;

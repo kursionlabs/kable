@@ -3,7 +3,7 @@ use async::{Completion, read_file};
 use http::Response!;
 use package::{FILE_LIMIT, append_file, discard_file};
 use server::{Action!, PlanOutput, RequestState};
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::io::eprint_buffer;
 use std::option::Option;
 use std::raw::Span;

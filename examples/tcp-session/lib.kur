@@ -1,4 +1,4 @@
-use std::bytes::buffer::Buffer!;
+use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
