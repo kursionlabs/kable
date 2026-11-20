@@ -2,6 +2,7 @@
 use package::{Prepared!, Scope!, collect, prepare};
 use std::alloc::heap::HeapAllocator;
 use std::mem::sizeof;
+use std::option::Result;
 use task::PlanOutput;
 use task::driver::Plan;
 
@@ -40,13 +41,17 @@ impl HostedPlan! {
     /// A successful start owns the plan and must finish it exactly once after
     /// the scope joins, with the matching host pointer.
     /// A rejected start leaves the plan here to be collected with host state zero.
-    /// Returns the submission status and, on rejection, the continuation status.
+    /// On rejection, returns (start_error, continuation_status) after cleanup.
     forall Env.
     unsafe fn submit(self, host: *u8,
-        start: closure[Env](*u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32) -> i32) -> (i32, i32) {
+        start: closure[Env](*u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32) -> i32) -> Result[i32, (i32, i32)] {
         let { scope, root, plan, finish } = self;
         let status = start(scope, root, plan, finish);
-        let handled = if status < 0 { unsafe finish(plan, host, 0) } else { status };
-        (status, handled)
+        if status < 0 {
+            let continued = unsafe finish(plan, host, 0);
+            Result::Err.((status, continued))
+        } else {
+            Result::Ok.(status)
+        }
     }
 }

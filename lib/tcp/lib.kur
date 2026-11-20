@@ -244,10 +244,13 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
         Action!::Wait(next) => unsafe submit(next, Option::None),
         Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
         Action!::Scoped(plan) => {
-            let (status, handled) = unsafe plan.submit(connection, |scope, root, plan, finish| {
+            let submission = unsafe plan.submit(connection, |scope, root, plan, finish| {
                 unsafe kable_tcp_schedule(connection, scope, root, plan, finish)
             });
-            handled
+            submission.unwrap_or_else(|rejection| {
+                let (error, continued) = rejection;
+                continued
+            })
         },
         Action!::Close(connection) => {
             let { raw } = connection;

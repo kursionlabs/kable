@@ -129,10 +129,13 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
         Action!::Reply(response) => unsafe write_wire(client, response.encode(head, http10)),
         Action!::Deferred(plan) => {
             let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
-            let (status, handled) = unsafe plan.submit(client, |scope, root, plan, finish| {
+            let submission = unsafe plan.submit(client, |scope, root, plan, finish| {
                 unsafe kable_schedule(client, scope, root, plan, finish, flags)
             });
-            status
+            submission.unwrap_or_else(|rejection| {
+                let (error, continued) = rejection;
+                error
+            })
         },
         Action!::File(reply) => unsafe write_file(client, reply, head, http10),
     }
@@ -161,13 +164,16 @@ unsafe fn write_then_next(connection: *u8, bytes: Buffer!, stream: FileChunks!) 
     });
 
     // The transport starts the read after this write completes.
-    let (status, handled) = unsafe read.submit(connection, |scope, root, plan, finish| {
+    let submission = unsafe read.submit(connection, |scope, root, plan, finish| {
         let status = unsafe kable_tcp_stream_write(connection, unsafe &bytes.as_ptr(), &bytes.len(),
             STREAM_IDLE, scope, root, plan, finish);
         bytes.destroy();
         status
     });
-    status
+    submission.unwrap_or_else(|rejection| {
+        let (error, continued) = rejection;
+        error
+    })
 }
 
 unsafe fn chunk_joined(connection: *u8, result: (FileChunks!, StreamOutcome![Buffer!])) -> i32 {
