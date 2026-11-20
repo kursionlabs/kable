@@ -37,48 +37,61 @@ extern "C" fn kable_scope_take_file(scope: *u8, id: usize, len: *u64) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
 extern "C" fn kable_file_close_descriptor(fd: i32) -> i32;
 
-struct ReadFile! { path: Buffer!, limit: usize, beneath: bool, id: Option[usize] }
+forall Item.
+struct FilePathPlan! {
+    path: Buffer!, limit: usize, mode: u8, id: Option[usize],
+    result: fn(&_: Scope!, Option[usize]) -> Completion[Item],
+}
+
+struct OpenedFile! { fd: i32, length: u64 }
+struct OutputFile! { fd: i32, position: u64 }
+struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, id: Option[usize] }
+struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
+struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
+
+// Matches KableFileMode in native/file.h.
+const READ_FILE: u8 = 0;
+const READ_BENEATH: u8 = 1;
+const OPEN_BENEATH: u8 = 2;
+const OPEN_FILE: u8 = 3;
+const CREATE_FILE: u8 = 4;
+const FILE_CHUNK: u64 = 64 * 1024;
+
+forall C, S, Item where ReadBytes[C, S], Copy[S].
+fn file_path_plan(&cx: C, path: S, limit: usize, mode: u8,
+    result: fn(&_: Scope!, Option[usize]) -> Completion[Item]) -> FilePathPlan![Item] {
+    FilePathPlan!.{ path: Buffer!::new().push_bytes(&cx, path), limit, mode, id: Option::None, result }
+}
 
 /// Plans a read of a regular file. A file larger than limit fails.
 forall C, S where ReadBytes[C, S], Copy[S].
-fn read_file(&cx: C, path: S, limit: usize) -> ReadFile! {
-    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, beneath: false, id: Option::None }
+fn read_file(&cx: C, path: S, limit: usize) -> FilePathPlan![Buffer!] {
+    file_path_plan(&cx, path, limit, READ_FILE, Scope!::file_result)
 }
 
 /// Plans a regular-file read below the process's working directory.
 /// Linux resolves the relative path without following symlinks.
 forall C, S where ReadBytes[C, S], Copy[S].
-fn read_file_beneath_cwd(&cx: C, path: S, limit: usize) -> ReadFile! {
-    ReadFile!.{ path: Buffer!::new().push_bytes(&cx, path), limit, beneath: true, id: Option::None }
+fn read_file_beneath_cwd(&cx: C, path: S, limit: usize) -> FilePathPlan![Buffer!] {
+    file_path_plan(&cx, path, limit, READ_BENEATH, Scope!::file_result)
 }
-
-struct OpenFile! { path: Buffer!, beneath: bool, id: Option[usize] }
-struct OpenedFile! { fd: i32, length: u64 }
-struct CreateFile! { path: Buffer!, id: Option[usize] }
-struct OutputFile! { fd: i32, position: u64 }
-struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, id: Option[usize] }
-struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
-struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
-struct NextFileChunk! { read: ReadChunk!, remaining: u64 }
-
-const FILE_CHUNK: u64 = 64 * 1024;
 
 /// Opens and measures a regular file.
 forall C, S where ReadBytes[C, S], Copy[S].
-fn open_file(&cx: C, path: S) -> OpenFile! {
-    OpenFile!.{ path: Buffer!::new().push_bytes(&cx, path), beneath: false, id: Option::None }
+fn open_file(&cx: C, path: S) -> FilePathPlan![OpenedFile!] {
+    file_path_plan(&cx, path, 0, OPEN_FILE, collect_opened_file)
 }
 
 /// Opens a regular file beneath the working directory and measures its length.
 forall C, S where ReadBytes[C, S], Copy[S].
-fn open_file_beneath_cwd(&cx: C, path: S) -> OpenFile! {
-    OpenFile!.{ path: Buffer!::new().push_bytes(&cx, path), beneath: true, id: Option::None }
+fn open_file_beneath_cwd(&cx: C, path: S) -> FilePathPlan![OpenedFile!] {
+    file_path_plan(&cx, path, 0, OPEN_BENEATH, collect_opened_file)
 }
 
 /// Creates a new regular file. An existing destination causes an error.
 forall C, S where ReadBytes[C, S], Copy[S].
-fn create_file(&cx: C, path: S) -> CreateFile! {
-    CreateFile!.{ path: Buffer!::new().push_bytes(&cx, path), id: Option::None }
+fn create_file(&cx: C, path: S) -> FilePathPlan![OutputFile!] {
+    file_path_plan(&cx, path, 0, CREATE_FILE, collect_output_file)
 }
 
 impl OutputFile! {
@@ -163,12 +176,31 @@ impl FileChunks! {
     }
 }
 
-instance Stream[FileChunks! -> NextFileChunk!] {
+instance Stream[FileChunks! ->
+    Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, Completion[Option[Buffer!]]), (u64, u64)]] {
     /// Plans a read of at most 64 KiB and advances only by the bytes read.
-    fn next(source: FileChunks!) -> NextFileChunk! {
+    fn next(source: FileChunks!)
+        -> Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, Completion[Option[Buffer!]]), (u64, u64)] {
         let { file, offset, remaining } = source;
         let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
-        NextFileChunk!.{ read: file.read_chunk(offset, limit as usize), remaining }
+        file.read_chunk(offset, limit as usize).map(|result| {
+            let (file, outcome) = result;
+            let (outcome, count) = match outcome {
+                Completion::Ready(bytes) => {
+                    let count = &bytes.len() as u64;
+                    let chunk = if count == 0 {
+                        bytes.destroy();
+                        Option::None
+                    } else {
+                        Option::Some.(bytes)
+                    };
+                    (Completion::Ready.(chunk), count)
+                },
+                Completion::Cancelled => (Completion::Cancelled, 0),
+                Completion::Failed(failure) => (Completion::Failed.(failure), 0),
+            };
+            (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
+        })
     }
 }
 
@@ -382,20 +414,30 @@ impl Scope! {
     }
 }
 
-instance PlanOutput[ReadFile! -> Completion[Buffer!]] {}
+fn collect_opened_file(&scope: Scope!, id: Option[usize]) -> Completion[OpenedFile!] {
+    &scope.collect_descriptor(id, |fd, length| OpenedFile!.{ fd, length })
+}
 
-instance Plan[ReadFile!, Scope! -> Completion[Buffer!]] {
-    fn stage(&task: ReadFile!, &scope: Scope!) -> Option[usize] {
-        let { path, limit, beneath, id } = task;
-        let id = &scope.add_file(&path, limit, if beneath { 1 } else { 0 });
-        task = ReadFile!.{ path, limit, beneath, id };
+fn collect_output_file(&scope: Scope!, id: Option[usize]) -> Completion[OutputFile!] {
+    &scope.collect_descriptor(id, |fd, length| OutputFile!.{ fd, position: 0 })
+}
+
+forall Item.
+instance PlanOutput[FilePathPlan![Item] -> Completion[Item]] {}
+
+forall Item.
+instance Plan[FilePathPlan![Item], Scope! -> Completion[Item]] {
+    fn stage(&task: FilePathPlan![Item], &scope: Scope!) -> Option[usize] {
+        let { path, limit, mode, id, result } = task;
+        let id = &scope.add_file(&path, limit, mode);
+        task = FilePathPlan!.{ path, limit, mode, id, result };
         id
     }
 
-    fn collect(task: ReadFile!, &scope: Scope!) -> Completion[Buffer!] {
-        let { path, limit, beneath, id } = task;
+    fn collect(task: FilePathPlan![Item], &scope: Scope!) -> Completion[Item] {
+        let { path, limit, mode, id, result } = task;
         path.destroy();
-        &scope.file_result(id)
+        result(&scope, id)
     }
 }
 
@@ -412,70 +454,6 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
         let { file, offset, limit, id } = task;
         (file, &scope.file_result(id))
-    }
-}
-
-instance PlanOutput[NextFileChunk! -> (FileChunks!, Completion[Option[Buffer!]])] {}
-
-instance Plan[NextFileChunk!, Scope! -> (FileChunks!, Completion[Option[Buffer!]])] {
-    fn stage(&task: NextFileChunk!, &scope: Scope!) -> Option[usize] {
-        let { read, remaining } = task;
-        let id = Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])]::stage(&read, &scope);
-        task = NextFileChunk!.{ read, remaining };
-        id
-    }
-
-    fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, Completion[Option[Buffer!]]) {
-        let { read: { file, offset, limit, id }, remaining } = task;
-        let (outcome, count) = match &scope.file_result(id) {
-            Completion::Ready(bytes) => {
-                let count = &bytes.len() as u64;
-                let chunk = if count == 0 {
-                    bytes.destroy();
-                    Option::None
-                } else {
-                    Option::Some.(bytes)
-                };
-                (Completion::Ready.(chunk), count)
-            },
-            Completion::Cancelled => (Completion::Cancelled, 0),
-            Completion::Failed(failure) => (Completion::Failed.(failure), 0),
-        };
-        (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
-    }
-}
-
-instance PlanOutput[OpenFile! -> Completion[OpenedFile!]] {}
-
-instance Plan[OpenFile!, Scope! -> Completion[OpenedFile!]] {
-    fn stage(&task: OpenFile!, &scope: Scope!) -> Option[usize] {
-        let { path, beneath, id } = task;
-        let id = &scope.add_file(&path, 0, if beneath { 2 } else { 3 });
-        task = OpenFile!.{ path, beneath, id };
-        id
-    }
-
-    fn collect(task: OpenFile!, &scope: Scope!) -> Completion[OpenedFile!] {
-        let { path, beneath, id } = task;
-        path.destroy();
-        &scope.collect_descriptor(id, |fd, length| OpenedFile!.{ fd, length })
-    }
-}
-
-instance PlanOutput[CreateFile! -> Completion[OutputFile!]] {}
-
-instance Plan[CreateFile!, Scope! -> Completion[OutputFile!]] {
-    fn stage(&task: CreateFile!, &scope: Scope!) -> Option[usize] {
-        let { path, id } = task;
-        let id = &scope.add_file(&path, 0, 4);
-        task = CreateFile!.{ path, id };
-        id
-    }
-
-    fn collect(task: CreateFile!, &scope: Scope!) -> Completion[OutputFile!] {
-        let { path, id } = task;
-        path.destroy();
-        &scope.collect_descriptor(id, |fd, length| OutputFile!.{ fd, position: 0 })
     }
 }
 
