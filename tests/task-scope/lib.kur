@@ -5,8 +5,9 @@ fn check_retirement_before_resolution() -> bool {
     let scope = ScopeState!::new();
     let first = (&scope.add_leaf()).unwrap();
     let second = (&scope.add_leaf()).unwrap();
-    let root = (&scope.add_pair(Pair.{ kind: PairKind::Join, first, second })).unwrap();
+    let root = &scope.add_pair(Pair.{ kind: PairKind::Join, first, second });
     let valid = &scope.begin(root);
+    let root = root.unwrap();
     &scope.started(Resource::Leaf.(first));
     &scope.started(Resource::Leaf.(second));
     let first_resolved_root = &scope.complete(first);
@@ -32,11 +33,13 @@ fn main() -> i32 {
     let scope = ScopeState!::new();
     let first = (&scope.add_leaf()).unwrap();
     let second = (&scope.add_leaf()).unwrap();
+    let missing_root_rejected = !&scope.begin(Option::None);
+    let disconnected_root_rejected = !&scope.begin(Option::Some.(first));
     let rejected = (&scope.add_pair(Pair.{ kind: PairKind::Select, first, second: first })).is_none();
     let root = (&scope.add_pair(Pair.{ kind: PairKind::Select, first, second })).unwrap();
     let already_parented = Pair.{ kind: PairKind::Join, first, second: root };
     let refused_reparent = (&scope.add_pair(already_parented)).is_none();
-    let valid = &scope.begin(root);
+    let valid = &scope.begin(Option::Some.(root));
     &scope.started(Resource::Leaf.(first));
     &scope.started(Resource::Leaf.(first));
     &scope.started(Resource::Leaf.(second));
@@ -62,7 +65,8 @@ fn main() -> i32 {
     let first_won = match result.unwrap() { Resolution::First => true, _ => false, };
     let winner_completed = match winner.unwrap() { Resolution::Completed => true, _ => false, };
     let loser_cancelled = match loser.unwrap() { Resolution::Cancelled => true, _ => false, };
-    if rejected && refused_reparent && valid && won && cancelled.unwrap() == second && waiting_for_timer &&
+    if missing_root_rejected && disconnected_root_rejected && rejected && refused_reparent && valid &&
+        won && cancelled.unwrap() == second && waiting_for_timer &&
         !late && scope_joined && first_won && winner_completed && loser_cancelled &&
         next_stop.is_none() { 0i32 } else { 1i32 }
 }

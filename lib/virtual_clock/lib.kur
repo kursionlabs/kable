@@ -62,11 +62,7 @@ fn earliest(&timers: OwnedVec![Option[Duration]]) -> Option[(usize, Duration)] {
 
 fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> (Duration, bool) {
     let { state, timers, invalid_plan } = scope;
-    let valid = match root {
-        Option::Some(id) => !invalid_plan && &state.begin(id),
-        Option::None => false,
-    };
-    if !valid {
+    if invalid_plan || !&state.begin(root) {
         scope = Virtual!.{ state, timers, invalid_plan: true };
         return (Duration::from_nanos(0), false);
     }

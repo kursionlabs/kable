@@ -4,5 +4,8 @@ source_root="."
 kind="executable"
 entry="main"
 
+[dependencies.std]
+path="../../../kursal/lib/std"
+
 [dependencies.task]
 path="../../lib/task"

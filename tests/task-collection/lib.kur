@@ -46,19 +46,22 @@ instance Plan[ReverseSelect!, Driver -> bool] {
     }
 }
 
-struct UnrootedTimer! { timer: Sleep!, bytes: Buffer! }
+struct InvalidRootTimer! { timer: Sleep!, bytes: Buffer!, missing_root: bool }
 
 forall Driver where PlanDriver[Driver].
-instance Plan[UnrootedTimer!, Driver -> (Buffer!, Completion[()])] {
-    fn stage(&task: UnrootedTimer!, &scope: Driver) -> Option[usize] {
-        let { timer, bytes } = task;
-        Plan[Sleep!, Driver -> Completion[()]]::stage(&timer, &scope);
-        task = UnrootedTimer!.{ timer, bytes };
-        Option::None
+instance Plan[InvalidRootTimer!, Driver -> (Buffer!, Completion[()])] {
+    fn stage(&task: InvalidRootTimer!, &scope: Driver) -> Option[usize] {
+        let { timer, bytes, missing_root } = task;
+        let root = Plan[Sleep!, Driver -> Completion[()]]::stage(&timer, &scope);
+        task = InvalidRootTimer!.{ timer, bytes, missing_root };
+        if missing_root { return Option::None; }
+        // A second timer is disconnected from the staged root.
+        PlanDriver[Driver]::timer(&scope, Duration::from_nanos(0));
+        root
     }
 
-    fn collect(task: UnrootedTimer!, &scope: Driver) -> (Buffer!, Completion[()]) {
-        let { timer, bytes } = task;
+    fn collect(task: InvalidRootTimer!, &scope: Driver) -> (Buffer!, Completion[()]) {
+        let { timer, bytes, missing_root } = task;
         (bytes, Plan[Sleep!, Driver -> Completion[()]]::collect(timer, &scope))
     }
 }
@@ -71,8 +74,10 @@ fn invalid_plan(status: Completion[T]) -> bool {
     }
 }
 
-fn check_unrooted_timer() -> bool {
-    let first = UnrootedTimer!.{ timer: sleep(Duration::from_nanos(0)), bytes: Buffer!::new().push_static("first") };
+fn check_invalid_root(missing_root: bool) -> bool {
+    let first = InvalidRootTimer!.{
+        timer: sleep(Duration::from_nanos(0)), bytes: Buffer!::new().push_static("first"), missing_root,
+    };
     let bytes = Buffer!::new().push_static("second");
     let second = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
     let ((first, first_status), (second, second_status), race_status) = run(select(first, second));
@@ -131,7 +136,7 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
     let driver = DeadlineDriver!.{ state: ScopeState!::new(), timer: Option::None, timer_result };
     let root = Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)]::stage(&plan, &driver);
     let { state, timer, timer_result } = driver;
-    if !&state.begin(root.unwrap()) { trap(); }
+    if !&state.begin(root) { trap(); }
     &state.started(Resource::Leaf.(0));
     &state.started(Resource::Leaf.(1));
     let winner = timer.unwrap();
@@ -240,6 +245,6 @@ fn check_local_timeout_handoff() -> bool {
 
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0)), second: sleep(Duration::from_secs(30)), id: Option::None };
-    if run(plan) && check_unrooted_timer() && check_cancelled_join() && check_deadline_timer_results() &&
-        check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
+    if run(plan) && check_invalid_root(true) && check_invalid_root(false) && check_cancelled_join() &&
+        check_deadline_timer_results() && check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
 }

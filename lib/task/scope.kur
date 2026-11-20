@@ -75,17 +75,22 @@ impl ScopeState! {
         add_branch(&self, Branch::Pair.(pair))
     }
 
-    fn begin(&self, root: usize) -> bool {
+    /// Begins a scope when the staged root connects all registered nodes.
+    fn begin(&self, root: Option[usize]) -> bool {
+        let id = match root {
+            Option::Some(id) => id,
+            Option::None => return false,
+        };
         let { nodes, root: prior, ..rest } = self;
         let count = &nodes.len();
-        var valid = prior.is_none() && root < count;
+        var valid = prior.is_none() && id < count;
         var i = 0usize;
         while valid && i < count {
             let node = &nodes.at(i);
-            valid = (node.parent.is_none()) == (i == root);
+            valid = (node.parent.is_none()) == (i == id);
             i = i + 1usize;
         }
-        let root = if valid { Option::Some.(root) } else { prior };
+        let root = if valid { root } else { prior };
         self = ScopeState!.{ nodes, root, ..rest };
         valid
     }
