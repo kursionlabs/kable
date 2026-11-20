@@ -8,7 +8,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
 
 export host;
@@ -504,45 +504,32 @@ instance PlanDriver[Scope!] {
     fn result(&scope: Scope!, id: Option[usize]) -> Resolution { &scope.result(id) }
 }
 
+/// The host keeps the prepared plan alive until the native scope has joined.
 forall Task.
-struct Prepared! { scope: Scope!, task: Task, root: Option[usize] }
-
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn prepare(task: Task) -> Prepared![Task] {
-    var scope = Scope!::new();
-    let root = Plan[Task, Scope! -> Output]::stage(&task, &scope);
-    Prepared!.{ scope, task, root }
-}
-
-forall Task.
-impl Prepared![Task] {
-    /// The host must keep this plan alive until the native scope has joined.
-    unsafe fn native(&self) -> (*u8, usize) {
-        let { scope, task, root } = self;
+unsafe fn native_scope(&prepared: Prepared![Task, Scope!]) -> (*u8, usize) {
+    &prepared.with_scope(|&scope, root| {
         let { raw } = scope;
-        self = Prepared!.{ scope: Scope!.{ raw }, task, root };
+        scope = Scope!.{ raw };
         (raw, root.unwrap_or(usize::MAX))
-    }
+    })
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn collect(prepared: Prepared![Task]) -> Output {
-    let { scope, task, root } = prepared;
-    let result = Plan[Task, Scope! -> Output]::collect(task, &scope);
+fn collect(prepared: Prepared![Task, Scope!]) -> Output {
+    let (result, scope) = prepared.collect();
     scope.close();
     result
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn drive_plan(task: Task, deadline: Option[Duration]) -> Output {
-    run_prepared(prepare(task), deadline)
+    run_prepared(prepare(task, Scope!::new()), deadline)
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run_prepared(prepared: Prepared![Task], deadline: Option[Duration]) -> Output {
-    let { scope, task, root } = prepared;
-    &scope.run(root, deadline);
-    collect(Prepared!.{ scope, task, root })
+fn run_prepared(prepared: Prepared![Task, Scope!], deadline: Option[Duration]) -> Output {
+    &prepared.with_scope(|&scope, root| &scope.run(root, deadline));
+    collect(prepared)
 }
 
 /// Drives the plan to completion and joins its children before returning.
@@ -567,7 +554,7 @@ instance Clock[SequenceClock] {
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 instance StageDriver[Task, SequenceClock -> Output] {
     fn drive(task: Task, &engine: SequenceClock, deadline: Option[Duration]) -> Output {
-        let prepared = prepare(task);
+        let prepared = prepare(task, Scope!::new());
         run_prepared(prepared, remaining_budget(&engine, deadline))
     }
 }

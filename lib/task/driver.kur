@@ -1,7 +1,7 @@
 //! Staging and collection for task drivers.
 use std::option::Option;
 use std::time::Duration;
-use package::{Completion, Failure};
+use package::{Completion, Failure, PlanOutput};
 use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
 
 export Branch;
@@ -38,4 +38,35 @@ trait Plan {
     fn stage(&task: Task, &scope: Driver) -> Option[usize];
     /// Consumes the plan and recovers its outcome, including after staging failure.
     fn collect(task: Task, &scope: Driver) -> Output;
+}
+
+/// Owns a staged plan and its scope until collection.
+forall Task, Driver.
+struct Prepared! { task: Task, scope: Driver, root: Option[usize] }
+
+/// Stages the plan and retains its state even when staging fails.
+forall Task, Driver, Output where PlanOutput[Task -> Output], Plan[Task, Driver -> Output].
+fn prepare(task: Task, scope: Driver) -> Prepared![Task, Driver] {
+    let root = Plan[Task, Driver -> Output]::stage(&task, &scope);
+    Prepared!.{ task, scope, root }
+}
+
+forall Task, Driver.
+impl Prepared![Task, Driver] {
+    /// Lends the scope and its staged root to the engine.
+    forall Env, Value.
+    fn with_scope(&self, body: closure[Env](&_: Driver, Option[usize]) -> Value) -> Value {
+        let { task, scope, root } = self;
+        let value = body(&scope, root);
+        self = Prepared!.{ task, scope, root };
+        value
+    }
+
+    /// Collects a joined or unsubmitted plan and returns the scope for teardown.
+    forall Output where PlanOutput[Task -> Output], Plan[Task, Driver -> Output].
+    fn collect(self) -> (Output, Driver) {
+        let { task, scope, root } = self;
+        let output = Plan[Task, Driver -> Output]::collect(task, &scope);
+        (output, scope)
+    }
 }
