@@ -314,8 +314,22 @@ connection. `Listener!::bind_connections(port, read_next)` calls
 `read_next(connection)` once per accepted connection. The echo handler runs
 `connection.next().within(1000)`
 with `tcp::defer` on the listener loop. When it receives bytes, it defers
-`connection.write(bytes).within(1000)`. The next read starts after
-the write joins.
+`connection.write(bytes).within(1000)`. Its continuation releases the buffer
+and starts the next read only if the write succeeded within the deadline.
+
+Omitting `.within(ms)` gives the write the connection's lifetime. The
+continuation can hand the connection back to `read_next` after the write joins.
+
+```kursal
+defer(connection.write(bytes), |result| {
+    let (connection, bytes, status) = result;
+    bytes.destroy();
+    match status {
+        Completion::Ready => read_next(connection),
+        Completion::Cancelled | Completion::Failed => connection.close(),
+    }
+})
+```
 
 The write plan owns the connection and buffer until completion and returns
 both on every outcome. Cancelling an in-flight write closes the socket and

@@ -343,14 +343,6 @@ static void scope_joined(void *context) {
     release_closed_connection(connection);
 }
 
-static void start_scope(Connection *connection, int cancelled) {
-    connection->phase = SCOPED;
-    if (!kable_scope_start(connection->scope, connection->scope_root, &connection->listener->loop,
-        0, cancelled, scope_joined, connection)) {
-        scope_joined(connection);
-    }
-}
-
 static void discard_input(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buffer) {
     (void)buffer;
     if (nread < 0) close_connection(stream->data);
@@ -422,10 +414,7 @@ static void write_done(uv_write_t *write, int status) {
             start_stream_scope(connection);
         } else end_stream(connection, 1);
     } else if (connection->phase == WRITING) {
-        if (connection->plan) {
-            start_scope(connection, status < 0 || connection->listener->stopping);
-            if (status < 0) close_connection(connection);
-        } else if (connection->listener->stopping) {
+        if (connection->listener->stopping) {
             notify(connection, KABLE_TCP_CANCELLED, 0, 0);
         } else {
             if (status == 0) status = start_read(connection, connection->next_ms, connection->next_timed);
@@ -452,20 +441,17 @@ static int queue_write(Connection *connection, uint8_t *bytes, size_t len) {
 }
 
 int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t *bytes, size_t len) {
+    KablePlanFinish finish) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != IDLE || connection->listener->stopping ||
         socket_closing(connection)) return UV_ECANCELED;
-    if (len) {
-        int status = queue_write(connection, bytes, len);
-        if (status < 0) return status;
-    }
     connection->scope = scope;
-    connection->scope_root = root;
     connection->plan = plan;
     connection->finish_plan = finish;
-    if (len) connection->phase = WRITING;
-    else start_scope(connection, 0);
+    connection->phase = SCOPED;
+    if (!kable_scope_start(scope, root, &connection->listener->loop, 0, 0, scope_joined, connection)) {
+        scope_joined(connection);
+    }
     return 0;
 }
 

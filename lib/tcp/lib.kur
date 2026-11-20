@@ -29,7 +29,7 @@ extern "C" fn kable_tcp_start_scoped_write(request: *u8, loop: *u8,
 extern "C" fn kable_tcp_stop_scoped_write(request: *u8) -> u8;
 extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8, u8) -> i32, bytes: *u8, len: usize) -> i32;
+    finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
 
 struct Connection! { raw: *u8 }
 struct Read! { connection: Connection!, deadline: Option[u64] }
@@ -121,28 +121,15 @@ exposed enum Event! {
 enum Action! {
     Wait(Read!),
     Write(Buffer!, Read!),
-    Scoped(Deferred!, Option[Buffer!]),
+    Scoped(HostedPlan!),
     Close(Connection!),
 }
-
-struct Deferred! { hosted: HostedPlan! }
 
 /// Runs a plan on the connection's listener and resumes after it joins.
 forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn defer(task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
-    Action!::Scoped.(prepare_deferred(task, resume), Option::None)
-}
-
-/// Writes a chunk before starting the next scoped plan.
-forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn defer_write(bytes: Buffer!, task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
-    Action!::Scoped.(prepare_deferred(task, resume), Option::Some.(bytes))
-}
-
-forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn prepare_deferred(task: Task, resume: closure[Env](Output) -> Action!) -> Deferred! {
     let hosted = prepare_hosted(task, |outcome, connection, flags| unsafe apply(connection, resume(outcome)));
-    Deferred!.{ hosted }
+    Action!::Scoped.(hosted)
 }
 
 fn wait(task: Read!) -> Action! { Action!::Wait.(task) }
@@ -256,28 +243,18 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
     match action {
         Action!::Wait(next) => unsafe submit(next, Option::None),
         Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
-        Action!::Scoped(plan, bytes) => unsafe submit_deferred(connection, plan, bytes),
+        Action!::Scoped(plan) => {
+            let (status, handled) = unsafe plan.submit(connection, |scope, root, plan, finish| {
+                unsafe kable_tcp_schedule(connection, scope, root, plan, finish)
+            });
+            handled
+        },
         Action!::Close(connection) => {
             let { raw } = connection;
             unsafe kable_tcp_close(raw);
             0i32
         },
     }
-}
-
-unsafe fn submit_deferred(connection: *u8, deferred: Deferred!, bytes: Option[Buffer!]) -> i32 {
-    let { hosted } = deferred;
-    let (status, handled) = unsafe hosted.submit(connection, |scope, root, plan, finish| match bytes {
-        Option::Some(buffer) => {
-            let ptr = unsafe &buffer.as_ptr();
-            let len = &buffer.len();
-            let status = unsafe kable_tcp_schedule(connection, scope, root, plan, finish, ptr, len);
-            buffer.destroy();
-            status
-        },
-        Option::None => unsafe kable_tcp_schedule(connection, scope, root, plan, finish, 0usize as *u8, 0usize),
-    });
-    handled
 }
 
 unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {
