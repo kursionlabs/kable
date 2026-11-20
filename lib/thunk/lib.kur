@@ -1,0 +1,68 @@
+//! Delayed calls and resumable computations with explicit ownership.
+
+/// An owned call that runs when forced.
+forall State, Output, Env.
+struct Thunk! {
+    state: State,
+    evaluate: closure[Env](State) -> Output,
+    cleanup: fn(State) -> (),
+}
+
+/// Stores state for a delayed call. Put owned captures in state so cleanup can release them.
+forall State, Output, Env where Copy[Env].
+fn delay(state: State, evaluate: closure[Env](State) -> Output, cleanup: fn(State) -> ())
+    -> Thunk![State, Output, Env] {
+    Thunk!.{ state, evaluate, cleanup }
+}
+
+forall State, Output, Env where Copy[Env].
+impl Thunk![State, Output, Env] {
+    fn force(self) -> Output {
+        let { state, evaluate, cleanup } = self;
+        evaluate(state)
+    }
+
+    fn discard(self) {
+        let { state, evaluate, cleanup } = self;
+        cleanup(state);
+    }
+}
+
+/// A finished computation or the owned state for another step.
+forall Next, Output.
+exposed enum Step {
+    Done(Output),
+    Suspended(Next),
+}
+
+/// An owned computation paused until its caller supplies the next input.
+forall State, Input, Output, Env.
+struct Suspension! {
+    state: State,
+    step: closure[Env](State, Input) -> Step[State, Output],
+    cleanup: fn(State) -> (),
+}
+
+/// Stores the first step's state. The step may capture copyable configuration.
+forall State, Input, Output, Env where Copy[Env].
+fn suspend(state: State, step: closure[Env](State, Input) -> Step[State, Output], cleanup: fn(State) -> ())
+    -> Suspension![State, Input, Output, Env] {
+    Suspension!.{ state, step, cleanup }
+}
+
+forall State, Input, Output, Env where Copy[Env].
+impl Suspension![State, Input, Output, Env] {
+    /// Runs one step. A suspended result carries the next state and its cleanup.
+    fn resume(self, input: Input) -> Step[Suspension![State, Input, Output, Env], Output] {
+        let { state, step, cleanup } = self;
+        match step(state, input) {
+            Step::Done(output) => Step::Done.(output),
+            Step::Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
+        }
+    }
+
+    fn discard(self) {
+        let { state, step, cleanup } = self;
+        cleanup(state);
+    }
+}

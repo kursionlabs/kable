@@ -172,6 +172,28 @@ the original request deadline. The second continuation captures the first
 buffer and either appends the footer or destroys the buffer if the request
 has ended. [Dependent file handler](examples/http-file/file_sequence.kur)
 
+## Delayed and suspended computations
+
+`thunk::delay(state, evaluate, cleanup)` stores an owned call. `force()`
+passes its state to `evaluate` and returns the result. `discard()` passes
+the state to `cleanup`.
+
+`thunk::suspend(state, step, cleanup)` stores a computation that needs input.
+`resume(input)` consumes it and returns `Step::Done(output)` or
+`Step::Suspended(next)`. The step supplies the updated state and the library
+packages it with the same step and cleanup functions. Put owned values in
+`state` and capture copyable configuration in `evaluate` or `step`.
+
+The message example reads one line per resume until it sees a line containing
+only `.`. EOF before the dot discards the partial message. `--check` validates
+the message and discards the delayed formatter.
+
+```sh
+../kursal/bin/kursal build examples/thunk-message -o bin/thunk-message
+printf 'hello\nworld\n.\n' | bin/thunk-message
+printf 'hello\n.\n' | bin/thunk-message --check
+```
+
 ## Scoped task plans
 
 `lib/task/` defines owned task plans, typed outcomes, and scope policy in
@@ -440,6 +462,7 @@ bin/tcp-session
 ## Code and checks
 
 - `kable/` — command-line program and built-in routes
+- `lib/thunk/` — delayed calls and explicit suspension
 - `lib/task/` — portable task plans and scope policy
 - `lib/async/` — libuv driver and bounded file reads
 - `lib/virtual_clock/` — deterministic timer driver
@@ -452,6 +475,7 @@ bin/tcp-session
 - `examples/async-read/` — two bounded reads under a shared deadline
 - `examples/timer-race/` — timer races, joins, and nested cancellation with linear payloads
 - `examples/task-chain/` — explicit sequential adapters and owned state on both engines
+- `examples/thunk-message/` — a message parser that resumes one line at a time
 - `examples/tcp-echo/` — TCP echo with an idle read deadline
 - `examples/tcp-session/` — owned connection state across a read retry
 

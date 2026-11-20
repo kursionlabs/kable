@@ -393,6 +393,20 @@ def check_timeout(port):
         assert_response(read_response(stalled), 408, b"Request Timeout\n")
 
 
+def check_thunk_message(binary):
+    message = b"hello\n\nworld\n.\n"
+    cases = (
+        ([], message, 0, b"Message (13 bytes)\nhello\n\nworld\n", b""),
+        (["--check"], message, 0, b"", b""),
+        ([], b".", 0, b"Message (0 bytes)\n", b""),
+        ([], b"unfinished\n", 1, b"", b"thunk-message: expected a line containing only '.'\n"),
+    )
+    for args, data, status, stdout, stderr in cases:
+        result = subprocess.run([binary, *args], input=data, capture_output=True, timeout=5)
+        assert (result.returncode, result.stdout, result.stderr) == (status, stdout, stderr), result
+    print("Kable thunk message checks passed")
+
+
 def check_async_read(command, directory):
     first = directory / "first.bin"
     second = directory / "a second file.bin"
@@ -941,6 +955,9 @@ def main():
             binary = build("kable", Path(directory) / "kable")
             hello = build("examples/hello-server", Path(directory) / "hello-server")
             static_files = build("examples/static-files", Path(directory) / "static-files")
+            thunk = build("tests/thunk", Path(directory) / "thunk")
+            subprocess.run([thunk], check=True, timeout=5)
+            check_thunk_message(build("examples/thunk-message", Path(directory) / "thunk-message"))
             check_timer_engines(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
             file_copy = build("examples/file-copy", Path(directory) / "file-copy")
