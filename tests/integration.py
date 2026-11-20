@@ -1038,7 +1038,21 @@ fn main() {
     assert "no instance of" in result.stderr and "Plan[ReadFile!, Virtual!, Completion[Buffer!]]" in result.stderr, result
 
 
+def check_native_registration(directory):
+    native = ROOT / "lib/async/native"
+    binary = directory / "native-registration"
+    subprocess.run([
+        "cc", str(ROOT / "tests/native_registration.c"),
+        str(native / "file.c"), str(native / "timer.c"),
+        "-Wl,--wrap=realloc,--wrap=kable_file_chunk,--wrap=kable_file_free",
+        "-luv", "-o", str(binary),
+    ], check=True)
+    subprocess.run([str(binary)], check=True, timeout=5)
+    print("Kable native registration fault checks passed")
+
+
 def check_timer_engines(directory):
+    check_native_registration(directory)
     native = build("examples/timer-race", directory / "timer-race")
     virtual = build_virtual("examples/timer-race", directory)
     scope = build("tests/task-scope", directory / "task-scope")
