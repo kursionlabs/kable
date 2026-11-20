@@ -135,12 +135,6 @@ uint8_t *kable_tcp_attachment(uint8_t *raw) {
     return ((Connection *)raw)->attachment;
 }
 
-uint64_t kable_tcp_now(uint8_t *raw) {
-    uv_loop_t *loop = kable_tcp_loop(raw);
-    uv_update_time(loop);
-    return uv_now(loop);
-}
-
 uv_loop_t *kable_tcp_loop(uint8_t *raw) {
     return &((Connection *)raw)->listener->loop;
 }
@@ -485,7 +479,7 @@ int32_t kable_tcp_finish(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms) 
     if ((!peer_eof && connection->phase != IDLE) || connection->listener->stopping) {
         return UV_ECANCELED;
     }
-    kable_tcp_now(raw);
+    uv_update_time(&connection->listener->loop);
     int status = kable_timer_start(&connection->listener->loop, ms, finish_expired,
         finish_closed, connection, &connection->timer);
     if (status < 0) return status;
@@ -501,7 +495,7 @@ int32_t kable_tcp_finish(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms) 
 int32_t kable_tcp_stream_begin(uint8_t *raw, uint64_t ms) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
-    kable_tcp_now(raw);
+    uv_update_time(&connection->listener->loop);
     int status = kable_timer_start(&connection->listener->loop, ms, finish_expired,
         finish_closed, connection, &connection->timer);
     if (status < 0) return status;

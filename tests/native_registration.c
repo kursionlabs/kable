@@ -47,6 +47,7 @@ typedef struct {
     size_t count;
     size_t leaf_attempts;
     int reject_leaf;
+    int cancelled;
     unsigned destroyed;
 } Policy;
 
@@ -129,8 +130,40 @@ static void check_rejected_file(void) {
     assert(released_files == 1);
 }
 
+static size_t expired_scope_event(uint8_t *raw, uint8_t event, size_t id) {
+    Policy *policy = (Policy *)raw;
+    if (event == BEGIN) {
+        assert(id == 0);
+        return 1;
+    }
+    if (event == CANCEL) {
+        policy->cancelled = 1;
+        return 0;
+    }
+    return scope_event(raw, event, id);
+}
+
+static void unexpected_join(void *context) {
+    (void)context;
+    assert(0);
+}
+
+static void check_expired_hosted_scope(void) {
+    uv_loop_t loop;
+    assert(uv_loop_init(&loop) == 0);
+    Policy policy = {0};
+    uint8_t *scope = kable_scope_new((uint8_t *)&policy, add_leaf, add_pair, expired_scope_event);
+    assert(scope && kable_scope_add_timer(scope, 0) == 0);
+    uint64_t end_ms = kable_now_millis();
+    assert(!kable_scope_start(scope, 0, &loop, end_ms, 1, unexpected_join, NULL));
+    assert(policy.cancelled && !uv_loop_alive(&loop));
+    kable_scope_free(scope);
+    assert(uv_loop_close(&loop) == 0 && policy.destroyed == 1);
+}
+
 int main(void) {
     check_slot_growth_failure();
     check_file_allocation_failure();
     check_rejected_file();
+    check_expired_hosted_scope();
 }

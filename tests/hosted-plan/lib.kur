@@ -173,6 +173,44 @@ fn check_runner_reuse() -> bool {
     loop_matched && length == 5 && cancelled && ready && timer_cancelled && scope_cancelled
 }
 
+fn discard_runner_sequence(state: (Buffer!, *u8), prior: Option[(Buffer!, Completion[()])]) {
+    let (state, cleaned) = state;
+    let (bytes, status) = prior.unwrap();
+    let valid = &state.len() == 5 && &bytes.len() == 6;
+    state.destroy();
+    bytes.destroy();
+    if !valid { trap(); }
+    match status { Completion::Cancelled => (), _ => trap() };
+    unsafe *cleaned = 1;
+}
+
+fn check_runner_sequence() -> bool {
+    let immediate = Duration::from_nanos(0);
+    let cleaned = unsafe alloca[u8]();
+    unsafe *cleaned = 0;
+    unsafe kable_test_loop_begin(0);
+    unsafe kable_test_advance_clock_on_init(0);
+    let valid = with_runner(|&runner| {
+        let before = &runner.run(sleep(immediate));
+        let bytes = Buffer!::new().push_static("output");
+        let first = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
+        let chain = first.then_owned((Buffer!::new().push_static("state"), cleaned), |state, prior| {
+            let (state, cleaned) = state;
+            state.destroy();
+            let (bytes, status) = prior;
+            bytes.destroy();
+            Option::Some.(sleep(immediate))
+        }, discard_runner_sequence);
+        let result = &runner.run_sequence(chain, Option::Some.(Duration::from_millis(1)));
+        let cancelled = match result { SequenceOutcome::Cancelled => true, _ => false };
+        let cleanup_ran = (unsafe *cleaned) == 1;
+        let after = &runner.run(sleep(immediate));
+        cancelled && cleanup_ran && sequence_stage_status(before, false) && sequence_stage_status(after, false)
+    });
+    let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
+    valid && loop_matched
+}
+
 fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Duration) -> bool {
     let bytes = Buffer!::new().push_static("owned");
     let owned = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
@@ -228,7 +266,7 @@ fn main() -> i32 {
         !check_one_shot_deadline(zero, zero, false) ||
         !check_one_shot_deadline(tiny, zero, true) ||
         !check_one_shot_deadline(tiny, Duration::from_millis(1), false) ||
-        !check_sequence_loop(0) || !check_sequence_loop(-42) || !check_runner_reuse() ||
+        !check_sequence_loop(0) || !check_sequence_loop(-42) || !check_runner_reuse() || !check_runner_sequence() ||
         !check_sequence_expires_during_setup(setup_time, zero) ||
         !check_sequence_expires_during_setup(zero, setup_time) { return 1; }
     let count = unsafe alloca[usize]();

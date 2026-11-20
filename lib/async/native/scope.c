@@ -5,8 +5,6 @@
 #include <stdlib.h>
 
 enum { TIMER, PAIR, FILE_IO, OPERATION };
-/* Hosts supply a remaining delay. Runners supply an absolute clock reading. */
-enum { DEADLINE_NONE, DEADLINE_AFTER, DEADLINE_AT };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY, JOINED };
 /* STARTED and RETIRED use a leaf ID or this separate parent timer ID. */
@@ -246,8 +244,9 @@ uint64_t kable_now_millis(void) {
     return uv_hrtime() / 1000000;
 }
 
-static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
-    uint8_t deadline, void (*done)(void *), void *context) {
+int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t end_ms,
+    uint8_t timed, void (*done)(void *), void *context) {
+    Scope *scope = (Scope *)raw;
     if (!scope || scope->driven) return 0;
     scope->driven = 1;
     if (scope->start_error < 0 || scope->invalid_plan) return 0;
@@ -255,12 +254,9 @@ static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
         scope->invalid_plan = 1;
         return 0;
     }
-    if (deadline == DEADLINE_AT) {
-        uv_update_time(loop);
-        uint64_t now = kable_now_millis();
-        ms = ms > now ? ms - now : 0;
-    }
-    if (deadline != DEADLINE_NONE && ms == 0) {
+    uv_update_time(loop);
+    uint64_t now = timed ? kable_now_millis() : 0;
+    if (timed && end_ms <= now) {
         scope->deadline_expired = 1;
         report(scope, CANCEL, 0);
         return 0;
@@ -269,9 +265,8 @@ static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
     scope->done = done;
     scope->context = context;
 
-    if (deadline != DEADLINE_NONE) {
-        if (deadline == DEADLINE_AFTER) uv_update_time(loop);
-        scope->start_error = kable_timer_start(loop, ms, deadline_ready, deadline_closed,
+    if (timed) {
+        scope->start_error = kable_timer_start(loop, end_ms - now, deadline_ready, deadline_closed,
             scope, &scope->deadline);
         if (scope->start_error == 0) report(scope, STARTED, PARENT_TIMER_ID);
     }
@@ -294,11 +289,6 @@ static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
     }
     if (scope->start_error < 0) cancel_scope(scope);
     return !report(scope, JOINED, 0);
-}
-
-int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
-    uint8_t timed, void (*done)(void *), void *context) {
-    return start_scope((Scope *)raw, root, loop, ms, timed ? DEADLINE_AFTER : DEADLINE_NONE, done, context);
 }
 
 static void require_closed_handle(uv_handle_t *handle, void *context) {
@@ -324,8 +314,7 @@ static uint8_t runner_run(Runner *runner, Scope *scope, size_t root, uint64_t en
     }
 
     uv_loop_t *loop = &runner->loop;
-    if (!timed) uv_update_time(loop);
-    start_scope(scope, root, loop, end_ms, timed ? DEADLINE_AT : DEADLINE_NONE, NULL, NULL);
+    kable_scope_start((uint8_t *)scope, root, loop, end_ms, timed, NULL, NULL);
     if (uv_run(loop, UV_RUN_DEFAULT) != 0 || report(scope, PENDING, 0)) abort();
     /* Inactive handles also have to close before the scope's storage is freed. */
     uv_walk(loop, require_closed_handle, NULL);

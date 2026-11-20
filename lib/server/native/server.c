@@ -267,8 +267,8 @@ uint8_t *kable_client_connection(uint8_t *raw) {
     return ((Client *)raw)->connection;
 }
 
-static uint64_t time_left(Client *client) {
-    uint64_t now = kable_tcp_now(client->connection);
+static uint64_t time_left(const Client *client) {
+    uint64_t now = kable_now_millis();
     return now < client->deadline ? client->deadline - now : 0;
 }
 
@@ -308,8 +308,7 @@ int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
     client->plan = plan;
     client->finish = finish;
     client->response_flags = flags;
-    uint64_t remaining = time_left(client);
-    if (!kable_scope_start(scope, root, kable_tcp_loop(client->connection), remaining,
+    if (!kable_scope_start(scope, root, kable_tcp_loop(client->connection), client->deadline,
         1, finish_plan, client)) {
         finish_plan(client);
     }
@@ -372,7 +371,7 @@ static int start_request(Server *server, uint8_t *connection) {
     client->connection = connection;
     llhttp_init(&client->parser, HTTP_REQUEST, &settings);
     client->parser.data = client;
-    client->deadline = kable_tcp_now(connection) + READ_TIMEOUT;
+    client->deadline = kable_now_millis() + READ_TIMEOUT;
     kable_tcp_attach(connection, (uint8_t *)client, destroy_client);
     return read_request(client);
 }

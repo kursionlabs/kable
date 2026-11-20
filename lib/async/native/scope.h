@@ -7,9 +7,12 @@
 /* The owning plan, host context, and host-defined completion state. */
 typedef int32_t (*KablePlanFinish)(uint8_t *, uint8_t *, uint8_t);
 
+uint64_t kable_now_millis(void);
+
 /* Returns 1 and calls done once the root resolves and all resources retire.
-   Returns 0 if the scope can be collected immediately, without a callback. */
-int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
+   Returns 0 if the scope can be collected immediately, without a callback.
+   A timed scope takes an absolute deadline in the kable_now_millis clock. */
+int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t end_ms,
     uint8_t timed, void (*done)(void *), void *context);
 void kable_scope_cancel(uint8_t *raw);
 

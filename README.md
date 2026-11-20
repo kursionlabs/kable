@@ -317,6 +317,8 @@ consume them and any available outcome if the handoff is skipped. The
 `resume` closure’s own captures must be copyable.
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
+Inside a libuv `with_runner` callback, `&runner.run_sequence(chain, budget)`
+drives the chain on the same loop as other runs in the callback.
 The budget is an `Option[Duration]` that applies to the whole chain.
 Use `task::sequence::sequence(first)` to build a chain with a single stage.
 Match the result using `task::sequence::SequenceOutcome`.

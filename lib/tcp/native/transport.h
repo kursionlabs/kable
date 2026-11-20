@@ -25,7 +25,6 @@ void kable_tcp_stop(uint8_t *listener);
 /* The connection owns one attachment through its socket and timer cleanup. */
 void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(uint8_t *));
 uint8_t *kable_tcp_attachment(uint8_t *connection);
-uint64_t kable_tcp_now(uint8_t *connection);
 uv_loop_t *kable_tcp_loop(uint8_t *connection);
 /* Delivers the next read or deadline through the native event callback. */
 int32_t kable_tcp_read(uint8_t *connection, uint64_t ms);

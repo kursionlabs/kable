@@ -589,6 +589,13 @@ impl Runner! {
         output
     }
 
+    /// Runs a sequence on this loop with one optional budget for all stages.
+    forall Stages, Output where Chain[Stages, Runner! -> Output].
+    fn run_sequence(&self, plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
+        let deadline = budget.map(|duration| deadline_after(duration));
+        drive_sequence_until(plan, &self, deadline)
+    }
+
     forall Task, Output where Plan[Task, Scope! -> Output].
     fn drive(&self, task: Task, deadline: Option[Duration]) -> StageResult[Output] {
         let { loop } = self;
