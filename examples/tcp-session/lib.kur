@@ -1,70 +1,74 @@
+use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
-use tcp::{Action!, Connection!, Event!, Listener!, Read!, write};
+use tcp::{Action!, Connection!, Listener!, defer};
 
-struct Session! { pending: Buffer!, retried: bool }
-
-fn start() -> Session! {
-    Session!.{ pending: Buffer!::new(), retried: false }
+fn start(connection: Connection!) -> Action! {
+    read_line(connection, Buffer!::new(), false)
 }
 
-fn finish(session: Session!) {
-    let { pending, retried } = session;
+fn close_session(connection: Connection!, pending: Buffer!) -> Action! {
     let length = &pending.len();
     pending.destroy();
     eprint_buffer(f"Closed session with {length} buffered bytes.\n");
+    connection.close()
 }
 
-fn read_line(connection: Connection!) -> Read! { connection.read().timeout(1000u64) }
+fn read_line(connection: Connection!, pending: Buffer!, retried: bool) -> Action! {
+    defer(connection.next().within(1000), |result| read_finished(result, pending, retried))
+}
 
-fn receive(connection: Connection!, pending: Buffer!) -> (Session!, Action!) {
+fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus),
+    pending: Buffer!, retried: bool) -> Action! {
+    let ((connection, outcome), deadline) = result;
+    match outcome {
+        StreamOutcome!::Item(bytes) => match deadline {
+            DeadlineStatus::Completed => receive(connection, pending.push_buffer(bytes)),
+            _ => { bytes.destroy(); close_session(connection, pending) },
+        },
+        StreamOutcome!::Cancelled => match deadline {
+            DeadlineStatus::TimedOut => {
+                if retried { return close_session(connection, pending); }
+                eprint_buffer(f"Retrying idle read.\n");
+                read_line(connection, pending, true)
+            },
+            _ => close_session(connection, pending),
+        },
+        StreamOutcome!::End | StreamOutcome!::Failed => close_session(connection, pending),
+    }
+}
+
+fn receive(connection: Connection!, pending: Buffer!) -> Action! {
     let exists 'k. (access, bytes, restore) = pending.open();
     let span = Span::from_slice(bytes);
     match span.rfind_byte(&access, b'\n') {
         Option::None => {
             let pending = restore.restore(access);
-            let oversized = &pending.len() > 16384usize;
-            let action = if oversized { connection.close() } else { read_line(connection).wait() };
-            (Session!.{ pending, retried: false }, action)
+            if &pending.len() > 16384 { close_session(connection, pending) }
+            else { read_line(connection, pending, false) }
         },
         Option::Some(index) => {
-            let end = index + 1usize;
+            let end = index + 1;
             let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
             let tail = span.skip(end);
             let pending = Buffer!::new_with_cap(tail.len()).push_bytes(&access, tail);
             restore.restore(access).destroy();
-            (Session!.{ pending, retried: false }, write(complete, read_line(connection)))
+            defer(connection.write(complete), |result| {
+                let (connection, bytes, status) = result;
+                bytes.destroy();
+                match status {
+                    Completion::Ready => read_line(connection, pending, false),
+                    Completion::Cancelled | Completion::Failed => close_session(connection, pending),
+                }
+            })
         },
-    }
-}
-
-fn handle(session: Session!, event: Event!) -> (Session!, Action!) {
-    match event {
-        Event!::Connected(connection) => (session, read_line(connection).wait()),
-        Event!::Bytes(connection, bytes) => {
-            let { pending, retried } = session;
-            receive(connection, pending.push_buffer(bytes))
-        },
-        Event!::TimedOut(connection) => {
-            let { pending, retried } = session;
-            let session = Session!.{ pending, retried: true };
-            if retried {
-                (session, connection.close())
-            } else {
-                eprint_buffer(f"Retrying idle read.\n");
-                (session, read_line(connection).wait())
-            }
-        },
-        Event!::End(connection) => (session, connection.close()),
-        Event!::Cancelled(connection) => (session, connection.close()),
-        Event!::Failed(connection, code) => (session, connection.close()),
     }
 }
 
 fn main() -> i32 {
-    let listener = match Listener!::bind_stateful(0u16, start, handle, finish) {
+    let listener = match Listener!::bind_connections(0, start) {
         Result::Ok(listener) => listener,
         Result::Err(code) => {
             eprint_buffer(f"tcp-session: cannot listen (libuv error {code})\n");

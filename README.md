@@ -343,7 +343,9 @@ SIGTERM the listener stops accepting and waits for pending scopes to join.
 
 Use `Listener!::bind_local(port, handle)` to receive each TCP event. Its handler can use
 `connection.read().timeout(1000u64).wait()`, `write(bytes, next_read)`, and
-`connection.close()`.
+`connection.close()`. `Listener!::bind_stateful(port, start, handle, finish)`
+also threads a connection-local value through those events and passes it to
+`finish` after the connection and pending operations close.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-echo -o bin/tcp-echo
@@ -356,21 +358,16 @@ Other connections can continue while either operation is pending.
 
 ### Connection-local state
 
-`Listener!::bind_stateful(port, start, handle, finish)` lets each connection
-own a state value, including a linear `Buffer!`. The listener calls `start`
-once for each accepted connection. Each event moves the state into `handle`,
-which returns the next state and action. After the connection and any pending
-operation have closed, `finish` consumes the last state exactly once.
+The session example starts each connection with its own linear buffer.
+Each read continuation owns the pending bytes and can retry one idle read
+with the same buffer. When complete lines arrive, the write continuation
+holds any trailing partial line until the write joins. Closing the session
+releases the buffer and returns an action to close the connection.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-session -o bin/tcp-session
 bin/tcp-session
 ```
-
-The session example echoes complete lines and keeps partial lines in a
-connection-local buffer. It retries an idle read once, preserving the partial
-line across the timeout. Connecting with a second client gives it an independent
-buffer.
 
 ## Code and checks
 

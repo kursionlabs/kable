@@ -862,6 +862,12 @@ def check_tcp_session(command):
                           bufsize=0) as process:
         try:
             port = listening_port(process, b"Listening on 127.0.0.1:")
+            with connect(port) as idle:
+                idle.sendall(b"retry limit")
+                assert idle.recv(1) == b""
+                logs = read_log_until(process.stderr, b"Closed session with 11 buffered bytes.")
+                assert logs.count(b"Retrying idle read.") == 1, logs
+
             with connect(port) as first, connect(port) as second:
                 first.sendall(b"first fragment ")
                 assert not select.select([first], [], [], 0.05)[0]
@@ -870,9 +876,8 @@ def check_tcp_session(command):
                 assert second.recv(1) == b""
 
                 logs = read_log_until(process.stderr, b"Retrying idle read.")
-                first.sendall(b"continued\n")
+                first.sendall(b"continued\nleft")
                 assert_received(first, b"first fragment continued\n")
-                first.sendall(b"left")
                 logs.extend(read_log_until(process.stderr, b"Retrying idle read."))
                 process.terminate()
                 assert first.recv(1) == b""
