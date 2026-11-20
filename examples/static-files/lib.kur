@@ -8,7 +8,7 @@ use std::parse::parse_u64;
 use std::process::Args;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
-use task::{Completion, DeadlineStatus, PlanOutput};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput};
 
 extern "C" fn uv_chdir(path: *u8) -> i32;
 extern "C" fn kable_static_file_status(error: i32) -> u16;
@@ -48,7 +48,13 @@ fn file_response(content_type: Slice[u8, 'static], result: (Completion[OpenedFil
         DeadlineStatus::Completed => return Option::Some.(match outcome {
             Completion::Ready(file) => file_reply(file, content_type),
             Completion::Cancelled => Response!::rejected(408).reply(),
-            Completion::Failed(error) => Response!::rejected(unsafe kable_static_file_status(error)).reply(),
+            Completion::Failed(failure) => {
+                let status = match failure {
+                    Failure::Operation(code) => unsafe kable_static_file_status(code),
+                    _ => 500,
+                };
+                Response!::rejected(status).reply()
+            },
         }),
         DeadlineStatus::TimedOut => 504,
         DeadlineStatus::Cancelled => 408,

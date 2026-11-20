@@ -7,7 +7,8 @@
 enum { SLEEP, RACE, JOIN, FILE_IO, OPERATION };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY };
-enum { SCOPE_COMPLETED = 1 };
+/* Matches the status decoding in async/lib.kur. Negative codes are backend startup errors. */
+enum { SCOPE_COMPLETED = 1, SCOPE_NOT_STARTED = 4, SCOPE_INVALID_PLAN, SCOPE_INVALID_RESULT };
 
 typedef size_t (*policy_add)(uint8_t *, uint8_t, size_t, size_t);
 typedef size_t (*policy_event)(uint8_t *, uint8_t, size_t);
@@ -37,7 +38,8 @@ struct Scope {
     uint8_t *policy;
     policy_add add;
     policy_event event;
-    int status;
+    int start_error;
+    int invalid_plan;
     int driven;
 };
 
@@ -58,17 +60,17 @@ static size_t report(Scope *scope, uint8_t event, size_t id) {
 /* Plans register children before parents. The array stays fixed once driven. */
 size_t kable_scope_add(uint8_t *raw, uint8_t kind, uint64_t ms, size_t first, size_t second) {
     Scope *scope = (Scope *)raw;
-    if (!scope || scope->driven || scope->status < 0) return SIZE_MAX;
+    if (!scope || scope->driven || scope->invalid_plan || scope->start_error < 0) return SIZE_MAX;
 
     if (scope->count == scope->capacity) {
         if (scope->capacity > SIZE_MAX / sizeof(Node) / 2) {
-            scope->status = UV_ENOMEM;
+            scope->start_error = UV_ENOMEM;
             return SIZE_MAX;
         }
         size_t capacity = scope->capacity ? scope->capacity * 2 : 8;
         Node *nodes = realloc(scope->nodes, capacity * sizeof *nodes);
         if (!nodes) {
-            scope->status = UV_ENOMEM;
+            scope->start_error = UV_ENOMEM;
             return SIZE_MAX;
         }
         scope->nodes = nodes;
@@ -77,7 +79,7 @@ size_t kable_scope_add(uint8_t *raw, uint8_t kind, uint64_t ms, size_t first, si
 
     size_t index = scope->add(scope->policy, kind, first, second);
     if (index != scope->count) {
-        scope->status = UV_EINVAL;
+        scope->invalid_plan = 1;
         return SIZE_MAX;
     }
     scope->count++;
@@ -87,7 +89,7 @@ size_t kable_scope_add(uint8_t *raw, uint8_t kind, uint64_t ms, size_t first, si
 
 static size_t add_file_node(Scope *scope, size_t index, KableFile *file) {
     if (!file) {
-        scope->status = UV_ENOMEM;
+        scope->start_error = UV_ENOMEM;
         return SIZE_MAX;
     }
     scope->nodes[index].kind = FILE_IO;
@@ -200,9 +202,9 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
     Scope *scope = (Scope *)raw;
     if (!scope || scope->driven) return 0;
     scope->driven = 1;
-    if (scope->status < 0) return 0;
+    if (scope->start_error < 0 || scope->invalid_plan) return 0;
     if (!report(scope, BEGIN, root)) {
-        scope->status = UV_EINVAL;
+        scope->invalid_plan = 1;
         return 0;
     }
     if (timed && ms == 0) {
@@ -215,37 +217,37 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
 
     if (timed) {
         uv_update_time(loop);
-        scope->status = kable_timer_start(loop, ms, deadline_ready, deadline_closed,
+        scope->start_error = kable_timer_start(loop, ms, deadline_ready, deadline_closed,
             scope, &scope->deadline);
-        if (scope->status == 0) report(scope, STARTED, 0);
+        if (scope->start_error == 0) report(scope, STARTED, 0);
     }
-    for (size_t i = 0; i < scope->count && scope->status == 0; i++) {
+    for (size_t i = 0; i < scope->count && scope->start_error == 0; i++) {
         Node *node = &scope->nodes[i];
         if (node->kind == SLEEP) {
-            scope->status = kable_timer_start(loop, node->ms, task_ready,
+            scope->start_error = kable_timer_start(loop, node->ms, task_ready,
                 clear_timer, node, &node->timer);
-            if (scope->status == 0) report(scope, STARTED, 0);
+            if (scope->start_error == 0) report(scope, STARTED, 0);
         } else if (node->kind == FILE_IO) {
-            scope->status = kable_file_start(node->file, loop, leaf_done, node);
-            if (scope->status == 0) report(scope, STARTED, 0);
+            scope->start_error = kable_file_start(node->file, loop, leaf_done, node);
+            if (scope->start_error == 0) report(scope, STARTED, 0);
         } else if (node->kind == OPERATION) {
-            scope->status = node->start(node->operation, (uint8_t *)loop, operation_done, (uint8_t *)node);
-            if (scope->status == 0) {
+            scope->start_error = node->start(node->operation, (uint8_t *)loop, operation_done, (uint8_t *)node);
+            if (scope->start_error == 0) {
                 node->active = 1;
                 report(scope, STARTED, 0);
             }
         }
     }
-    if (scope->status < 0) cancel_scope(scope);
+    if (scope->start_error < 0) cancel_scope(scope);
     return report(scope, PENDING, 0) != 0;
 }
 
 void kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t timed) {
     Scope *scope = (Scope *)raw;
-    if (!scope || scope->driven || scope->status < 0) return;
+    if (!scope || scope->driven || scope->invalid_plan || scope->start_error < 0) return;
     uv_loop_t loop;
-    scope->status = uv_loop_init(&loop);
-    if (scope->status < 0) return;
+    scope->start_error = uv_loop_init(&loop);
+    if (scope->start_error < 0) return;
     kable_scope_start(raw, root, &loop, ms, timed, NULL, NULL);
     uv_run(&loop, UV_RUN_DEFAULT);
     if (uv_loop_close(&loop) != 0) abort();
@@ -254,10 +256,12 @@ void kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t timed) {
 int32_t kable_scope_result(uint8_t *raw, size_t id) {
     Scope *scope = (Scope *)raw;
     if (!scope) return UV_ENOMEM;
-    if (scope->status < 0) return scope->status;
-    if (!scope->driven || report(scope, PENDING, 0) || id >= scope->count) return UV_EINVAL;
+    if (scope->start_error < 0) return scope->start_error;
+    if (scope->invalid_plan) return SCOPE_INVALID_PLAN;
+    if (!scope->driven) return SCOPE_NOT_STARTED;
+    if (report(scope, PENDING, 0) || id >= scope->count) return SCOPE_INVALID_RESULT;
     size_t result = report(scope, RESULT, id);
-    return result == SIZE_MAX ? UV_EINVAL : (int32_t)result;
+    return result == SIZE_MAX ? SCOPE_INVALID_RESULT : (int32_t)result;
 }
 
 int32_t kable_scope_file_result(uint8_t *raw, size_t id, uint8_t **data, size_t *len) {

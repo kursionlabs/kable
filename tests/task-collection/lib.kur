@@ -1,6 +1,7 @@
 use async::run;
+use std::buffer::Buffer!;
 use std::option::Option;
-use task::{Completion, PlanOutput, Sleep!, sleep};
+use task::{Completion, Failure, PlanOutput, Sleep!, select, sleep};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
@@ -44,7 +45,44 @@ instance Plan[ReverseSelect!, Driver -> bool] {
     }
 }
 
+struct UnrootedTimer! { timer: Sleep![Buffer!] }
+
+instance PlanOutput[UnrootedTimer! -> (Buffer!, Completion[()])] {}
+
+forall Driver where PlanDriver[Driver].
+instance Plan[UnrootedTimer!, Driver -> (Buffer!, Completion[()])] {
+    fn stage(&task: UnrootedTimer!, &scope: Driver) -> Option[usize] {
+        let { timer } = task;
+        Plan[Sleep![Buffer!], Driver -> (Buffer!, Completion[()])]::stage(&timer, &scope);
+        task = UnrootedTimer!.{ timer };
+        Option::None
+    }
+
+    fn collect(task: UnrootedTimer!, &scope: Driver) -> (Buffer!, Completion[()]) {
+        let { timer } = task;
+        Plan[Sleep![Buffer!], Driver -> (Buffer!, Completion[()])]::collect(timer, &scope)
+    }
+}
+
+forall T where Copy[T].
+fn invalid_plan(status: Completion[T]) -> bool {
+    match status {
+        Completion::Failed(failure) => match failure { Failure::InvalidPlan => true, _ => false },
+        _ => false,
+    }
+}
+
+fn check_unrooted_timer() -> bool {
+    let first = UnrootedTimer!.{ timer: sleep(0, Buffer!::new().push_static("first")) };
+    let second = sleep(0, Buffer!::new().push_static("second"));
+    let ((first, first_status), (second, second_status), race_status) = run(select(first, second));
+    let lengths_ok = &first.len() == 5 && &second.len() == 6;
+    first.destroy();
+    second.destroy();
+    lengths_ok && invalid_plan(first_status) && invalid_plan(second_status) && invalid_plan(race_status)
+}
+
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(0u64, 1u8), second: sleep(30_000u64, 2u8), id: Option::None };
-    if run(plan) { 0i32 } else { 1i32 }
+    if run(plan) && check_unrooted_timer() { 0 } else { 1 }
 }

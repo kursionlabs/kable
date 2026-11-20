@@ -1,4 +1,5 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
+use std::fmt::{Format, Writable, write_i64};
 use std::option::Option;
 use package::{driver, sequence};
 export driver;
@@ -9,12 +10,35 @@ use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 forall Task -> Output.
 trait PlanOutput {}
 
+/// Why a plan failed. Drivers preserve their native codes for startup and I/O.
+exposed enum Failure {
+    NotStarted,
+    InvalidPlan,
+    InvalidResult,
+    Startup(i32),
+    Operation(i32),
+}
+
+forall W where Writable[W].
+instance Format[Failure, W] {
+    fn format(value: Failure, out: W) -> (Failure, W) {
+        let out = match value {
+            Failure::NotStarted => Writable[W]::write_static(out, "scope never started"),
+            Failure::InvalidPlan => Writable[W]::write_static(out, "invalid scope plan"),
+            Failure::InvalidResult => Writable[W]::write_static(out, "invalid scope result"),
+            Failure::Startup(code) => write_i64(Writable[W]::write_static(out, "startup error "), code as i64),
+            Failure::Operation(code) => write_i64(Writable[W]::write_static(out, "operation error "), code as i64),
+        };
+        (value, out)
+    }
+}
+
 /// The value an operation produces on success, or the reason it stopped.
 forall T.
 exposed enum Completion {
     Ready(T),
     Cancelled,
-    Failed(i32),
+    Failed(Failure),
 }
 
 /// A source that builds a one-shot plan for its next item.
@@ -38,7 +62,7 @@ exposed enum StreamOutcome! {
     Item(Item),
     End,
     Cancelled,
-    Failed(i32),
+    Failed(Failure),
 }
 
 forall T.
@@ -80,8 +104,8 @@ fn completion(result: Resolution) -> Completion[()] {
     match result {
         Resolution::Completed => Completion::Ready.(()),
         Resolution::Cancelled => Completion::Cancelled,
-        Resolution::Failed(code) => Completion::Failed.(code),
-        Resolution::First | Resolution::Second => Completion::Failed.(-1),
+        Resolution::Failed(failure) => Completion::Failed.(failure),
+        Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
     }
 }
 
@@ -131,8 +155,8 @@ instance Plan[Select![First, Second], Driver -> (A, B, Completion[Side])] {
             Resolution::First => Completion::Ready.(Side::First),
             Resolution::Second => Completion::Ready.(Side::Second),
             Resolution::Cancelled => Completion::Cancelled,
-            Resolution::Failed(code) => Completion::Failed.(code),
-            Resolution::Completed => Completion::Failed.(-1),
+            Resolution::Failed(failure) => Completion::Failed.(failure),
+            Resolution::Completed => Completion::Failed.(Failure::InvalidResult),
         };
         (a, b, status)
     }
@@ -180,7 +204,7 @@ impl Task {
                     Side::Second => DeadlineStatus::Completed,
                 },
                 Completion::Cancelled => DeadlineStatus::Cancelled,
-                Completion::Failed(code) => DeadlineStatus::Failed.(code),
+                Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
             };
             (outcome, deadline)
         })
@@ -207,5 +231,5 @@ exposed enum DeadlineStatus {
     Completed,
     TimedOut,
     Cancelled,
-    Failed(i32),
+    Failed(Failure),
 }

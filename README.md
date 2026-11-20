@@ -208,6 +208,14 @@ The outcome hands ownership of the values back to the caller on readiness,
 cancellation, or startup failure. A cancelled join preserves the individual
 outcomes of children that already completed.
 
+`Completion::Failed`, `StreamOutcome!::Failed`, and
+`DeadlineStatus::Failed` carry a `task::Failure`. A driver reports
+`Startup(code)` if it cannot prepare or start the scope. An operation that
+runs and fails reports `Operation(code)`. Both preserve the backend code.
+`NotStarted` covers plans collected without starting their scope.
+`InvalidPlan` reports rejected scope structure and `InvalidResult` reports
+a missing or unexpected driver result.
+
 ```sh
 ../kursal/bin/kursal build examples/timer-race -o bin/timer-race
 bin/timer-race
@@ -227,7 +235,7 @@ capture owned state and runs once, including on cancellation or failure.
 `(output, deadline)` after both join. `DeadlineStatus::Completed` means the
 plan finished first, including when the operation reported an error.
 `TimedOut` means the local timer won, `Cancelled` means the enclosing scope
-cancelled the race, and `Failed(code)` reports a scope error. Every case gives
+cancelled the race, and `Failed(failure)` reports a scope error. Every case gives
 the caller the inner output to reclaim. A local timeout leaves unrelated
 sibling plans running.
 
@@ -286,7 +294,7 @@ bin/task-chain
 
 `read_file(&access, path, limit)` plans a regular-file read. After the plan
 joins, match `Completion::Ready(bytes)`, `Completion::Cancelled`, or
-`Completion::Failed(code)`. The same cases apply to `open_file` and
+`Completion::Failed(failure)`. The same cases apply to `open_file` and
 `create_file`, whose ready values are owned file handles. The work runs
 on libuv's worker pool. Cancellation skips queued work when possible and
 asks a running worker to stop between reads. The scope waits for the worker

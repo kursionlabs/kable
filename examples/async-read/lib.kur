@@ -21,16 +21,16 @@ fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
             Completion::Ready(second) => {
                 if print_buffer(first.push_buffer(second)).is_err() { 1i32 } else { 0i32 }
             },
-            Completion::Failed(code) => {
+            Completion::Failed(failure) => {
                 first.destroy();
-                eprint_buffer(f"async-read: second file failed (libuv error {code})\n");
+                eprint_buffer(f"async-read: second file failed ({failure})\n");
                 1i32
             },
             Completion::Cancelled => { first.destroy(); 1i32 },
         },
-        Completion::Failed(code) => {
+        Completion::Failed(failure) => {
             discard(right);
-            eprint_buffer(f"async-read: first file failed (libuv error {code})\n");
+            eprint_buffer(f"async-read: first file failed ({failure})\n");
             1i32
         },
         Completion::Cancelled => { discard(right); 1i32 },
@@ -70,10 +70,10 @@ fn main(args: Args) -> i32 {
             eprint_buffer(f"async-read: deadline expired\n");
             1i32
         },
-        Completion::Failed(code) => {
+        Completion::Failed(failure) => {
             discard(left);
             discard(right);
-            eprint_buffer(f"async-read: scope failed (libuv error {code})\n");
+            eprint_buffer(f"async-read: scope failed ({failure})\n");
             1i32
         },
     }

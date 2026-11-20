@@ -6,7 +6,7 @@ use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, Failure, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Plan, Resolution};
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -48,8 +48,8 @@ instance Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])] {
         let outcome = match &scope.result(id) {
             Resolution::Completed => unsafe read_result(raw),
             Resolution::Cancelled => StreamOutcome!::Cancelled,
-            Resolution::Failed(status) => StreamOutcome!::Failed.(status),
-            Resolution::First | Resolution::Second => StreamOutcome!::Failed.(-1),
+            Resolution::Failed(failure) => StreamOutcome!::Failed.(failure),
+            Resolution::First | Resolution::Second => StreamOutcome!::Failed.(Failure::InvalidResult),
         };
         (Connection!.{ raw }, outcome)
     }
@@ -71,11 +71,11 @@ instance Plan[WritePlan!, Scope! -> (Connection!, Buffer!, Completion[()])] {
         let status = unsafe kable_tcp_collect_scoped_write(request);
         let completion = match &scope.result(id) {
             Resolution::Completed => {
-                if status < 0 { Completion::Failed.(status) } else { Completion::Ready.(()) }
+                if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(()) }
             },
             Resolution::Cancelled => Completion::Cancelled,
-            Resolution::Failed(code) => Completion::Failed.(code),
-            Resolution::First | Resolution::Second => Completion::Failed.(-1),
+            Resolution::Failed(failure) => Completion::Failed.(failure),
+            Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
         };
         (connection, bytes, completion)
     }
@@ -93,7 +93,7 @@ unsafe fn read_result(raw: *u8) -> StreamOutcome![Buffer!] {
             StreamOutcome!::Item.(unsafe Buffer!::new_with_cap(length).push_n(bytes, length))
         },
         3u8 => StreamOutcome!::End,
-        _ => StreamOutcome!::Failed.(unsafe *status),
+        _ => StreamOutcome!::Failed.(Failure::Operation.(unsafe *status)),
     }
 }
 

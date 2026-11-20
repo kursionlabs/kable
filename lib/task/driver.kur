@@ -13,7 +13,7 @@ trait PlanDriver {
     fn timer(&scope: Driver, ms: u64) -> Option[usize];
     fn pair(&scope: Driver, pair: Pair) -> Option[usize];
     /// Gets a node's result after the engine has joined.
-    /// An absent ID reports staging failure.
+    /// On failure, preserves the reason the scope could not provide a result.
     fn result(&scope: Driver, id: Option[usize]) -> Resolution;
 }
 

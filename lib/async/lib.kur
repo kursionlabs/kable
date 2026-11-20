@@ -6,7 +6,7 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
-use task::{Completion, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
 
@@ -175,6 +175,8 @@ const CANCELLED: i32 = 0i32;
 const COMPLETED: i32 = 1i32;
 const FIRST: i32 = 2i32;
 const SECOND: i32 = 3i32;
+const NOT_STARTED: i32 = 4;
+const INVALID_PLAN: i32 = 5;
 
 unsafe fn add_branch(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
     let branch = match kind {
@@ -214,7 +216,7 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
                 Resolution::Completed => COMPLETED as usize,
                 Resolution::First => FIRST as usize,
                 Resolution::Second => SECOND as usize,
-                Resolution::Failed(code) => usize::MAX,
+                Resolution::Failed => usize::MAX,
             },
             Option::None => usize::MAX,
         },
@@ -289,7 +291,7 @@ impl Scope! {
         let size = unsafe alloca[usize]();
         let code = unsafe kable_scope_file_result(raw, id.unwrap_or(usize::MAX), data, size);
         self = Scope!.{ raw };
-        if code < 0i32 { return Completion::Failed.(code); }
+        if code < 0i32 { return Completion::Failed.(Failure::Operation.(code)); }
         let bytes = unsafe *data;
         let len = unsafe *size;
         Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
@@ -304,11 +306,11 @@ impl Scope! {
         self = Scope!.{ raw };
         let completion = match resolution {
             Resolution::Completed => {
-                if status < 0 { Completion::Failed.(status) } else { Completion::Ready.(()) }
+                if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(()) }
             },
             Resolution::Cancelled => Completion::Cancelled,
-            Resolution::Failed(code) => Completion::Failed.(code),
-            Resolution::First | Resolution::Second => Completion::Failed.(-1),
+            Resolution::Failed(failure) => Completion::Failed.(failure),
+            Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
         };
         (count, completion)
     }
@@ -318,14 +320,14 @@ impl Scope! {
         match &self.result(id) {
             Resolution::Completed => (),
             Resolution::Cancelled => return Completion::Cancelled,
-            Resolution::Failed(code) => return Completion::Failed.(code),
-            Resolution::First | Resolution::Second => return Completion::Failed.(-1),
+            Resolution::Failed(failure) => return Completion::Failed.(failure),
+            Resolution::First | Resolution::Second => return Completion::Failed.(Failure::InvalidResult),
         };
         let { raw } = self;
         let size = unsafe alloca[u64]();
         let fd = unsafe kable_scope_take_file(raw, id.unwrap_or(usize::MAX), size);
         self = Scope!.{ raw };
-        if fd < 0 { Completion::Failed.(fd) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
+        if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
     }
 
     fn run(&self, root: Option[usize], deadline: Option[u64]) {
@@ -346,7 +348,10 @@ impl Scope! {
         if code == COMPLETED { return Resolution::Completed; }
         if code == FIRST { return Resolution::First; }
         if code == SECOND { return Resolution::Second; }
-        Resolution::Failed.(code)
+        if code == NOT_STARTED { return Resolution::Failed.(Failure::NotStarted); }
+        if code == INVALID_PLAN { return Resolution::Failed.(Failure::InvalidPlan); }
+        if code < 0 { return Resolution::Failed.(Failure::Startup.(code)); }
+        Resolution::Failed.(Failure::InvalidResult)
     }
 
     fn close(self) {
@@ -359,8 +364,8 @@ fn collect_file(&scope: Scope!, id: Option[usize]) -> Completion[Buffer!] {
     match &scope.result(id) {
         Resolution::Completed => &scope.file_result(id),
         Resolution::Cancelled => Completion::Cancelled,
-        Resolution::Failed(code) => Completion::Failed.(code),
-        Resolution::First | Resolution::Second => Completion::Failed.(-1i32),
+        Resolution::Failed(failure) => Completion::Failed.(failure),
+        Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
     }
 }
 
@@ -420,7 +425,7 @@ instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] 
                 }
             },
             Completion::Cancelled => (StreamOutcome!::Cancelled, 0),
-            Completion::Failed(code) => (StreamOutcome!::Failed.(code), 0),
+            Completion::Failed(failure) => (StreamOutcome!::Failed.(failure), 0),
         };
         (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
     }

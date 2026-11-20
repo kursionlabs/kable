@@ -1,11 +1,62 @@
+use async::{Scope!, run};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
-use std::option::Result;
-use task::{Completion, DeadlineStatus, PlanOutput, join, sleep};
+use std::option::{Option, Result};
+use std::ptr::null;
+use std::process::trap;
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, join, sleep};
+use task::driver::Plan;
 
-fn failed(status: Completion[()]) -> bool {
-    match status { Completion::Failed => true, _ => false }
+fn never_started(failure: Failure) -> bool {
+    match failure { Failure::NotStarted => true, _ => false }
+}
+
+fn not_started(status: Completion[()]) -> bool {
+    match status { Completion::Failed(failure) => never_started(failure), _ => false }
+}
+
+struct FailStart {}
+
+unsafe fn fail_start(operation: *u8, loop: *u8, ready: unsafe fn(*u8) -> (), context: *u8) -> i32 { -42 }
+unsafe fn stop_unstarted(operation: *u8) -> u8 { trap() }
+
+instance PlanOutput[FailStart -> ()] {}
+
+instance Plan[FailStart, Scope! -> ()] {
+    fn stage(&task: FailStart, &scope: Scope!) -> Option[usize] {
+        unsafe &scope.add_operation(null(), fail_start, stop_unstarted)
+    }
+    fn collect(task: FailStart, &scope: Scope!) -> () { () }
+}
+
+fn startup_failed(status: Completion[()]) -> bool {
+    match status {
+        Completion::Failed(failure) => match failure {
+            Failure::Startup(code) => code == -42,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn check_startup_failure() -> bool {
+    let first = sleep(30_000, Buffer!::new().push_static("first"));
+    let second = sleep(30_000, Buffer!::new().push_static("second"));
+    let plan = join(first, join(second, FailStart.{}));
+    let (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(1000));
+    let lengths_ok = &first.len() == 5 && &second.len() == 6;
+    first.destroy();
+    second.destroy();
+    let deadline_failed = match deadline {
+        DeadlineStatus::Failed(failure) => match failure {
+            Failure::Startup(code) => code == -42,
+            _ => false,
+        },
+        _ => false,
+    };
+    lengths_ok && startup_failed(first_status) && startup_failed(second_status)
+        && startup_failed(inner) && startup_failed(outer) && deadline_failed
 }
 
 fn pending() -> HostedPlan! {
@@ -17,8 +68,12 @@ fn pending() -> HostedPlan! {
         bytes.destroy();
         let count = unsafe (host as *usize);
         unsafe *count = (unsafe *count) + 1;
-        let deadline_failed = match deadline { DeadlineStatus::Failed => true, _ => false };
-        if deadline_failed && failed(status) && failed(first) && failed(second) && length == 5 && value == 7 && state == 0 {
+        let deadline_failed = match deadline {
+            DeadlineStatus::Failed(failure) => never_started(failure),
+            _ => false,
+        };
+        if deadline_failed && not_started(status) && not_started(first) && not_started(second)
+            && length == 5 && value == 7 && state == 0 {
             17
         } else {
             -1
@@ -27,6 +82,7 @@ fn pending() -> HostedPlan! {
 }
 
 fn main() -> i32 {
+    if !check_startup_failure() { return 1; }
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let host = unsafe (count as *u8);

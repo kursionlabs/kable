@@ -1,4 +1,5 @@
 //! Engine-independent task selection and resource lifetime bookkeeping.
+use package::Failure;
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::process::trap;
@@ -19,7 +20,7 @@ exposed enum Resolution {
     First,
     Second,
     Cancelled,
-    Failed(i32),
+    Failed(Failure),
 }
 
 struct Node {

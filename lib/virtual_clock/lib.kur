@@ -1,40 +1,42 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
 use std::option::Option;
-use task::PlanOutput;
+use task::{Failure, PlanOutput};
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
 
 struct Virtual! {
     state: ScopeState!,
     timers: OwnedVec![Option[u64]],
+    invalid_plan: bool,
 }
 
 instance PlanDriver[Virtual!] {
     fn timer(&scope: Virtual!, ms: u64) -> Option[usize] {
-        let { state, timers } = scope;
+        let { state, timers, invalid_plan } = scope;
         let id = &state.add(Branch::Leaf);
         let timers = if id.is_some() { timers.push(Option::Some.(ms)) } else { timers };
-        scope = Virtual!.{ state, timers };
+        scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
         id
     }
 
     fn pair(&scope: Virtual!, pair: Pair) -> Option[usize] {
-        let { state, timers } = scope;
+        let { state, timers, invalid_plan } = scope;
         let id = &state.add(Branch::Pair.(pair));
         let timers = if id.is_some() { timers.push(Option::None) } else { timers };
-        scope = Virtual!.{ state, timers };
+        scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
         id
     }
 
     fn result(&scope: Virtual!, id: Option[usize]) -> Resolution {
-        let { state, timers } = scope;
+        let { state, timers, invalid_plan } = scope;
         let result = match id {
             Option::Some(id) => &state.result(id),
             Option::None => Option::None,
         };
-        scope = Virtual!.{ state, timers };
-        result.unwrap_or(Resolution::Failed.(-1i32))
+        scope = Virtual!.{ state, timers, invalid_plan };
+        let failure = if invalid_plan { Failure::InvalidPlan } else { Failure::InvalidResult };
+        result.unwrap_or(Resolution::Failed.(failure))
     }
 }
 
@@ -58,19 +60,19 @@ fn earliest(&timers: OwnedVec![Option[u64]]) -> Option[(usize, u64)] {
 }
 
 fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 {
-    let { state, timers } = scope;
+    let { state, timers, invalid_plan } = scope;
     let valid = match root {
-        Option::Some(id) => &state.begin(id),
+        Option::Some(id) => !invalid_plan && &state.begin(id),
         Option::None => false,
     };
     if !valid {
-        scope = Virtual!.{ state, timers };
+        scope = Virtual!.{ state, timers, invalid_plan: true };
         return 0u64;
     }
     let expired = match deadline { Option::Some(ms) => ms == 0u64, Option::None => false, };
     if expired {
         &state.cancel();
-        scope = Virtual!.{ state, timers };
+        scope = Virtual!.{ state, timers, invalid_plan };
         return 0u64;
     }
     var limit = deadline;
@@ -121,7 +123,7 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[u64]) -> u64 
             cancelled = &state.take_cancel();
         }
     }
-    scope = Virtual!.{ state, timers };
+    scope = Virtual!.{ state, timers, invalid_plan };
     elapsed
 }
 
@@ -135,11 +137,11 @@ fn drive(task: Task, deadline: Option[u64]) -> Output {
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[u64]) -> (Output, u64) {
-    var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new() };
+    var scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
     let root = Plan[Task, Virtual! -> Output]::stage(&task, &scope);
     let elapsed = advance(&scope, root, deadline);
     let result = Plan[Task, Virtual! -> Output]::collect(task, &scope);
-    let { state, timers } = scope;
+    let { state, timers, invalid_plan } = scope;
     state.destroy();
     timers.destroy(ignore_timer);
     (result, elapsed)

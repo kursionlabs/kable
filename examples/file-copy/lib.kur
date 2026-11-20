@@ -14,8 +14,8 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u6
             StreamOutcome!::Item(bytes) => bytes,
             StreamOutcome!::End => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
             StreamOutcome!::Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
-            StreamOutcome!::Failed(code) => {
-                eprint_buffer(f"file-copy: read failed ({code})\n");
+            StreamOutcome!::Failed(failure) => {
+                eprint_buffer(f"file-copy: read failed ({failure})\n");
                 return false;
             },
         };
@@ -33,9 +33,9 @@ fn transfer(&source: FileChunks!, &destination: OutputFile!, deadline: Option[u6
                 eprint_buffer(f"file-copy: write cancelled after {count} bytes\n");
                 return false;
             },
-            Completion::Failed(code) => {
+            Completion::Failed(failure) => {
                 let count = &destination.position();
-                eprint_buffer(f"file-copy: write failed after {count} bytes ({code})\n");
+                eprint_buffer(f"file-copy: write failed after {count} bytes ({failure})\n");
                 return false;
             },
         }
@@ -64,7 +64,7 @@ fn main(args: Args) -> i32 {
     let input = match run(open_file(&access, source)) {
         Completion::Ready(file) => file,
         Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
-        Completion::Failed(code) => { eprint_buffer(f"file-copy: opening source failed ({code})\n"); return 1; },
+        Completion::Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
     };
     let destination = match run(create_file(&access, destination)) {
         Completion::Ready(file) => file,
@@ -73,9 +73,9 @@ fn main(args: Args) -> i32 {
             eprint_buffer(f"file-copy: destination creation cancelled\n");
             return 1;
         },
-        Completion::Failed(code) => {
+        Completion::Failed(failure) => {
             input.close();
-            eprint_buffer(f"file-copy: creating destination failed ({code})\n");
+            eprint_buffer(f"file-copy: creating destination failed ({failure})\n");
             return 1;
         },
     };
