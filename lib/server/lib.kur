@@ -9,8 +9,9 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
-use task::{PlanOutput, Stream, StreamOutcome!};
+use task::{PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::Plan;
+use tcp::Connection!;
 
 // Callers import this trait to bring the plan extension methods into scope.
 export PlanOutput;
@@ -22,9 +23,10 @@ extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
 extern "C" fn kable_file_range(client: *u8, total: u64, offset: *u64, length: *u64) -> u16;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
-extern "C" fn kable_tcp_stream_write(connection: *u8, bytes: *u8, len: usize, idle_ms: u64,
+extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
+extern "C" fn kable_tcp_stream_schedule(connection: *u8,
     scope: *u8, root: usize, plan: *u8, finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
-extern "C" fn kable_tcp_stream_finish(connection: *u8, bytes: *u8, len: usize) -> i32;
+extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
@@ -155,20 +157,42 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
         return unsafe write_wire(client, headers);
     }
     let connection = unsafe kable_client_connection(client);
+    let status = unsafe kable_tcp_stream_begin(connection, STREAM_IDLE);
+    if status < 0 {
+        headers.destroy();
+        file.close();
+        return status;
+    }
     unsafe write_then_next(connection, headers, file.chunks(start, count))
 }
 
 unsafe fn write_then_next(connection: *u8, bytes: Buffer!, stream: FileChunks!) -> i32 {
-    let read = prepare_hosted(stream.next(), |result, raw, flags| {
-        unsafe chunk_joined(raw, result)
-    });
-
-    // The transport starts the read after this write completes.
-    let submission = unsafe read.submit(connection, |scope, root, plan, finish| {
-        let status = unsafe kable_tcp_stream_write(connection, unsafe &bytes.as_ptr(), &bytes.len(),
-            STREAM_IDLE, scope, root, plan, finish);
+    let writer = unsafe Connection!::from_raw(connection);
+    let write = prepare_hosted(writer.write(bytes), |result, raw, flags| {
+        let (writer, bytes, completion) = result;
+        let connection = unsafe writer.into_raw();
         bytes.destroy();
-        status
+        match completion {
+            Completion::Ready => {
+                if &stream.remaining() == 0 {
+                    stream.close();
+                    unsafe kable_tcp_stream_end(connection)
+                } else {
+                    let read = prepare_hosted(stream.next(), |result, raw, flags| {
+                        unsafe chunk_joined(raw, result)
+                    });
+                    unsafe schedule_stream(connection, read)
+                }
+            },
+            Completion::Cancelled | Completion::Failed => { stream.close(); -1 },
+        }
+    });
+    unsafe schedule_stream(connection, write)
+}
+
+unsafe fn schedule_stream(connection: *u8, task: HostedPlan!) -> i32 {
+    let submission = unsafe task.submit(connection, |scope, root, plan, finish| {
+        unsafe kable_tcp_stream_schedule(connection, scope, root, plan, finish)
     });
     submission.unwrap_or_else(|rejection| {
         let (error, continued) = rejection;
@@ -185,12 +209,6 @@ unsafe fn chunk_joined(connection: *u8, result: (FileChunks!, StreamOutcome![Buf
             return -1;
         },
     };
-    if &stream.remaining() == 0 {
-        stream.close();
-        let status = unsafe kable_tcp_stream_finish(connection, unsafe &bytes.as_ptr(), &bytes.len());
-        bytes.destroy();
-        return status;
-    }
     unsafe write_then_next(connection, bytes, stream)
 }
 

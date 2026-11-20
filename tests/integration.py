@@ -195,6 +195,8 @@ def check_static_files(command, directory, check_write_timeout=False):
             assert_response(request(b"/empty"), 200, b"")
             headers = assert_response(request(b"/large.bin"), 200, large)
             assert headers[b"accept-ranges"] == b"bytes" and b"content-range" not in headers
+            half_closed = exchange(port, b"GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n", eof=True)
+            assert_response(half_closed, 200, large)
             assert_response(request(b"/large.bin", b"HEAD"), 200, large, head=True)
             for value, start, end in (
                 (b"bytes=65000-140000", 65000, 140000),

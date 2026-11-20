@@ -50,13 +50,13 @@ int kable_tcp_unpark(uint8_t *connection);
 /* Copies the final response, then writes, half-closes, and drains until the
    deadline. A read-side EOF still permits this final write. */
 int32_t kable_tcp_finish(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms);
-/* Starts or continues a response, copying bytes and starting the scope after
-   the write. A successful submission owns plan until the scope joins. The
-   first submission sets the idle deadline, refreshed on each completed write. */
-int32_t kable_tcp_stream_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms,
-    uint8_t *scope, size_t root, uint8_t *plan, KablePlanFinish finish);
-/* Writes the last bytes, then half-closes and drains. */
-int32_t kable_tcp_stream_finish(uint8_t *connection, uint8_t *bytes, size_t len);
+/* Keeps the idle timer and peer read active across the response's scopes.
+   A successful scoped write refreshes the idle deadline. */
+int32_t kable_tcp_stream_begin(uint8_t *connection, uint64_t idle_ms);
+int32_t kable_tcp_stream_schedule(uint8_t *connection, uint8_t *scope, size_t root,
+    uint8_t *plan, KablePlanFinish finish);
+/* Half-closes and drains after the final scope has joined. */
+int32_t kable_tcp_stream_end(uint8_t *connection);
 void kable_tcp_close(uint8_t *connection);
 
 #endif

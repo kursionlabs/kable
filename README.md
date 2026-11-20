@@ -54,8 +54,10 @@ deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
 each socket write completes. `file.chunks(offset, length)` creates an
 owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
-joins. Only a nonempty chunk advances the cursor. The server closes the
-stream after the final read or when a cancelled read joins. An early EOF
+joins. Only a nonempty chunk advances the cursor. The server sends its
+headers and each chunk with `Sink.write()`, then pulls the next chunk from
+the write continuation. The server closes the stream after the final
+write joins or when a read or write is interrupted. An early EOF
 ends the response with fewer bytes than its declared length. `HEAD`
 uses the file length without reading its body.
 Each completed write restarts the five-second idle timer, so a transfer can
