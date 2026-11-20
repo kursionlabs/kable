@@ -12,6 +12,7 @@ use task::sequence::SequenceOutcome;
 
 extern "C" fn kable_test_loop_begin(error: i32) -> ();
 extern "C" fn kable_test_loop_end(expected_closes: u32) -> u8;
+extern "C" fn kable_test_scope_closes() -> u32;
 extern "C" fn kable_test_advance_clock_on_init(nanoseconds: u64) -> ();
 extern "C" fn kable_test_advance_clock_on_allocation(nanoseconds: u64) -> ();
 extern "C" fn kable_test_advance_clock(nanoseconds: u64) -> ();
@@ -244,14 +245,23 @@ fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Dur
     loop_matched && cancelled && (unsafe *cleaned) == 1
 }
 
+fn require_scope_closes(expected: u32) {
+    if (unsafe kable_test_scope_closes()) != expected { trap(); }
+}
+
 fn pending() -> HostedPlan! {
+    let closed_before = unsafe kable_test_scope_closes();
     let bytes = Buffer!::new().push_static("owned");
-    let first = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
+    let first = sleep(Duration::from_nanos(0)).map(|status| {
+        require_scope_closes(closed_before);
+        (bytes, status)
+    });
     let plan = join(first, sleep(Duration::from_nanos(0)));
     prepare_hosted(plan.within(Duration::from_secs(1)), |outcome, host, state| {
         let (((bytes, first), second, status), deadline) = outcome;
         let length = &bytes.len();
         bytes.destroy();
+        require_scope_closes(closed_before + 1);
         let count = unsafe (host as *usize);
         unsafe *count = (unsafe *count) + 1;
         let deadline_failed = match deadline {
@@ -276,13 +286,18 @@ unsafe fn reject_submission(host: *u8, scope: *u8, root: usize, plan: *u8,
 fn check_synchronous_submission() -> bool {
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
+    let closed_before = unsafe kable_test_scope_closes();
     let bytes = Buffer!::new().push_static("owned");
     let first = FailStart.{ stage_nanos: 0 };
-    let plan = join(first, sleep(Duration::from_secs(30))).map(|outcome| (bytes, outcome));
+    let plan = join(first, sleep(Duration::from_secs(30))).map(|outcome| {
+        require_scope_closes(closed_before);
+        (bytes, outcome)
+    });
     let hosted = prepare_hosted(plan, |outcome, host, state| {
         let (bytes, (unit, timer, joined)) = outcome;
         let length = &bytes.len();
         bytes.destroy();
+        require_scope_closes(closed_before + 1);
         let calls = unsafe (host as *usize);
         unsafe *calls = (unsafe *calls) + 1;
         if length == 5 && state == 6 && startup_failed(timer) && startup_failed(joined) { -17 } else { -1 }

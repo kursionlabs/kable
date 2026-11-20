@@ -60,9 +60,7 @@ fn drive_plan(task: Task, scope: Driver, drive: closure[Env](&_: Driver, Option[
     close: fn(Driver) -> ()) -> (Output, RunResult) {
     let prepared = prepare(task, scope);
     let result = &prepared.with_scope(drive);
-    let (output, scope) = prepared.collect();
-    close(scope);
-    (output, result)
+    (prepared.collect(close), result)
 }
 
 forall Task, Driver.
@@ -76,11 +74,13 @@ impl Prepared![Task, Driver] {
         value
     }
 
-    /// Collects a joined or unsubmitted plan and returns the scope for teardown.
+    /// Collects a joined or unsubmitted plan and closes its scope before
+    /// returning the owned outcome.
     forall Output where Plan[Task, Driver -> Output].
-    fn collect(self) -> (Output, Driver) {
+    fn collect(self, close: fn(Driver) -> ()) -> Output {
         let { task, scope, root } = self;
         let output = Plan[Task, Driver -> Output]::collect(task, &scope);
-        (output, scope)
+        close(scope);
+        output
     }
 }

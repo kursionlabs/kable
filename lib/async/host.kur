@@ -37,8 +37,7 @@ forall Task, Output, Env where Plan[Task, Scope! -> Output].
 unsafe fn finish_hosted(plan: *u8, host: *u8, state: u8) -> i32 {
     let { prepared, resume } = unsafe *(unsafe (plan as *Pending![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(plan));
-    let (outcome, scope) = prepared.collect();
-    scope.close();
+    let outcome = prepared.collect(Scope!::close);
     resume(outcome, host, state)
 }
 

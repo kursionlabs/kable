@@ -309,9 +309,9 @@ The virtual clock is a reference driver for timer plans. It uses the same
    cancelled operation can still be in flight. Each resource transitions
    from unstarted to active to retired once.
 3. Check `joined()` after the root resolves or a resource retires. Call
-   `prepared.collect()` after the scope joins, or to reclaim a plan
-   whose staging or submission failed. Collection returns the plan's owned
-   outcome and the scope for teardown.
+   `prepared.collect(close)` after the scope joins, or to reclaim a plan
+   whose staging or submission failed. Collection calls `close` with the
+   scope before returning the plan's owned outcome.
 
 An engine that supports sequences also implements `Clock` and
 `StageDriver`. Pass an optional absolute deadline in the engine's clock to

@@ -5,6 +5,7 @@
 static int32_t init_error;
 static unsigned init_count;
 static unsigned close_count;
+static uint32_t scope_closes;
 static uint8_t fake_clock;
 static uint64_t now;
 static uint64_t advance_on_allocation;
@@ -19,6 +20,16 @@ int __real_uv_loop_init(uv_loop_t *loop);
 int __real_uv_loop_close(uv_loop_t *loop);
 uint64_t __real_uv_hrtime(void);
 void *__real_calloc(size_t count, size_t size);
+void __real_kable_scope_free(uint8_t *scope);
+
+void __wrap_kable_scope_free(uint8_t *scope) {
+    __real_kable_scope_free(scope);
+    scope_closes++;
+}
+
+uint32_t kable_test_scope_closes(void) {
+    return scope_closes;
+}
 
 void *__wrap_calloc(size_t count, size_t size) {
     now += advance_on_allocation;
