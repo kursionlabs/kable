@@ -1,5 +1,5 @@
 //! Runs a prepared libuv plan under a host that already owns an event loop.
-use package::{Scope!, collect, native_scope};
+use package::Scope!;
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
 use std::option::Result;
@@ -16,7 +16,12 @@ struct Pending! { prepared: Prepared![Task, Scope!], resume: closure[Env](Output
 forall Task, Output, Env where Plan[Task, Scope! -> Output].
 fn prepare_hosted(task: Task, resume: closure[Env](Output, *u8, u8) -> i32) -> HostedPlan! {
     let prepared = prepare(task, Scope!::new());
-    let (scope, root) = unsafe native_scope(&prepared);
+    // The prepared plan keeps the native scope alive through collection.
+    let (scope, root) = &prepared.with_scope(|&scope, root| {
+        let { raw } = scope;
+        scope = Scope!.{ raw };
+        (raw, root.unwrap_or(usize::MAX))
+    });
     let plan = HeapAllocator::alloc(sizeof[Pending![Task, Output, Env]]()).into_raw();
     unsafe *(unsafe (plan as *Pending![Task, Output, Env])) = Pending!.{ prepared, resume };
     HostedPlan!.{ scope, root, plan, finish: finish_hosted[Task, Output, Env] }
@@ -26,7 +31,9 @@ forall Task, Output, Env where Plan[Task, Scope! -> Output].
 unsafe fn finish_hosted(plan: *u8, host: *u8, state: u8) -> i32 {
     let { prepared, resume } = unsafe *(unsafe (plan as *Pending![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(plan));
-    resume(collect(prepared), host, state)
+    let (outcome, scope) = prepared.collect();
+    scope.close();
+    resume(outcome, host, state)
 }
 
 impl HostedPlan! {

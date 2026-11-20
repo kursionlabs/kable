@@ -8,7 +8,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, Resource, ScopeState!, drive_plan};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, drive_plan};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
@@ -206,7 +206,7 @@ instance Stream[FileChunks! ->
 
 // The scope is lent only while staging operations or reading their outcomes.
 // Owned payloads stay in Kursal throughout the native event loop.
-struct Scope! { raw: *u8 }
+exposed (package) struct Scope! { raw: *u8 }
 
 enum RunLoop { Standalone, Reusable(*u8) }
 
@@ -495,23 +495,6 @@ instance PlanDriver[Scope!] {
     }
 
     fn result(&scope: Scope!, id: Option[usize]) -> Resolution { &scope.result(id) }
-}
-
-/// The host keeps the prepared plan alive until the native scope has joined.
-forall Task.
-unsafe fn native_scope(&prepared: Prepared![Task, Scope!]) -> (*u8, usize) {
-    &prepared.with_scope(|&scope, root| {
-        let { raw } = scope;
-        scope = Scope!.{ raw };
-        (raw, root.unwrap_or(usize::MAX))
-    })
-}
-
-forall Task, Output where Plan[Task, Scope! -> Output].
-fn collect(prepared: Prepared![Task, Scope!]) -> Output {
-    let (result, scope) = prepared.collect();
-    scope.close();
-    result
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
