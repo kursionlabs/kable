@@ -14,12 +14,9 @@ const FILE_LIMIT: usize = 65_536;
 fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
-    if timed {
-        return file.respond_with(file_response, discard_file)
-            .within(Duration::from_secs(1))
-            .reply();
-    }
-    file.respond_with(file_response, discard_plain_file).reply()
+    let discard: fn(Completion[Buffer!]) -> () = if timed { discard_file } else { discard_plain_file };
+    let reply = file.respond_with(|outcome| file_response(outcome).reply(), discard);
+    if timed { reply.within(Duration::from_secs(1)).reply() } else { reply.reply() }
 }
 
 fn file_response(outcome: Completion[Buffer!]) -> Response! {

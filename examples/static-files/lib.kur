@@ -1,6 +1,6 @@
 use async::{OpenedFile!, open_file_beneath_cwd};
 use http::{Method, Request!, Response!};
-use server::{Action!, RequestState, Server!, file_reply};
+use server::{Action!, Server!, file_reply};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -9,7 +9,7 @@ use std::process::Args;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, PlanOutput};
+use task::{Completion, Failure, PlanOutput};
 
 extern "C" fn uv_chdir(path: *u8) -> i32;
 extern "C" fn kable_static_file_status(error: i32) -> u16;
@@ -33,34 +33,21 @@ fn serve(request: Request!) -> Action! {
     let file = open_file_beneath_cwd(&access, bytes);
     restore.restore(access).destroy();
 
-    file.within(Duration::from_secs(2)).defer(|outcome, state| file_response(content_type, outcome, state))
+    file.respond_with(|outcome| opened_file_reply(outcome, content_type), discard_file)
+        .within(Duration::from_secs(2))
+        .reply()
 }
 
-fn file_response(content_type: Slice[u8, 'static], result: (Completion[OpenedFile!], DeadlineStatus),
-    state: RequestState) -> Option[Action!] {
-    let (outcome, deadline) = result;
-    match state {
-        RequestState::Cancelled => { discard_file(outcome); return Option::None; },
-        RequestState::Active => (),
-    }
-    let status = match deadline {
-        DeadlineStatus::Completed => return Option::Some.(match outcome {
-            Completion::Ready(file) => file_reply(file, content_type),
-            Completion::Cancelled => Response!::rejected(408).reply(),
-            Completion::Failed(failure) => {
-                let status = match failure {
-                    Failure::Operation(code) => unsafe kable_static_file_status(code),
-                    _ => 500,
-                };
-                Response!::rejected(status).reply()
-            },
-        }),
-        DeadlineStatus::TimedOut => 504,
-        DeadlineStatus::Cancelled => 408,
-        DeadlineStatus::Failed => 500,
+fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, 'static]) -> Action! {
+    let status = match outcome {
+        Completion::Ready(file) => return file_reply(file, content_type),
+        Completion::Cancelled => 408,
+        Completion::Failed(failure) => match failure {
+            Failure::Operation(code) => unsafe kable_static_file_status(code),
+            _ => 500,
+        },
     };
-    discard_file(outcome);
-    Option::Some.(Response!::rejected(status).reply())
+    Response!::rejected(status).reply()
 }
 
 fn discard_file(outcome: Completion[OpenedFile!]) {

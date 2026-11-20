@@ -146,13 +146,14 @@ use task::PlanOutput;
 
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .respond_with(file_response, discard_file)
+    .respond_with(|outcome| file_response(outcome).reply(), discard_file)
     .within(Duration::from_secs(1))
     .reply()
 ```
 
-`respond_with` takes two functions that can consume the joined outcome.
-`file_response` builds a response for an active request. `discard_file`
+`respond_with` takes a reply callback and a cleanup function. The reply
+callback consumes the joined outcome and returns an `Action!`. It can capture
+copyable values, such as the content type for a streamed file. `discard_file`
 releases the outcome when the request ends or the local deadline wins.
 `.reply()` builds the action. If the local timer wins while the request is
 active, the server replies 504 after the worker joins. `/file` uses the

@@ -75,10 +75,10 @@ enum Handler {
 
 exposed enum RequestState { Active, Cancelled }
 
-forall Task, Output.
+forall Task, Output, Env.
 struct ReplyBuilder! {
     task: Task,
-    respond: fn(Output) -> Response!,
+    respond: closure[Env](Output) -> Action!,
     discard: fn(Output) -> (),
     timeout: Option[Duration],
 }
@@ -87,8 +87,10 @@ forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
     /// Uses `respond` for a completed plan while the request is active.
     /// Uses `discard` to release the joined outcome otherwise.
-    fn respond_with(self, respond: fn(Output) -> Response!, discard: fn(Output) -> ())
-        -> ReplyBuilder![Task, Output] {
+    /// The reply callback can capture copyable values, since it can be skipped.
+    forall Env where Copy[Env].
+    fn respond_with(self, respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ())
+        -> ReplyBuilder![Task, Output, Env] {
         ReplyBuilder!.{ task: self, respond, discard, timeout: Option::None }
     }
 
@@ -115,10 +117,10 @@ impl Task {
     }
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-impl ReplyBuilder![Task, Output] {
+forall Task, Output, Env where Copy[Env], PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+impl ReplyBuilder![Task, Output, Env] {
     /// Sets a local deadline for the plan.
-    fn within(self, duration: Duration) -> ReplyBuilder![Task, Output] {
+    fn within(self, duration: Duration) -> ReplyBuilder![Task, Output, Env] {
         let { timeout: previous, ..rest } = self;
         ReplyBuilder!.{ timeout: Option::Some.(duration), ..rest }
     }
@@ -138,15 +140,15 @@ impl ReplyBuilder![Task, Output] {
     }
 }
 
-forall Output.
+forall Output, Env where Copy[Env].
 fn finish_reply(outcome: Output, state: RequestState, deadline: DeadlineStatus,
-    respond: fn(Output) -> Response!, discard: fn(Output) -> ()) -> Option[Action!] {
+    respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ()) -> Option[Action!] {
     match state {
         RequestState::Cancelled => { discard(outcome); return Option::None; },
         RequestState::Active => (),
     }
     let status = match deadline {
-        DeadlineStatus::Completed => return Option::Some.(respond(outcome).reply()),
+        DeadlineStatus::Completed => return Option::Some.(respond(outcome)),
         DeadlineStatus::TimedOut => 504,
         DeadlineStatus::Cancelled => 408,
         DeadlineStatus::Failed => 500,

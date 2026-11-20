@@ -14,7 +14,7 @@ fn serve() -> Action! {
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
     join(first, second)
-        .respond_with(joined_response, discard_join)
+        .respond_with(|files| joined_response(files).reply(), discard_join)
         .within(Duration::from_secs(1))
         .reply()
 }
