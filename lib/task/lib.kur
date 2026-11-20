@@ -43,7 +43,8 @@ exposed enum Completion {
 }
 
 /// A source that builds a one-shot plan for its next item.
-/// The plan returns (Source, StreamOutcome![Item]) after joining.
+/// The plan returns (Source, Completion[Option[Item]]) after joining.
+/// A ready None means EOF.
 forall Source -> Next.
 trait Stream {
     fn next(source: Source) -> Next;
@@ -55,15 +56,6 @@ trait Stream {
 forall Writer -> Item, Write.
 trait Sink {
     fn write(writer: Writer, item: Item) -> Write;
-}
-
-/// The result of one pull. The plan returns the owned source alongside it.
-forall Item.
-exposed enum StreamOutcome! {
-    Item(Item),
-    End,
-    Cancelled,
-    Failed(Failure),
 }
 
 struct Sleep! { duration: Duration, id: Option[usize] }

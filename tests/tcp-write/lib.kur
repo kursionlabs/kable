@@ -1,8 +1,8 @@
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
-use std::option::Result;
+use std::option::{Option, Result};
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!, defer};
 
 fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
@@ -38,9 +38,11 @@ fn serve(connection: Connection!) -> Action! {
     defer(connection.next(), |result| {
         let (connection, outcome) = result;
         match outcome {
-            StreamOutcome!::End => send_after_eof(connection),
-            StreamOutcome!::Item(bytes) => { bytes.destroy(); connection.close() },
-            StreamOutcome!::Cancelled | StreamOutcome!::Failed => connection.close(),
+            Completion::Ready(chunk) => match chunk {
+                Option::None => send_after_eof(connection),
+                Option::Some(bytes) => { bytes.destroy(); connection.close() },
+            },
+            Completion::Cancelled | Completion::Failed => connection.close(),
         }
     })
 }

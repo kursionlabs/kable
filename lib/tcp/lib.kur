@@ -6,7 +6,7 @@ use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{Completion, Failure, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, Failure, PlanOutput, Sink, Stream};
 use task::driver::Plan;
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -33,9 +33,9 @@ struct Connection! { raw: *u8 }
 struct NextRead! { connection: Connection!, id: Option[usize] }
 struct WritePlan! { connection: Connection!, bytes: Buffer!, request: *u8, id: Option[usize] }
 
-instance PlanOutput[NextRead! -> (Connection!, StreamOutcome![Buffer!])] {}
+instance PlanOutput[NextRead! -> (Connection!, Completion[Option[Buffer!]])] {}
 
-instance Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])] {
+instance Plan[NextRead!, Scope! -> (Connection!, Completion[Option[Buffer!]])] {
     fn stage(&task: NextRead!, &scope: Scope!) -> Option[usize] {
         let { connection: { raw }, id } = task;
         let id = unsafe &scope.add_operation(raw, kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read);
@@ -43,12 +43,12 @@ instance Plan[NextRead!, Scope! -> (Connection!, StreamOutcome![Buffer!])] {
         id
     }
 
-    fn collect(task: NextRead!, &scope: Scope!) -> (Connection!, StreamOutcome![Buffer!]) {
+    fn collect(task: NextRead!, &scope: Scope!) -> (Connection!, Completion[Option[Buffer!]]) {
         let { connection: { raw }, id } = task;
         let outcome = match (&scope.result(id)).completion() {
             Completion::Ready => unsafe read_result(raw),
-            Completion::Cancelled => StreamOutcome!::Cancelled,
-            Completion::Failed(failure) => StreamOutcome!::Failed.(failure),
+            Completion::Cancelled => Completion::Cancelled,
+            Completion::Failed(failure) => Completion::Failed.(failure),
         };
         (Connection!.{ raw }, outcome)
     }
@@ -79,7 +79,7 @@ instance Plan[WritePlan!, Scope! -> (Connection!, Buffer!, Completion[()])] {
     }
 }
 
-unsafe fn read_result(raw: *u8) -> StreamOutcome![Buffer!] {
+unsafe fn read_result(raw: *u8) -> Completion[Option[Buffer!]] {
     let data = unsafe alloca[*u8]();
     let len = unsafe alloca[usize]();
     let status = unsafe alloca[i32]();
@@ -88,10 +88,11 @@ unsafe fn read_result(raw: *u8) -> StreamOutcome![Buffer!] {
         1u8 => {
             let bytes = unsafe *data;
             let length = unsafe *len;
-            StreamOutcome!::Item.(unsafe Buffer!::new_with_cap(length).push_n(bytes, length))
+            let chunk = unsafe Buffer!::new_with_cap(length).push_n(bytes, length);
+            Completion::Ready.(Option::Some.(chunk))
         },
-        3u8 => StreamOutcome!::End,
-        _ => StreamOutcome!::Failed.(Failure::Operation.(unsafe *status)),
+        3u8 => Completion::Ready.(Option::None),
+        _ => Completion::Failed.(Failure::Operation.(unsafe *status)),
     }
 }
 

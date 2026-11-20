@@ -5,17 +5,19 @@ use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::{Slice, StaticRead};
 use std::time::Duration;
-use task::{Completion, Sink, Stream, StreamOutcome!};
+use task::{Completion, Sink, Stream};
 
 fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, deadline: Option[Duration]) -> bool {
     while &source.remaining() != 0 {
         let (next, outcome) = &runner.run(source.next());
         source = next;
         let bytes = match outcome {
-            StreamOutcome!::Item(bytes) => bytes,
-            StreamOutcome!::End => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
-            StreamOutcome!::Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
-            StreamOutcome!::Failed(failure) => {
+            Completion::Ready(chunk) => match chunk {
+                Option::Some(bytes) => bytes,
+                Option::None => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
+            },
+            Completion::Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
+            Completion::Failed(failure) => {
                 eprint_buffer(f"file-copy: read failed ({failure})\n");
                 return false;
             },

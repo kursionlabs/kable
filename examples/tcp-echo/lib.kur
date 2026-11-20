@@ -1,15 +1,15 @@
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
-use std::option::Result;
+use std::option::{Option, Result};
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!, defer};
 
 fn read_next(connection: Connection!) -> Action! {
     defer(connection.next().within(Duration::from_secs(1)), |result| read_finished(result))
 }
 
-fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus)) -> Action! {
+fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus)) -> Action! {
     let ((connection, outcome), deadline) = result;
     let active = match deadline {
         DeadlineStatus::Completed => true,
@@ -23,15 +23,19 @@ fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus
         },
         DeadlineStatus::Failed => false,
     };
-    match outcome {
-        StreamOutcome!::Item(bytes) => {
+    let chunk = match outcome {
+        Completion::Ready(chunk) => chunk,
+        Completion::Cancelled | Completion::Failed => return connection.close(),
+    };
+    match chunk {
+        Option::Some(bytes) => {
             if active {
                 return defer(connection.write(bytes).within(Duration::from_secs(1)), |result| write_finished(result));
             }
             bytes.destroy();
             connection.close()
         },
-        StreamOutcome!::End | StreamOutcome!::Cancelled | StreamOutcome!::Failed => connection.close(),
+        Option::None => connection.close(),
     }
 }
 

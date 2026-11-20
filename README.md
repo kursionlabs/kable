@@ -222,9 +222,8 @@ The outcome hands ownership of the values back to the caller on readiness,
 cancellation, or startup failure. A cancelled join preserves the individual
 outcomes of children that already completed.
 
-`Completion::Failed`, `StreamOutcome!::Failed`, and
-`DeadlineStatus::Failed` carry a `task::Failure`. A driver reports
-`Startup(code)` if it cannot prepare or start the scope. An operation that
+`Completion::Failed` and `DeadlineStatus::Failed` carry a `task::Failure`.
+A driver reports `Startup(code)` if it cannot prepare or start the scope. An operation that
 runs and fails reports `Operation(code)`. Both preserve the backend code.
 `NotStarted` covers plans collected without starting their scope.
 `InvalidPlan` reports rejected scope structure and `InvalidResult` reports
@@ -287,8 +286,9 @@ deadline expiry alongside its joined output. [Driver interfaces](lib/task/driver
 
 Import `task::Stream` to call `source.next()`. It moves the source into a
 one-shot plan. After the plan joins it returns the source alongside
-`StreamOutcome![Item]`, which carries an item, EOF, cancellation, or an
-error code. The caller decides when to request another item. File chunks
+`Completion[Option[Item]]`. `Ready(Some(item))` returns an item and
+`Ready(None)` means EOF. `Cancelled` and `Failed(failure)` report how the
+pull stopped. The caller decides when to request another item. File chunks
 and TCP connections both use this interface. TCP EOF ends the read side
 and the returned connection can still write.
 

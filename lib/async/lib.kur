@@ -7,7 +7,7 @@ use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
-use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, Resource, ScopeState!, drive_plan};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
@@ -426,9 +426,9 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     }
 }
 
-instance PlanOutput[NextFileChunk! -> (FileChunks!, StreamOutcome![Buffer!])] {}
+instance PlanOutput[NextFileChunk! -> (FileChunks!, Completion[Option[Buffer!]])] {}
 
-instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] {
+instance Plan[NextFileChunk!, Scope! -> (FileChunks!, Completion[Option[Buffer!]])] {
     fn stage(&task: NextFileChunk!, &scope: Scope!) -> Option[usize] {
         let { read, remaining } = task;
         let id = Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])]::stage(&read, &scope);
@@ -436,20 +436,21 @@ instance Plan[NextFileChunk!, Scope! -> (FileChunks!, StreamOutcome![Buffer!])] 
         id
     }
 
-    fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, StreamOutcome![Buffer!]) {
+    fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, Completion[Option[Buffer!]]) {
         let { read: { file, offset, limit, id }, remaining } = task;
         let (outcome, count) = match collect_file(&scope, id) {
             Completion::Ready(bytes) => {
                 let count = &bytes.len() as u64;
-                if count == 0 {
+                let chunk = if count == 0 {
                     bytes.destroy();
-                    (StreamOutcome!::End, count)
+                    Option::None
                 } else {
-                    (StreamOutcome!::Item.(bytes), count)
-                }
+                    Option::Some.(bytes)
+                };
+                (Completion::Ready.(chunk), count)
             },
-            Completion::Cancelled => (StreamOutcome!::Cancelled, 0),
-            Completion::Failed(failure) => (StreamOutcome!::Failed.(failure), 0),
+            Completion::Cancelled => (Completion::Cancelled, 0),
+            Completion::Failed(failure) => (Completion::Failed.(failure), 0),
         };
         (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
     }

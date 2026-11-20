@@ -10,7 +10,7 @@ use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome!, sleep};
+use task::{Completion, PlanOutput, Sink, Stream, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
 
@@ -186,16 +186,19 @@ unsafe fn write_joined(result: (Connection!, Buffer!, Completion[()]), stream: F
     })
 }
 
-unsafe fn chunk_joined(connection: Connection!, result: (FileChunks!, StreamOutcome![Buffer!])) -> i32 {
+unsafe fn chunk_joined(connection: Connection!, result: (FileChunks!, Completion[Option[Buffer!]])) -> i32 {
     let (stream, outcome) = result;
-    let bytes = match outcome {
-        StreamOutcome!::Item(bytes) => bytes,
-        StreamOutcome!::End | StreamOutcome!::Cancelled | StreamOutcome!::Failed => {
-            stream.close();
-            return unsafe connection.abort_stream();
-        },
+    let chunk = match outcome {
+        Completion::Ready(chunk) => chunk,
+        Completion::Cancelled | Completion::Failed => Option::None,
     };
-    unsafe write_then_next(connection, bytes, stream)
+    match chunk {
+        Option::Some(bytes) => unsafe write_then_next(connection, bytes, stream),
+        Option::None => {
+            stream.close();
+            unsafe connection.abort_stream()
+        },
+    }
 }
 
 unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,

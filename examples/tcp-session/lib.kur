@@ -3,7 +3,7 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!, defer};
 
 fn start(connection: Connection!) -> Action! {
@@ -21,15 +21,12 @@ fn read_line(connection: Connection!, pending: Buffer!, retried: bool) -> Action
     defer(connection.next().within(Duration::from_secs(1)), |result| read_finished(result, pending, retried))
 }
 
-fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus),
+fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
     pending: Buffer!, retried: bool) -> Action! {
     let ((connection, outcome), deadline) = result;
-    match outcome {
-        StreamOutcome!::Item(bytes) => match deadline {
-            DeadlineStatus::Completed => receive(connection, pending.push_buffer(bytes)),
-            _ => { bytes.destroy(); close_session(connection, pending) },
-        },
-        StreamOutcome!::Cancelled => match deadline {
+    let chunk = match outcome {
+        Completion::Ready(chunk) => chunk,
+        Completion::Cancelled => return match deadline {
             DeadlineStatus::TimedOut => {
                 if retried { return close_session(connection, pending); }
                 eprint_buffer(f"Retrying idle read.\n");
@@ -37,7 +34,15 @@ fn read_finished(result: ((Connection!, StreamOutcome![Buffer!]), DeadlineStatus
             },
             _ => close_session(connection, pending),
         },
-        StreamOutcome!::End | StreamOutcome!::Failed => close_session(connection, pending),
+        Completion::Failed => return close_session(connection, pending),
+    };
+    let bytes = match chunk {
+        Option::Some(bytes) => bytes,
+        Option::None => return close_session(connection, pending),
+    };
+    match deadline {
+        DeadlineStatus::Completed => receive(connection, pending.push_buffer(bytes)),
+        _ => { bytes.destroy(); close_session(connection, pending) },
     }
 }
 
