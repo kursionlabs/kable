@@ -42,6 +42,20 @@ exposed enum Completion {
     Failed(Failure),
 }
 
+forall T.
+impl Completion[T] {
+    /// Runs next on the ready value and forwards cancellation or failure.
+    /// The callback captures must be copyable because it can be skipped.
+    forall Output, Env where Copy[Env].
+    fn and_then(self, next: closure[Env](T) -> Completion[Output]) -> Completion[Output] {
+        match self {
+            Completion::Ready(value) => next(value),
+            Completion::Cancelled => Completion::Cancelled,
+            Completion::Failed(failure) => Completion::Failed.(failure),
+        }
+    }
+}
+
 /// A source that builds a one-shot plan for its next item.
 /// The plan returns (Source, Completion[Option[Item]]) after joining.
 /// A ready None means EOF.

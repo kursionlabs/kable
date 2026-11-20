@@ -308,15 +308,18 @@ impl Scope! {
     }
 
     fn file_result(&self, id: Option[usize]) -> Completion[Buffer!] {
+        let completion = (&self.result(id)).completion();
         let { raw } = self;
-        let data = unsafe alloca[*u8]();
-        let size = unsafe alloca[usize]();
-        let code = unsafe kable_scope_file_result(raw, id.unwrap_or(usize::MAX), data, size);
         self = Scope!.{ raw };
-        if code < 0i32 { return Completion::Failed.(Failure::Operation.(code)); }
-        let bytes = unsafe *data;
-        let len = unsafe *size;
-        Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+        completion.and_then(|unit| {
+            let data = unsafe alloca[*u8]();
+            let size = unsafe alloca[usize]();
+            let code = unsafe kable_scope_file_result(raw, id.unwrap_or(usize::MAX), data, size);
+            if code < 0 { return Completion::Failed.(Failure::Operation.(code)); }
+            let bytes = unsafe *data;
+            let len = unsafe *size;
+            Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+        })
     }
 
     fn write_result(&self, id: Option[usize]) -> (usize, Completion[()]) {
@@ -326,28 +329,22 @@ impl Scope! {
         let status = unsafe kable_scope_write_result(raw, id.unwrap_or(usize::MAX), size);
         let count = unsafe *size;
         self = Scope!.{ raw };
-        let completion = resolution.completion();
-        let completion = match completion {
-            Completion::Ready => {
-                if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { completion }
-            },
-            _ => completion,
-        };
+        let completion = resolution.completion().and_then(|unit| {
+            if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
+        });
         (count, completion)
     }
 
     forall File, Env where Copy[Env].
     fn collect_descriptor(&self, id: Option[usize], wrap: closure[Env](i32, u64) -> File) -> Completion[File] {
-        match (&self.result(id)).completion() {
-            Completion::Ready => (),
-            Completion::Cancelled => return Completion::Cancelled,
-            Completion::Failed(failure) => return Completion::Failed.(failure),
-        };
+        let completion = (&self.result(id)).completion();
         let { raw } = self;
-        let size = unsafe alloca[u64]();
-        let fd = unsafe kable_scope_take_file(raw, id.unwrap_or(usize::MAX), size);
         self = Scope!.{ raw };
-        if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
+        completion.and_then(|unit| {
+            let size = unsafe alloca[u64]();
+            let fd = unsafe kable_scope_take_file(raw, id.unwrap_or(usize::MAX), size);
+            if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
+        })
     }
 
     fn run(&self, root: Option[usize], deadline: Option[Duration], loop: RunLoop) -> bool {
@@ -385,14 +382,6 @@ impl Scope! {
     }
 }
 
-fn collect_file(&scope: Scope!, id: Option[usize]) -> Completion[Buffer!] {
-    match (&scope.result(id)).completion() {
-        Completion::Ready => &scope.file_result(id),
-        Completion::Cancelled => Completion::Cancelled,
-        Completion::Failed(failure) => Completion::Failed.(failure),
-    }
-}
-
 instance PlanOutput[ReadFile! -> Completion[Buffer!]] {}
 
 instance Plan[ReadFile!, Scope! -> Completion[Buffer!]] {
@@ -406,7 +395,7 @@ instance Plan[ReadFile!, Scope! -> Completion[Buffer!]] {
     fn collect(task: ReadFile!, &scope: Scope!) -> Completion[Buffer!] {
         let { path, limit, beneath, id } = task;
         path.destroy();
-        collect_file(&scope, id)
+        &scope.file_result(id)
     }
 }
 
@@ -422,7 +411,7 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
 
     fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
         let { file, offset, limit, id } = task;
-        (file, collect_file(&scope, id))
+        (file, &scope.file_result(id))
     }
 }
 
@@ -438,7 +427,7 @@ instance Plan[NextFileChunk!, Scope! -> (FileChunks!, Completion[Option[Buffer!]
 
     fn collect(task: NextFileChunk!, &scope: Scope!) -> (FileChunks!, Completion[Option[Buffer!]]) {
         let { read: { file, offset, limit, id }, remaining } = task;
-        let (outcome, count) = match collect_file(&scope, id) {
+        let (outcome, count) = match &scope.file_result(id) {
             Completion::Ready(bytes) => {
                 let count = &bytes.len() as u64;
                 let chunk = if count == 0 {

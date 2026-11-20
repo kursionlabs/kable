@@ -229,6 +229,10 @@ runs and fails reports `Operation(code)`. Both preserve the backend code.
 `InvalidPlan` reports rejected scope structure and `InvalidResult` reports
 a missing or unexpected driver result.
 
+`completion.and_then(next)` passes the owned value of `Ready` to `next`,
+which returns another `Completion`. Cancellation and failure pass through
+with the callback skipped, so its captures must be copyable.
+
 ```sh
 ../kursal/bin/kursal build examples/timer-race -o bin/timer-race
 bin/timer-race

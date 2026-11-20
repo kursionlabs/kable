@@ -45,11 +45,7 @@ instance Plan[NextRead!, Scope! -> (Connection!, Completion[Option[Buffer!]])] {
 
     fn collect(task: NextRead!, &scope: Scope!) -> (Connection!, Completion[Option[Buffer!]]) {
         let { connection: { raw }, id } = task;
-        let outcome = match (&scope.result(id)).completion() {
-            Completion::Ready => unsafe read_result(raw),
-            Completion::Cancelled => Completion::Cancelled,
-            Completion::Failed(failure) => Completion::Failed.(failure),
-        };
+        let outcome = (&scope.result(id)).completion().and_then(|unit| unsafe read_result(raw));
         (Connection!.{ raw }, outcome)
     }
 }
@@ -67,14 +63,11 @@ instance Plan[WritePlan!, Scope! -> (Connection!, Buffer!, Completion[()])] {
 
     fn collect(task: WritePlan!, &scope: Scope!) -> (Connection!, Buffer!, Completion[()]) {
         let { connection, bytes, request, id } = task;
+        // Collection frees the native request on every outcome.
         let status = unsafe kable_tcp_collect_scoped_write(request);
-        let completion = (&scope.result(id)).completion();
-        let completion = match completion {
-            Completion::Ready => {
-                if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { completion }
-            },
-            _ => completion,
-        };
+        let completion = (&scope.result(id)).completion().and_then(|unit| {
+            if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
+        });
         (connection, bytes, completion)
     }
 }
