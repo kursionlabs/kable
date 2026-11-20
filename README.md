@@ -297,8 +297,9 @@ The virtual clock is a reference driver for timer plans. It uses the same
 `ScopeState!` policy as libuv. [Virtual clock implementation](lib/virtual_clock/lib.kur)
 
 1. Implement `PlanDriver[Scope]` to register timers and pairs and report
-   joined results. Use the IDs assigned by `ScopeState!`. Register a pair's
-   children before the pair. Implement `Plan` to stage and collect each
+   joined results. Register nodes with `ScopeState!`'s `.add_leaf()` and
+   `.add_pair(pair)` and use the IDs they return. Register a pair's children
+   before the pair. Implement `Plan` to stage and collect each
    engine-specific operation. `PlanOutput` exposes the outcome type for
    composition and callback inference.
 2. Use `prepare(task, scope).drive(run, close)` for a standalone run. The

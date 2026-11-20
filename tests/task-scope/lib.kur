@@ -1,11 +1,11 @@
 use std::option::Option;
-use task::driver::{Branch, Pair, PairKind, Resolution, Resource, ScopeState!};
+use task::driver::{Pair, PairKind, Resolution, Resource, ScopeState!};
 
 fn check_retirement_before_resolution() -> bool {
     let scope = ScopeState!::new();
-    let first = (&scope.add(Branch::Leaf)).unwrap();
-    let second = (&scope.add(Branch::Leaf)).unwrap();
-    let root = (&scope.add(Branch::Pair.(Pair.{ kind: PairKind::Join, first, second }))).unwrap();
+    let first = (&scope.add_leaf()).unwrap();
+    let second = (&scope.add_leaf()).unwrap();
+    let root = (&scope.add_pair(Pair.{ kind: PairKind::Join, first, second })).unwrap();
     let valid = &scope.begin(root);
     &scope.started(Resource::Leaf.(first));
     &scope.started(Resource::Leaf.(second));
@@ -29,12 +29,12 @@ fn check_retirement_before_resolution() -> bool {
 fn main() -> i32 {
     if !check_retirement_before_resolution() { return 1; }
     let scope = ScopeState!::new();
-    let first = (&scope.add(Branch::Leaf)).unwrap();
-    let second = (&scope.add(Branch::Leaf)).unwrap();
-    let rejected = (&scope.add(Branch::Pair.(Pair.{ kind: PairKind::Select, first, second: first }))).is_none();
-    let root = (&scope.add(Branch::Pair.(Pair.{ kind: PairKind::Select, first, second }))).unwrap();
+    let first = (&scope.add_leaf()).unwrap();
+    let second = (&scope.add_leaf()).unwrap();
+    let rejected = (&scope.add_pair(Pair.{ kind: PairKind::Select, first, second: first })).is_none();
+    let root = (&scope.add_pair(Pair.{ kind: PairKind::Select, first, second })).unwrap();
     let already_parented = Pair.{ kind: PairKind::Join, first, second: root };
-    let refused_reparent = (&scope.add(Branch::Pair.(already_parented))).is_none();
+    let refused_reparent = (&scope.add_pair(already_parented)).is_none();
     let valid = &scope.begin(root);
     &scope.started(Resource::Leaf.(first));
     &scope.started(Resource::Leaf.(first));

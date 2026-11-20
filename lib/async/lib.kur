@@ -8,7 +8,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
+use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
@@ -222,15 +222,18 @@ const SECOND: i32 = 3i32;
 const NOT_STARTED: i32 = 4;
 const INVALID_PLAN: i32 = 5;
 
-unsafe fn add_branch(raw: *u8, branch: Branch) -> usize {
+forall Env.
+unsafe fn register_node(raw: *u8, register: closure[Env](&_: ScopeState!) -> Option[usize]) -> usize {
     let ptr = unsafe (raw as *ScopeState!);
     let state = unsafe *ptr;
-    let id = &state.add(branch);
+    let id = register(&state);
     unsafe *ptr = state;
     id.unwrap_or(usize::MAX)
 }
 
-unsafe fn add_leaf(raw: *u8) -> usize { unsafe add_branch(raw, Branch::Leaf) }
+unsafe fn add_leaf(raw: *u8) -> usize {
+    unsafe register_node(raw, |&state| &state.add_leaf())
+}
 
 unsafe fn add_pair(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
     let kind = match kind {
@@ -238,7 +241,7 @@ unsafe fn add_pair(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
         1u8 => PairKind::Join,
         _ => return usize::MAX,
     };
-    unsafe add_branch(raw, Branch::Pair.(Pair.{ kind, first, second }))
+    unsafe register_node(raw, |&state| &state.add_pair(Pair.{ kind, first, second }))
 }
 
 fn resource_id(id: usize) -> Resource {

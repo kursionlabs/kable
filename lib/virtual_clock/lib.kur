@@ -3,7 +3,7 @@ use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::time::Duration;
 use task::Failure;
-use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
+use task::driver::{Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until, remaining_budget};
 
 struct Virtual! {
@@ -15,7 +15,7 @@ struct Virtual! {
 instance PlanDriver[Virtual!] {
     fn timer(&scope: Virtual!, duration: Duration) -> Option[usize] {
         let { state, timers, invalid_plan } = scope;
-        let id = &state.add(Branch::Leaf);
+        let id = &state.add_leaf();
         let timers = if id.is_some() { timers.push(Option::Some.(duration)) } else { timers };
         scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
         id
@@ -23,7 +23,7 @@ instance PlanDriver[Virtual!] {
 
     fn pair(&scope: Virtual!, pair: Pair) -> Option[usize] {
         let { state, timers, invalid_plan } = scope;
-        let id = &state.add(Branch::Pair.(pair));
+        let id = &state.add_pair(pair);
         let timers = if id.is_some() { timers.push(Option::None) } else { timers };
         scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
         id

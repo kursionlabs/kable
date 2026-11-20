@@ -4,7 +4,7 @@ use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select, sleep};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
+use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
 use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
@@ -104,7 +104,7 @@ struct DeadlineDriver! { state: ScopeState!, timer: Option[usize], timer_result:
 instance PlanDriver[DeadlineDriver!] {
     fn timer(&scope: DeadlineDriver!, duration: Duration) -> Option[usize] {
         let { state, timer, timer_result } = scope;
-        let id = &state.add(Branch::Leaf);
+        let id = &state.add_leaf();
         let timer = if duration.is_zero() { id } else { timer };
         scope = DeadlineDriver!.{ state, timer, timer_result };
         id
@@ -112,7 +112,7 @@ instance PlanDriver[DeadlineDriver!] {
 
     fn pair(&scope: DeadlineDriver!, pair: Pair) -> Option[usize] {
         let { state, timer, timer_result } = scope;
-        let id = &state.add(Branch::Pair.(pair));
+        let id = &state.add_pair(pair);
         scope = DeadlineDriver!.{ state, timer, timer_result };
         id
     }

@@ -2,9 +2,8 @@
 use std::option::Option;
 use std::time::Duration;
 use package::{Completion, Failure};
-use package::scope::{Branch, Pair, PairKind, Resolution, Resource, ScopeState!};
+use package::scope::{Pair, PairKind, Resolution, Resource, ScopeState!};
 
-export Branch;
 export Pair;
 export PairKind;
 export Resolution;

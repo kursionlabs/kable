@@ -12,7 +12,7 @@ exposed struct Pair {
     second: usize,
 }
 
-exposed enum Branch { Leaf, Pair(Pair) }
+enum Branch { Leaf, Pair(Pair) }
 
 /// A resource whose lifetime can keep a scope pending.
 exposed enum Resource { Leaf(usize), ParentTimer }
@@ -65,34 +65,14 @@ impl ScopeState! {
         }
     }
 
-    fn add(&self, branch: Branch) -> Option[usize] {
-        let { nodes, root, ..rest } = self;
-        var nodes = nodes;
-        let index = &nodes.len();
-        let valid = if root.is_none() {
-            match branch {
-                Branch::Leaf => true,
-                Branch::Pair(pair) => {
-                    if pair.first < index && pair.second < index && pair.first != pair.second {
-                        let a = &nodes.at(pair.first);
-                        let b = &nodes.at(pair.second);
-                        let unattached = a.parent.is_none() && b.parent.is_none();
-                        if unattached {
-                            &nodes.set(pair.first, a.reparent(index));
-                            &nodes.set(pair.second, b.reparent(index));
-                        }
-                        unattached
-                    } else { false }
-                },
-            }
-        } else { false };
-        if valid {
-            nodes = nodes.push(Node.{
-                branch, parent: Option::None, result: Option::None, lifetime: Lifetime::Unstarted,
-            });
-        }
-        self = ScopeState!.{ nodes, root, ..rest };
-        if valid { Option::Some.(index) } else { Option::None }
+    /// Registers a leaf before the scope begins.
+    fn add_leaf(&self) -> Option[usize] {
+        add_branch(&self, Branch::Leaf)
+    }
+
+    /// Registers a pair of distinct, unattached children before the scope begins.
+    fn add_pair(&self, pair: Pair) -> Option[usize] {
+        add_branch(&self, Branch::Pair.(pair))
     }
 
     fn begin(&self, root: usize) -> bool {
@@ -193,6 +173,36 @@ impl ScopeState! {
         nodes.destroy(ignore_node);
         stops.destroy(ignore_id);
     }
+}
+
+fn add_branch(&scope: ScopeState!, branch: Branch) -> Option[usize] {
+    let { nodes, root, ..rest } = scope;
+    var nodes = nodes;
+    let index = &nodes.len();
+    let valid = if root.is_none() {
+        match branch {
+            Branch::Leaf => true,
+            Branch::Pair(pair) => {
+                if pair.first < index && pair.second < index && pair.first != pair.second {
+                    let a = &nodes.at(pair.first);
+                    let b = &nodes.at(pair.second);
+                    let unattached = a.parent.is_none() && b.parent.is_none();
+                    if unattached {
+                        &nodes.set(pair.first, a.reparent(index));
+                        &nodes.set(pair.second, b.reparent(index));
+                    }
+                    unattached
+                } else { false }
+            },
+        }
+    } else { false };
+    if valid {
+        nodes = nodes.push(Node.{
+            branch, parent: Option::None, result: Option::None, lifetime: Lifetime::Unstarted,
+        });
+    }
+    scope = ScopeState!.{ nodes, root, ..rest };
+    if valid { Option::Some.(index) } else { Option::None }
 }
 
 fn scope_joined(&nodes: OwnedVec![Node], root: Option[usize], pending: usize) -> bool {
