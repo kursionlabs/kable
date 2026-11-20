@@ -312,24 +312,22 @@ impl Scope! {
         let status = unsafe kable_scope_write_result(raw, id.unwrap_or(usize::MAX), size);
         let count = unsafe *size;
         self = Scope!.{ raw };
-        let completion = match resolution {
-            Resolution::Completed => {
-                if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(()) }
+        let completion = resolution.completion();
+        let completion = match completion {
+            Completion::Ready => {
+                if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { completion }
             },
-            Resolution::Cancelled => Completion::Cancelled,
-            Resolution::Failed(failure) => Completion::Failed.(failure),
-            Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
+            _ => completion,
         };
         (count, completion)
     }
 
     forall File, Env where Copy[Env].
     fn collect_descriptor(&self, id: Option[usize], wrap: closure[Env](i32, u64) -> File) -> Completion[File] {
-        match &self.result(id) {
-            Resolution::Completed => (),
-            Resolution::Cancelled => return Completion::Cancelled,
-            Resolution::Failed(failure) => return Completion::Failed.(failure),
-            Resolution::First | Resolution::Second => return Completion::Failed.(Failure::InvalidResult),
+        match (&self.result(id)).completion() {
+            Completion::Ready => (),
+            Completion::Cancelled => return Completion::Cancelled,
+            Completion::Failed(failure) => return Completion::Failed.(failure),
         };
         let { raw } = self;
         let size = unsafe alloca[u64]();
@@ -369,11 +367,10 @@ impl Scope! {
 }
 
 fn collect_file(&scope: Scope!, id: Option[usize]) -> Completion[Buffer!] {
-    match &scope.result(id) {
-        Resolution::Completed => &scope.file_result(id),
-        Resolution::Cancelled => Completion::Cancelled,
-        Resolution::Failed(failure) => Completion::Failed.(failure),
-        Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
+    match (&scope.result(id)).completion() {
+        Completion::Ready => &scope.file_result(id),
+        Completion::Cancelled => Completion::Cancelled,
+        Completion::Failed(failure) => Completion::Failed.(failure),
     }
 }
 

@@ -1,6 +1,7 @@
 //! Staging and collection for task drivers.
 use std::option::Option;
 use std::time::Duration;
+use package::{Completion, Failure};
 use package::scope::{Branch, Pair, PairKind, Resolution, ScopeState!};
 
 export Branch;
@@ -8,6 +9,18 @@ export Pair;
 export PairKind;
 export Resolution;
 export ScopeState!;
+
+impl Resolution {
+    /// Converts a leaf or join resolution into its completion status.
+    fn completion(self) -> Completion[()] {
+        match self {
+            Resolution::Completed => Completion::Ready.(()),
+            Resolution::Cancelled => Completion::Cancelled,
+            Resolution::Failed(failure) => Completion::Failed.(failure),
+            Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
+        }
+    }
+}
 
 forall Driver.
 trait PlanDriver {

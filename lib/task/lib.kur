@@ -101,15 +101,6 @@ instance PlanOutput[Select![First, Second] -> (A, B, Completion[Side])] {}
 forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
 instance PlanOutput[Join![First, Second] -> (A, B, Completion[()])] {}
 
-fn completion(result: Resolution) -> Completion[()] {
-    match result {
-        Resolution::Completed => Completion::Ready.(()),
-        Resolution::Cancelled => Completion::Cancelled,
-        Resolution::Failed(failure) => Completion::Failed.(failure),
-        Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
-    }
-}
-
 forall T, Driver where PlanDriver[Driver].
 instance Plan[Sleep![T], Driver -> (T, Completion[()])] {
     fn stage(&task: Sleep![T], &scope: Driver) -> Option[usize] {
@@ -121,7 +112,7 @@ instance Plan[Sleep![T], Driver -> (T, Completion[()])] {
 
     fn collect(task: Sleep![T], &scope: Driver) -> (T, Completion[()]) {
         let { duration, value, id } = task;
-        (value, completion(PlanDriver[Driver]::result(&scope, id)))
+        (value, PlanDriver[Driver]::result(&scope, id).completion())
     }
 }
 
@@ -175,7 +166,7 @@ instance Plan[Join![First, Second], Driver -> (A, B, Completion[()])] {
     fn collect(task: Join![First, Second], &scope: Driver) -> (A, B, Completion[()]) {
         let { first, second, id } = task;
         let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope, id);
-        (a, b, completion(result))
+        (a, b, result.completion())
     }
 }
 
