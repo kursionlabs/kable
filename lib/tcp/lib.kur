@@ -14,8 +14,6 @@ extern "C" fn kable_tcp_bind(port: u16, context: *u8,
 extern "C" fn kable_tcp_port(listener: *u8) -> u16;
 extern "C" fn kable_tcp_run(listener: *u8) -> i32;
 extern "C" fn kable_tcp_stop(listener: *u8) -> ();
-extern "C" fn kable_tcp_read(connection: *u8, ms: u64, timed: u8) -> i32;
-extern "C" fn kable_tcp_write(connection: *u8, bytes: *u8, len: usize, ms: u64, timed: u8) -> i32;
 extern "C" fn kable_tcp_close(connection: *u8) -> ();
 extern "C" fn kable_tcp_start_scoped_read(connection: *u8, loop: *u8,
     ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
@@ -32,7 +30,6 @@ extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
 extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 
 struct Connection! { raw: *u8 }
-struct Read! { connection: Connection!, deadline: Option[u64] }
 struct NextRead! { connection: Connection!, id: Option[usize] }
 struct WritePlan! { connection: Connection!, bytes: Buffer!, request: *u8, id: Option[usize] }
 
@@ -100,27 +97,7 @@ unsafe fn read_result(raw: *u8) -> StreamOutcome![Buffer!] {
     }
 }
 
-/// Plans a read of the next available chunk of bytes.
-fn read(connection: Connection!) -> Read! { Read!.{ connection, deadline: Option::None } }
-
-/// Sets the read deadline relative to the time the read begins.
-fn timeout(ms: u64, task: Read!) -> Read! {
-    let { connection, deadline } = task;
-    Read!.{ connection, deadline: Option::Some.(ms) }
-}
-
-exposed enum Event! {
-    Connected(Connection!),
-    Bytes(Connection!, Buffer!),
-    TimedOut(Connection!),
-    End(Connection!),
-    Cancelled(Connection!),
-    Failed(Connection!, i32),
-}
-
 enum Action! {
-    Wait(Read!),
-    Write(Buffer!, Read!),
     Scoped(HostedPlan!),
     Close(Connection!),
 }
@@ -130,13 +107,6 @@ forall Task, Output, Env where PlanOutput[Task -> Output], Plan[Task, Scope! -> 
 fn defer(task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
     let hosted = prepare_hosted(task, |outcome, connection, flags| unsafe apply(connection, resume(outcome)));
     Action!::Scoped.(hosted)
-}
-
-fn wait(task: Read!) -> Action! { Action!::Wait.(task) }
-
-/// Writes one chunk, then starts the next read on the same connection.
-fn write(bytes: Buffer!, next: Read!) -> Action! {
-    Action!::Write.(bytes, next)
 }
 
 fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
@@ -176,9 +146,6 @@ impl Connection! {
         -1
     }
 
-    /// Plans a read of the next available chunk of bytes.
-    fn read(self) -> Read! { read(self) }
-
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { close(self) }
 }
@@ -196,47 +163,19 @@ instance Sink[Connection! -> Buffer!, WritePlan!] {
     }
 }
 
-impl Read! {
-    /// Sets the deadline relative to the time the read begins.
-    fn timeout(self, ms: u64) -> Read! { timeout(ms, self) }
-
-    /// Returns an action that starts this read.
-    fn wait(self) -> Action! { wait(self) }
-}
-
-enum Handler {
-    Connections(fn(Connection!) -> Action!),
-    Events(fn(Event!) -> Action!),
-}
-
-unsafe fn make_event(raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> Event! {
-    let connection = Connection!.{ raw };
-    match kind {
-        0u8 => Event!::Connected.(connection),
-        1u8 => Event!::Bytes.(connection, unsafe Buffer!::new_with_cap(len).push_n(bytes, len)),
-        2u8 => Event!::TimedOut.(connection),
-        3u8 => Event!::End.(connection),
-        4u8 => Event!::Cancelled.(connection),
-        _ => Event!::Failed.(connection, code),
-    }
-}
+struct Handler { accept: fn(Connection!) -> Action! }
 
 unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> i32 {
-    let handler = unsafe *(unsafe (context as *Handler));
-    let action = match handler {
-        Handler::Connections(accept) => {
-            let connection = Connection!.{ raw };
-            if kind == 0 { accept(connection) } else { connection.close() }
-        },
-        Handler::Events(handle) => handle(unsafe make_event(raw, kind, bytes, len, code)),
-    };
-    unsafe apply(raw, action)
+    if kind != 0 {
+        unsafe kable_tcp_close(raw);
+        return 0;
+    }
+    let { accept } = unsafe *(unsafe (context as *Handler));
+    unsafe apply(raw, accept(Connection!.{ raw }))
 }
 
 unsafe fn apply(connection: *u8, action: Action!) -> i32 {
     match action {
-        Action!::Wait(next) => unsafe submit(next, Option::None),
-        Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
         Action!::Scoped(plan) => {
             let submission = unsafe submit_hosted(connection, plan);
             submission.unwrap_or_else(|rejection| {
@@ -258,41 +197,13 @@ unsafe fn submit_hosted(connection: *u8, plan: HostedPlan!) -> Result[i32, (i32,
     })
 }
 
-unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {
-    let { connection, deadline } = next;
-    let { raw } = connection;
-    let (ms, timed) = match deadline {
-        Option::Some(ms) => (ms, 1u8),
-        Option::None => (0u64, 0u8),
-    };
-    match output {
-        Option::None => unsafe kable_tcp_read(raw, ms, timed),
-        Option::Some(bytes) => {
-            let ptr = unsafe &bytes.as_ptr();
-            let len = &bytes.len();
-            let status = unsafe kable_tcp_write(raw, ptr, len, ms, timed);
-            bytes.destroy();
-            status
-        },
-    }
-}
-
 struct Listener! { raw: *u8, context: *u8 }
 
 impl Listener! {
-    /// Calls accept once per connection. Drive subsequent reads and writes
-    /// with defer. An event-based read closes the connection when its event arrives.
+    /// Calls accept once per connection. Use defer to run its scoped plans.
     fn bind_connections(port: u16, accept: fn(Connection!) -> Action!) -> Result[Listener!, i32] {
-        Listener!::bind_handler(port, Handler::Connections.(accept))
-    }
-
-    fn bind_local(port: u16, handle: fn(Event!) -> Action!) -> Result[Listener!, i32] {
-        Listener!::bind_handler(port, Handler::Events.(handle))
-    }
-
-    fn bind_handler(port: u16, handler: Handler) -> Result[Listener!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
-        unsafe *(unsafe (context as *Handler)) = handler;
+        unsafe *(unsafe (context as *Handler)) = Handler.{ accept };
 
         let scratch = Buffer!::new_zeroed(sizeof[i32]());
         let error = unsafe ((unsafe &scratch.as_ptr()) as *i32);

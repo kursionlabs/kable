@@ -334,7 +334,7 @@ static int reply(Client *client, uint16_t status) {
 
 static int read_request(Client *client) {
     uint64_t remaining = time_left(client);
-    return remaining ? kable_tcp_read(client->connection, remaining, 1) : reply(client, 408);
+    return remaining ? kable_tcp_read(client->connection, remaining) : reply(client, 408);
 }
 
 static int consume_request(Client *client, const char *data, size_t remaining) {

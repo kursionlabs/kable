@@ -341,10 +341,6 @@ waits for the write callback. On failure or cancellation, the buffer is
 available for cleanup and delivery progress is unspecified. On SIGINT or
 SIGTERM the listener stops accepting and waits for pending scopes to join.
 
-Use `Listener!::bind_local(port, handle)` to receive each TCP event. Its handler can use
-`connection.read().timeout(1000u64).wait()`, `write(bytes, next_read)`, and
-`connection.close()`.
-
 ```sh
 ../kursal/bin/kursal build examples/tcp-echo -o bin/tcp-echo
 bin/tcp-echo

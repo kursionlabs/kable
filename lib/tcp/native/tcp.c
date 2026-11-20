@@ -8,7 +8,7 @@
 #include "../../async/native/timer.h"
 #include "transport.h"
 
-enum { IDLE, READING, JOINING, WRITING, SCOPED, PARKED, STREAMING, FINISHING, TERMINAL };
+enum { IDLE, READING, JOINING, SCOPED, PARKED, STREAMING, FINISHING, TERMINAL };
 enum { MAX_CONNECTIONS = 128, READ_SIZE = 16384 };
 
 typedef struct {
@@ -45,8 +45,6 @@ typedef struct {
     void (*read_ready)(uint8_t *);
     uint8_t *read_context;
     int cancelled;
-    uint64_t next_ms;
-    uint8_t next_timed;
     int phase;
     int socket_closed;
     int read_eof;
@@ -188,8 +186,7 @@ static void complete_read(Connection *connection, uint8_t event, size_t length, 
     connection->length = length;
     connection->error = error;
     uv_read_stop((uv_stream_t *)&connection->socket);
-    if (connection->timer) kable_timer_cancel(connection->timer);
-    else report_read(connection);
+    kable_timer_cancel(connection->timer);
 }
 
 static void timer_ready(void *context) {
@@ -221,30 +218,24 @@ static void read_done(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer
     else if (count < 0) complete_read(connection, KABLE_TCP_FAILED, 0, (int)count);
 }
 
-static int start_read(Connection *connection, uint64_t ms, uint8_t timed) {
-    int status = uv_read_start((uv_stream_t *)&connection->socket, allocate_read, read_done);
-    if (status < 0) return status;
-
-    if (timed) {
-        uv_update_time(&connection->listener->loop);
-        status = kable_timer_start(&connection->listener->loop, ms, timer_ready,
-            timer_closed, connection, &connection->timer);
-        if (status < 0) {
-            uv_read_stop((uv_stream_t *)&connection->socket);
-            return status;
-        }
-    }
-
-    connection->phase = READING;
-    return 0;
-}
-
-int32_t kable_tcp_read(uint8_t *raw, uint64_t ms, uint8_t timed) {
+int32_t kable_tcp_read(uint8_t *raw, uint64_t ms) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != IDLE || connection->listener->stopping || socket_closing(connection)) {
         return UV_ECANCELED;
     }
-    return start_read(connection, ms, timed);
+    int status = uv_read_start((uv_stream_t *)&connection->socket, allocate_read, read_done);
+    if (status < 0) return status;
+
+    uv_update_time(&connection->listener->loop);
+    status = kable_timer_start(&connection->listener->loop, ms, timer_ready,
+        timer_closed, connection, &connection->timer);
+    if (status < 0) {
+        uv_read_stop((uv_stream_t *)&connection->socket);
+        return status;
+    }
+
+    connection->phase = READING;
+    return 0;
 }
 
 int32_t kable_tcp_start_scoped_read(uint8_t *raw, uint8_t *loop,
@@ -396,13 +387,6 @@ static void write_done(uv_write_t *write, int status) {
     if (connection->phase == FINISHING) {
         if (status < 0) close_connection(connection);
         else shutdown_write(connection);
-    } else if (connection->phase == WRITING) {
-        if (connection->listener->stopping) {
-            notify(connection, KABLE_TCP_CANCELLED, 0, 0);
-        } else {
-            if (status == 0) status = start_read(connection, connection->next_ms, connection->next_timed);
-            if (status < 0) notify(connection, KABLE_TCP_FAILED, 0, status);
-        }
     }
 }
 
@@ -446,21 +430,6 @@ int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *p
         scope_joined(connection);
     }
     return 0;
-}
-
-int32_t kable_tcp_write(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != IDLE || connection->listener->stopping || socket_closing(connection)) {
-        return UV_ECANCELED;
-    }
-    if (!len) return start_read(connection, ms, timed);
-    int status = queue_write(connection, bytes, len);
-    if (status == 0) {
-        connection->next_ms = ms;
-        connection->next_timed = timed;
-        connection->phase = WRITING;
-    }
-    return status;
 }
 
 static void parked_read(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer) {

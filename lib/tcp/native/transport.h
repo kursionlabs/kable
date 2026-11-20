@@ -27,8 +27,8 @@ void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(
 uint8_t *kable_tcp_attachment(uint8_t *connection);
 uint64_t kable_tcp_now(uint8_t *connection);
 uv_loop_t *kable_tcp_loop(uint8_t *connection);
-int32_t kable_tcp_read(uint8_t *connection, uint64_t ms, uint8_t timed);
-int32_t kable_tcp_write(uint8_t *connection, uint8_t *bytes, size_t len, uint64_t ms, uint8_t timed);
+/* Delivers the next read or deadline through the native event callback. */
+int32_t kable_tcp_read(uint8_t *connection, uint64_t ms);
 int32_t kable_tcp_start_scoped_read(uint8_t *connection, uint8_t *loop,
     void (*ready)(uint8_t *), uint8_t *context);
 uint8_t kable_tcp_stop_scoped_read(uint8_t *connection);
