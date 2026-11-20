@@ -419,18 +419,18 @@ the destination contains the bytes written so far.
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per
 connection. `Listener!::bind_connections(port, read_next)` calls
-`read_next(connection)` once per accepted connection. The echo handler runs
-`connection.next().within(Duration::from_secs(1))` with `tcp::defer` on the
-listener loop. When it receives bytes, it defers
-`connection.write(bytes).within(Duration::from_secs(1))`. Its continuation
-releases the buffer and starts the next read only if the write succeeded
-within the deadline.
+`read_next(connection)` once per accepted connection. Import `task::PlanOutput`
+to use `.defer_tcp(...)` on a plan. The echo handler uses it to run both
+`connection.next().within(Duration::from_secs(1))` and
+`connection.write(bytes).within(Duration::from_secs(1))` on the listener loop.
+The write continuation releases the buffer and starts the next read only if
+the write succeeded within the deadline.
 
 Omitting `.within(...)` gives the write the connection's lifetime. The
 continuation can hand the connection back to `read_next` after the write joins.
 
 ```kursal
-defer(connection.write(bytes), |result| {
+connection.write(bytes).defer_tcp(|result| {
     let (connection, bytes, status) = result;
     bytes.destroy();
     match status {

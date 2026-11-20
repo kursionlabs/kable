@@ -4,7 +4,7 @@ use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
-use tcp::{Action!, Connection!, Listener!, defer};
+use tcp::{Action!, Connection!, Listener!};
 use thunk::{Resumable, Step};
 
 struct LineReader! { pending: Buffer! }
@@ -59,7 +59,7 @@ fn close_session(connection: Connection!, reader: LineReader!) -> Action! {
 }
 
 fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Action! {
-    defer(connection.next().within(Duration::from_secs(1)), |result| read_finished(result, reader, retried))
+    connection.next().within(Duration::from_secs(1)).defer_tcp(|result| read_finished(result, reader, retried))
 }
 
 fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
@@ -99,7 +99,7 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
         },
     };
     let reader = LineReader!.{ pending: tail };
-    defer(connection.write(complete), |result| {
+    connection.write(complete).defer_tcp(|result| {
         let (connection, bytes, status) = result;
         bytes.destroy();
         match status {

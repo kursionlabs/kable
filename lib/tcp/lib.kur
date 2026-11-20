@@ -118,6 +118,15 @@ fn defer(task: Task, resume: closure[Env](Output) -> Action!) -> Action! {
     Action!::Scoped.(hosted)
 }
 
+forall Task, Output where PlanOutput[Task -> Output].
+impl Task {
+    /// Runs a plan on the connection's listener and resumes after it joins.
+    forall Env where Plan[Task, Scope! -> Output].
+    fn defer_tcp(self, resume: closure[Env](Output) -> Action!) -> Action! {
+        defer(self, resume)
+    }
+}
+
 fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
 
 impl Connection! {
@@ -218,7 +227,7 @@ unsafe fn submit_hosted(connection: *u8, plan: HostedPlan!) -> Result[i32, (i32,
 struct Listener! { raw: *u8, context: *u8 }
 
 impl Listener! {
-    /// Calls accept once per connection. Use defer to run its scoped plans.
+    /// Calls accept once per connection. Use defer_tcp to run its scoped plans.
     fn bind_connections(port: u16, accept: fn(Connection!) -> Action!) -> Result[Listener!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
         unsafe *(unsafe (context as *Handler)) = Handler.{ accept };
