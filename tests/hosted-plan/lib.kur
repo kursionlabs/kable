@@ -1,8 +1,8 @@
-use async::{Completion, DeadlineStatus, PlanOutput, join, sleep};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::Result;
+use task::{Completion, DeadlineStatus, PlanOutput, join, sleep};
 
 fn failed(status: Completion[()]) -> bool {
     match status { Completion::Failed => true, _ => false }

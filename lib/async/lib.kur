@@ -6,25 +6,11 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
-use task::{Completion, Join!, Map!, PlanOutput, Side, Select!, Sink, Sleep!, Stream, StreamOutcome!, DeadlineStatus,
-    join, select, sleep};
+use task::{Completion, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
 use task::sequence::{Chain, Clock, Sequence!, StageDriver, drive_sequence, remaining_budget};
 
-export Completion;
-export Join!;
 export host;
-export PlanOutput;
-export Side;
-export Select!;
-export Sink;
-export Sleep!;
-export Stream;
-export StreamOutcome!;
-export join;
-export select;
-export sleep;
-export DeadlineStatus;
 
 extern "C" fn uv_hrtime() -> u64;
 

@@ -1,6 +1,6 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{Completion, FileChunks!, OpenedFile!, Scope!, sleep};
+use async::{FileChunks!, OpenedFile!, Scope!};
 use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, Response!, encode_file_headers};
 use std::heap::HeapAllocator;
@@ -9,12 +9,9 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::Slice;
-use task::{PlanOutput, Sink, Stream, StreamOutcome!};
+use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome!, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
-
-// Callers import this trait to bring the plan extension methods into scope.
-export PlanOutput;
 
 extern "C" fn kable_bind(port: u16,
     callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,

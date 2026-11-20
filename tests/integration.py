@@ -1011,12 +1011,16 @@ path="{(ROOT / '../kursal/lib/std').resolve()}"
 [dependencies.async]
 path="{ROOT / 'lib/async'}"
 
+[dependencies.task]
+path="{ROOT / 'lib/task'}"
+
 [dependencies.virtual_clock]
 path="{ROOT / 'lib/virtual_clock'}"
 """)
     (package / "lib.kur").write_text("""
-use async::{PlanOutput, read_file};
+use async::read_file;
 use std::slice::StaticRead;
+use task::PlanOutput;
 
 fn main() {
     let access = StaticRead::new();
