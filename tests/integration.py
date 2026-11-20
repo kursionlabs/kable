@@ -255,6 +255,7 @@ def check_static_files(command, directory, check_write_timeout=False):
             if process.poll() is None:
                 process.kill()
     library = build_file_gate(directory)
+    check_stream_write_order(command, directory, root, large)
     check_stream_shutdown(command, root, library)
     check_stream_truncation(command, root, library)
     print("Kable static file checks passed")
@@ -294,6 +295,38 @@ def check_stream_idle_timeout(port, process, path):
         assert holds_file(process, path), "stalled stream never held the file"
         wait_for_file_release(process, path, 8)
         assert time.monotonic() - start >= 4.75, "stalled stream expired too early"
+
+
+def check_stream_write_order(command, directory, root, body):
+    library = directory / "stream-write-order.so"
+    subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "tests/stream_write_order.c"),
+                    "-ldl", "-o", str(library)], check=True)
+    env = os.environ | {"LD_PRELOAD": str(library)}
+    with subprocess.Popen([*command, str(root), "0"], env=env,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        try:
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
+            request = b"GET /large.bin HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            version, status, headers, sent = exchange(port, request)
+            assert version == b"HTTP/1.1" and status == 200, (version, status)
+            assert int(headers[b"content-length"]) == len(body) and sent == b"", (headers, sent)
+            wait_for_file_release(process, root / "large.bin", 2)
+            assert_response(exchange(port, request), 200, body)
+            process.terminate()
+            _, stderr = process.communicate(timeout=5)
+            assert process.returncode == 0, stderr
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+    prefix = b"stream-test: "
+    trace = [line.removeprefix(prefix) for line in stderr.splitlines() if line.startswith(prefix)]
+    queued, wrote = b"queued file work", b"wrote"
+    # Each request first opens the file and writes headers. The first body
+    # write fails to start. Each read in the next request follows a write.
+    rejected = [queued, wrote, queued, b"write rejected"]
+    chunks = (len(body) + 65_535) // 65_536
+    assert trace == rejected + [queued, wrote] * (chunks + 1), stderr
 
 
 def check_stream_shutdown(command, root, library):
