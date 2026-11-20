@@ -2,6 +2,7 @@
 use package::PlanOutput;
 use std::option::Option;
 use std::time::Duration;
+use thunk::Thunk!;
 
 forall Engine.
 trait Clock {
@@ -36,9 +37,7 @@ exposed enum SequenceOutcome {
 forall Previous, State, Input, Task, Env.
 struct Then! {
     previous: Previous,
-    state: State,
-    resume: closure[Env](State, Input) -> Option[Task],
-    cancel: fn(State, Option[Input]) -> (),
+    handoff: Thunk![State, Input, Option[Task], Env, fn(State, Option[Input]) -> ()],
 }
 
 /// A chain with the joined output type of its last plan.
@@ -87,7 +86,7 @@ impl Sequence![Stages, Input] {
     fn then_owned(self, state: State, resume: closure[Env](State, Input) -> Option[Task],
         cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task, Env], Output] {
         let { stages } = self;
-        Sequence!.{ stages: Then!.{ previous: stages, state, resume, cancel } }
+        Sequence!.{ stages: Then!.{ previous: stages, handoff: thunk::defer(state, resume, cancel) } }
     }
 }
 
@@ -120,15 +119,15 @@ forall Previous, State, Input, Task, Env, Output, Engine
 instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
     fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[Duration])
         -> SequenceOutcome[StageResult[Output]] {
-        let { previous, state, resume, cancel } = stages;
+        let { previous, handoff } = stages;
         let stage = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
             SequenceOutcome::Finished(stage) => stage,
             SequenceOutcome::Stopped => {
-                cancel(state, Option::None);
+                handoff.discard_with(Option::None);
                 return SequenceOutcome::Stopped;
             },
             SequenceOutcome::Cancelled => {
-                cancel(state, Option::None);
+                handoff.discard_with(Option::None);
                 return SequenceOutcome::Cancelled;
             },
         };
@@ -138,10 +137,10 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
             Option::None => false,
         });
         if expired {
-            cancel(state, Option::Some.(input));
+            handoff.discard_with(Option::Some.(input));
             return SequenceOutcome::Cancelled;
         }
-        match resume(state, input) {
+        match handoff.resume(input) {
             Option::Some(task) => SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline)),
             Option::None => SequenceOutcome::Stopped,
         }

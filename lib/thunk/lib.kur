@@ -1,27 +1,50 @@
 //! Delayed calls and resumable computations with explicit ownership.
 
-/// An owned call that runs when forced.
-forall State, Output, Env.
+/// An owned call that runs once when resumed.
+forall State, Input, Output, Env, Cleanup.
 struct Thunk! {
     state: State,
-    evaluate: closure[Env](State) -> Output,
-    cleanup: fn(State) -> (),
+    evaluate: closure[Env](State, Input) -> Output,
+    cleanup: Cleanup,
 }
 
-/// Stores state for a delayed call. Put owned captures in state so cleanup can release them.
-forall State, Output, Env where Copy[Env].
-fn delay(state: State, evaluate: closure[Env](State) -> Output, cleanup: fn(State) -> ())
-    -> Thunk![State, Output, Env] {
+/// Stores state for a call that can receive different inputs on resume and discard.
+forall State, Input, Output, Env, Context where Copy[Env].
+fn defer(state: State, evaluate: closure[Env](State, Input) -> Output, cleanup: fn(State, Context) -> ())
+    -> Thunk![State, Input, Output, Env, fn(State, Context) -> ()] {
     Thunk!.{ state, evaluate, cleanup }
 }
 
-forall State, Output, Env where Copy[Env].
-impl Thunk![State, Output, Env] {
-    fn force(self) -> Output {
+forall State, Input, Output, Env, Cleanup where Copy[Cleanup].
+impl Thunk![State, Input, Output, Env, Cleanup] {
+    fn resume(self, input: Input) -> Output {
         let { state, evaluate, cleanup } = self;
-        evaluate(state)
+        evaluate(state, input)
     }
+}
 
+forall State, Input, Output, Env, Context where Copy[Env].
+impl Thunk![State, Input, Output, Env, fn(State, Context) -> ()] {
+    fn discard_with(self, context: Context) {
+        let { state, evaluate, cleanup } = self;
+        cleanup(state, context);
+    }
+}
+
+/// Stores an owned delayed call with no input. Put owned captures in state so cleanup can release them.
+forall State, Output, Env where Copy[Env].
+fn delay(state: State, evaluate: closure[Env](State) -> Output, cleanup: fn(State) -> ())
+    -> Thunk![State, (), Output, (closure[Env](State) -> Output,), fn(State) -> ()] {
+    Thunk!.{ state, evaluate: |state, unit| evaluate(state), cleanup }
+}
+
+forall State, Output, Env, Cleanup where Copy[Cleanup].
+impl Thunk![State, (), Output, Env, Cleanup] {
+    fn force(self) -> Output { self.resume(()) }
+}
+
+forall State, Input, Output, Env where Copy[Env].
+impl Thunk![State, Input, Output, Env, fn(State) -> ()] {
     fn discard(self) {
         let { state, evaluate, cleanup } = self;
         cleanup(state);
@@ -38,31 +61,29 @@ exposed enum Step {
 /// An owned computation paused until its caller supplies the next input.
 forall State, Input, Output, Env.
 struct Suspension! {
-    state: State,
-    step: closure[Env](State, Input) -> Step[State, Output],
-    cleanup: fn(State) -> (),
+    pending: Thunk![State, Input, Step[State, Output], Env, fn(State) -> ()],
 }
 
 /// Stores the first step's state. The step may capture copyable configuration.
 forall State, Input, Output, Env where Copy[Env].
 fn suspend(state: State, step: closure[Env](State, Input) -> Step[State, Output], cleanup: fn(State) -> ())
     -> Suspension![State, Input, Output, Env] {
-    Suspension!.{ state, step, cleanup }
+    Suspension!.{ pending: Thunk!.{ state, evaluate: step, cleanup } }
 }
 
 forall State, Input, Output, Env where Copy[Env].
 impl Suspension![State, Input, Output, Env] {
     /// Runs one step. A suspended result carries the next state and its cleanup.
     fn resume(self, input: Input) -> Step[Suspension![State, Input, Output, Env], Output] {
-        let { state, step, cleanup } = self;
-        match step(state, input) {
+        let { pending: { state, evaluate, cleanup } } = self;
+        match evaluate(state, input) {
             Step::Done(output) => Step::Done.(output),
-            Step::Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
+            Step::Suspended(state) => Step::Suspended.(Suspension!.{ pending: Thunk!.{ state, evaluate, cleanup } }),
         }
     }
 
     fn discard(self) {
-        let { state, step, cleanup } = self;
-        cleanup(state);
+        let { pending } = self;
+        pending.discard();
     }
 }

@@ -178,6 +178,11 @@ has ended. [Dependent file handler](examples/http-file/file_sequence.kur)
 passes its state to `evaluate` and returns the result. `discard()` passes
 the state to `cleanup`.
 
+`thunk::defer(state, evaluate, cleanup)` stores a one-shot call that takes
+input on `resume(input)`. For an abandoned call, `discard_with(context)`
+passes the state and context to cleanup. Task sequences use the context to
+return any prior result to the skipped handoff's cleanup callback.
+
 `thunk::suspend(state, step, cleanup)` stores a computation that needs input.
 `resume(input)` consumes it and returns `Step::Done(output)` or
 `Step::Suspended(next)`. The step supplies the updated state and the library

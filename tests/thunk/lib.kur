@@ -1,7 +1,8 @@
 use std::buffer::Buffer!;
 use std::mem::alloca;
+use std::option::Option;
 use std::process::trap;
-use thunk::{Step, delay, suspend};
+use thunk::{Step, defer, delay, suspend};
 
 fn check_force() -> bool {
     let calls = unsafe alloca[usize]();
@@ -32,6 +33,33 @@ fn check_discard() -> bool {
     }, discard_line);
     work.discard();
     (unsafe *released) == 7
+}
+
+fn discard_handoff(state: (Buffer!, *usize), prior: Option[Buffer!]) {
+    let (bytes, released) = state;
+    discard_line((bytes, released));
+    match prior {
+        Option::Some(bytes) => discard_line((bytes, released)),
+        Option::None => (),
+    }
+}
+
+fn check_one_shot(resume: bool) -> bool {
+    let released = unsafe alloca[usize]();
+    unsafe *released = 0;
+    let input = Buffer!::new().push_static("input");
+    let work = defer((Buffer!::new().push_static("state"), released), |state, input| {
+        let (bytes, released) = state;
+        bytes.push_buffer(input)
+    }, discard_handoff);
+    if !resume {
+        work.discard_with(Option::Some.(input));
+        return (unsafe *released) == 10;
+    }
+    let bytes = work.resume(input);
+    let length = &bytes.len();
+    bytes.destroy();
+    length == 10 && (unsafe *released) == 0
 }
 
 fn read_byte(state: (Buffer!, *usize), byte: u8, delimiter: u8) -> Step[(Buffer!, *usize), Buffer!] {
@@ -69,5 +97,6 @@ fn check_resume(finish: bool) -> bool {
 }
 
 fn main() -> i32 {
-    if check_force() && check_discard() && check_resume(true) && check_resume(false) { 0 } else { 1 }
+    if check_force() && check_discard() && check_one_shot(true) && check_one_shot(false) &&
+        check_resume(true) && check_resume(false) { 0 } else { 1 }
 }
