@@ -300,9 +300,10 @@ The virtual clock is a reference driver for timer plans. It uses the same
 1. Implement `PlanDriver[Scope]` to register timers and pairs and report
    joined results. Register nodes with `ScopeState!`'s `.add_leaf()` and
    `.add_pair(pair)` and use the IDs they return. Register a pair's children
-   before the pair. Implement `Plan` to stage and collect each
-   engine-specific operation. `PlanOutput` exposes the outcome type for
-   composition and callback inference.
+   before the pair. Both bundled drivers reject further registrations for an
+   invalid plan. Implement `Plan` to stage and collect each engine-specific
+   operation. `PlanOutput` exposes the outcome type for composition and
+   callback inference.
 2. Use `prepare(task, scope).drive(run, close)` for a standalone run. The
    `run` callback receives the scope and optional root. Pass the optional
    root to `begin` to validate the tree. Report `started(resource)` for each

@@ -96,6 +96,28 @@ fn check_invalid_root(missing_root: bool) -> bool {
     lengths_ok && invalid_plan(first_status) && invalid_plan(second_status) && invalid_plan(race_status)
 }
 
+struct RejectedPair { root: Option[usize], rejected: bool }
+
+forall Driver where PlanDriver[Driver].
+instance Plan[RejectedPair, Driver -> bool] {
+    fn stage(&task: RejectedPair, &scope: Driver) -> Option[usize] {
+        let duration = Duration::from_nanos(0);
+        let root = PlanDriver[Driver]::timer(&scope, duration);
+        let child = root.unwrap();
+        let pair = Pair.{ kind: PairKind::Join, first: child, second: child };
+        let rejected = PlanDriver[Driver]::pair(&scope, pair).is_none();
+        let later = PlanDriver[Driver]::timer(&scope, duration);
+        task = RejectedPair.{ root, rejected: rejected && later.is_none() };
+        root
+    }
+
+    fn collect(task: RejectedPair, &scope: Driver) -> bool {
+        let { root, rejected } = task;
+        let status = PlanDriver[Driver]::result(&scope, root).completion();
+        rejected && invalid_plan(status)
+    }
+}
+
 fn check_cancelled_join() -> bool {
     let first = Buffer!::new().push_static("first");
     let second = Buffer!::new().push_static("second");
@@ -253,6 +275,7 @@ fn check_local_timeout_handoff() -> bool {
 
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0)), second: sleep(Duration::from_secs(30)), id: Option::None };
-    if run(plan) && check_invalid_root(true) && check_invalid_root(false) && check_cancelled_join() &&
+    let rejected_pair = RejectedPair.{ root: Option::None, rejected: false };
+    if run(plan) && check_invalid_root(true) && check_invalid_root(false) && run(rejected_pair) && check_cancelled_join() &&
         check_deadline_timer_results() && check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
 }

@@ -12,21 +12,24 @@ struct Virtual! {
     invalid_plan: bool,
 }
 
+forall Env where Copy[Env].
+fn register_node(&scope: Virtual!, duration: Option[Duration],
+    register: closure[Env](&_: ScopeState!) -> Option[usize]) -> Option[usize] {
+    let { state, timers, invalid_plan } = scope;
+    let id = if invalid_plan { Option::None } else { register(&state) };
+    let invalid_plan = id.is_none();
+    let timers = if invalid_plan { timers } else { timers.push(duration) };
+    scope = Virtual!.{ state, timers, invalid_plan };
+    id
+}
+
 instance PlanDriver[Virtual!] {
     fn timer(&scope: Virtual!, duration: Duration) -> Option[usize] {
-        let { state, timers, invalid_plan } = scope;
-        let id = &state.add_leaf();
-        let timers = if id.is_some() { timers.push(Option::Some.(duration)) } else { timers };
-        scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
-        id
+        register_node(&scope, Option::Some.(duration), |&state| &state.add_leaf())
     }
 
     fn pair(&scope: Virtual!, pair: Pair) -> Option[usize] {
-        let { state, timers, invalid_plan } = scope;
-        let id = &state.add_pair(pair);
-        let timers = if id.is_some() { timers.push(Option::None) } else { timers };
-        scope = Virtual!.{ state, timers, invalid_plan: invalid_plan || id.is_none() };
-        id
+        register_node(&scope, Option::None, |&state| &state.add_pair(pair))
     }
 
     fn result(&scope: Virtual!, id: Option[usize]) -> Resolution {
