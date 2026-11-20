@@ -9,11 +9,15 @@ trait Clock {
     fn now(&engine: Engine) -> Duration;
 }
 
+/// A joined stage and whether its parent deadline expired while driving it.
+forall Output.
+exposed struct StageResult { output: Output, deadline_expired: bool }
+
 forall Task, Engine -> Output.
 trait StageDriver {
-    /// Joins the stage and returns its outcome. The deadline uses the same
-    /// clock as now, so preparation time also counts against the budget.
-    fn drive(task: Task, &engine: Engine, deadline: Option[Duration]) -> Output;
+    /// The deadline uses the same clock as now, so preparation time also
+    /// counts against the budget.
+    fn drive(task: Task, &engine: Engine, deadline: Option[Duration]) -> StageResult[Output];
 }
 
 forall Task.
@@ -83,7 +87,7 @@ impl Sequence![Stages] {
 
 forall Stages, Engine -> Output.
 trait Chain {
-    fn drive(stages: Stages, &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output];
+    fn drive(stages: Stages, &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[StageResult[Output]];
 }
 
 forall Engine where Clock[Engine].
@@ -99,7 +103,7 @@ fn remaining_budget(&engine: Engine, deadline: Option[Duration]) -> Option[Durat
 
 forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Engine -> Output].
 instance Chain[First![Task], Engine -> Output] {
-    fn drive(stages: First![Task], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output] {
+    fn drive(stages: First![Task], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[StageResult[Output]] {
         let { task } = stages;
         SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline))
     }
@@ -109,10 +113,10 @@ forall Previous, State, Input, Task, Env, Output, Engine
     where Copy[Env], Clock[Engine], Chain[Previous, Engine -> Input], StageDriver[Task, Engine -> Output].
 instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
     fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[Duration])
-        -> SequenceOutcome[Output] {
+        -> SequenceOutcome[StageResult[Output]] {
         let { previous, handoff: { state, resume, cancel } } = stages;
-        let input = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
-            SequenceOutcome::Finished(input) => input,
+        let stage = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
+            SequenceOutcome::Finished(stage) => stage,
             SequenceOutcome::Stopped => {
                 cancel(state, Option::None);
                 return SequenceOutcome::Stopped;
@@ -122,10 +126,11 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
                 return SequenceOutcome::Cancelled;
             },
         };
-        let expired = match remaining_budget(&engine, deadline) {
+        let { output: input, deadline_expired } = stage;
+        let expired = deadline_expired || (match remaining_budget(&engine, deadline) {
             Option::Some(duration) => duration.is_zero(),
             Option::None => false,
-        };
+        });
         if expired {
             cancel(state, Option::Some.(input));
             return SequenceOutcome::Cancelled;
@@ -145,5 +150,12 @@ fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[D
         Option::Some(duration) => Option::Some.(Clock[Engine]::now(&engine).add(duration)),
         Option::None => Option::None,
     };
-    Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline)
+    match Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline) {
+        SequenceOutcome::Finished(stage) => {
+            let { output, deadline_expired } = stage;
+            SequenceOutcome::Finished.(output)
+        },
+        SequenceOutcome::Stopped => SequenceOutcome::Stopped,
+        SequenceOutcome::Cancelled => SequenceOutcome::Cancelled,
+    }
 }

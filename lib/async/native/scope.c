@@ -41,6 +41,7 @@ struct Scope {
     int start_error;
     int invalid_plan;
     int driven;
+    uint8_t deadline_expired;
 };
 
 uint8_t *kable_scope_new(uint8_t *policy, policy_add add, policy_event event) {
@@ -143,6 +144,7 @@ static void cancel_operations(Scope *scope) {
 
 static void deadline_ready(void *context) {
     Scope *scope = context;
+    scope->deadline_expired = 1;
     report(scope, CANCEL, 0);
     cancel_operations(scope);
 }
@@ -208,6 +210,7 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
         return 0;
     }
     if (timed && ms == 0) {
+        scope->deadline_expired = 1;
         report(scope, CANCEL, 0);
         return 0;
     }
@@ -242,15 +245,16 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
     return report(scope, PENDING, 0) != 0;
 }
 
-void kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t timed) {
+uint8_t kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t timed) {
     Scope *scope = (Scope *)raw;
-    if (!scope || scope->driven || scope->invalid_plan || scope->start_error < 0) return;
+    if (!scope || scope->driven || scope->invalid_plan || scope->start_error < 0) return 0;
     uv_loop_t loop;
     scope->start_error = uv_loop_init(&loop);
-    if (scope->start_error < 0) return;
+    if (scope->start_error < 0) return 0;
     kable_scope_start(raw, root, &loop, ms, timed, NULL, NULL);
     uv_run(&loop, UV_RUN_DEFAULT);
     if (uv_loop_close(&loop) != 0) abort();
+    return scope->deadline_expired;
 }
 
 int32_t kable_scope_result(uint8_t *raw, size_t id) {

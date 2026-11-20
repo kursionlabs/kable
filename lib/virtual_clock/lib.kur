@@ -4,7 +4,7 @@ use std::option::Option;
 use std::time::Duration;
 use task::{Failure, PlanOutput};
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, ScopeState!, prepare};
-use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, drive_sequence, remaining_budget};
+use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence, remaining_budget};
 
 struct Virtual! {
     state: ScopeState!,
@@ -60,7 +60,7 @@ fn earliest(&timers: OwnedVec![Option[Duration]]) -> Option[(usize, Duration)] {
     next
 }
 
-fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> Duration {
+fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> (Duration, bool) {
     let { state, timers, invalid_plan } = scope;
     let valid = match root {
         Option::Some(id) => !invalid_plan && &state.begin(id),
@@ -68,13 +68,13 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
     };
     if !valid {
         scope = Virtual!.{ state, timers, invalid_plan: true };
-        return Duration::from_nanos(0);
+        return (Duration::from_nanos(0), false);
     }
     let expired = match deadline { Option::Some(duration) => duration.is_zero(), Option::None => false, };
     if expired {
         &state.cancel();
         scope = Virtual!.{ state, timers, invalid_plan };
-        return Duration::from_nanos(0);
+        return (Duration::from_nanos(0), true);
     }
     var limit = deadline;
     if limit.is_some() { &state.started(); }
@@ -85,6 +85,7 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
     }
 
     var elapsed = Duration::from_nanos(0);
+    var deadline_expired = false;
     while &state.pending() {
         let timer = earliest(&timers);
         let next_deadline = match timer {
@@ -100,6 +101,7 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
         match next_deadline {
             Option::Some(duration) => {
                 elapsed = duration;
+                deadline_expired = true;
                 &state.cancel();
                 &state.retired();
                 limit = Option::None;
@@ -125,27 +127,27 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
         }
     }
     scope = Virtual!.{ state, timers, invalid_plan };
-    elapsed
+    (elapsed, deadline_expired)
 }
 
 fn ignore_timer(timer: Option[Duration]) {}
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 fn drive(task: Task, deadline: Option[Duration]) -> Output {
-    let (result, elapsed) = drive_timed(task, deadline);
-    result
+    let ({ output, deadline_expired }, elapsed) = drive_timed(task, deadline);
+    output
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
-fn drive_timed(task: Task, deadline: Option[Duration]) -> (Output, Duration) {
+fn drive_timed(task: Task, deadline: Option[Duration]) -> (StageResult[Output], Duration) {
     let scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
     let prepared = prepare(task, scope);
-    let elapsed = &prepared.with_scope(|&scope, root| advance(&scope, root, deadline));
-    let (result, scope) = prepared.collect();
+    let (elapsed, deadline_expired) = &prepared.with_scope(|&scope, root| advance(&scope, root, deadline));
+    let (output, scope) = prepared.collect();
     let { state, timers, invalid_plan } = scope;
     state.destroy();
     timers.destroy(ignore_timer);
-    (result, elapsed)
+    (StageResult.{ output, deadline_expired }, elapsed)
 }
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
@@ -166,7 +168,7 @@ instance Clock[SequenceClock!] {
 
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
 instance StageDriver[Task, SequenceClock! -> Output] {
-    fn drive(task: Task, &engine: SequenceClock!, deadline: Option[Duration]) -> Output {
+    fn drive(task: Task, &engine: SequenceClock!, deadline: Option[Duration]) -> StageResult[Output] {
         let remaining = remaining_budget(&engine, deadline);
         let { time } = engine;
         let (result, elapsed) = drive_timed(task, remaining);

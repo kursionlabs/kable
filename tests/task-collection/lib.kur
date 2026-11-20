@@ -1,10 +1,11 @@
-use async::run;
+use async::{run, run_sequence};
 use std::buffer::Buffer!;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, ScopeState!};
+use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence, sequence};
 
 struct ReverseSelect! { first: Sleep![u8], second: Sleep![u8], id: Option[usize] }
 
@@ -161,7 +162,70 @@ fn check_deadline_timer_results() -> bool {
     }
 }
 
+struct EarlyDeadline {}
+struct ExpiredStage! { output: Buffer! }
+
+instance Clock[EarlyDeadline] {
+    fn now(&engine: EarlyDeadline) -> Duration { Duration::from_nanos(0) }
+}
+
+instance PlanOutput[ExpiredStage! -> Buffer!] {}
+
+instance StageDriver[ExpiredStage!, EarlyDeadline -> Buffer!] {
+    fn drive(task: ExpiredStage!, &engine: EarlyDeadline, deadline: Option[Duration]) -> StageResult[Buffer!] {
+        let { output } = task;
+        StageResult.{ output, deadline_expired: true }
+    }
+}
+
+fn unexpected_resume(state: Buffer!, output: Buffer!) -> Option[ExpiredStage!] {
+    state.destroy();
+    output.destroy();
+    trap()
+}
+
+fn discard_expired(state: Buffer!, output: Option[Buffer!]) {
+    let output = output.unwrap();
+    let valid = &state.len() == 5 && &output.len() == 6;
+    state.destroy();
+    output.destroy();
+    if !valid { trap(); }
+}
+
+fn check_reported_deadline() -> bool {
+    let stage = ExpiredStage!.{ output: Buffer!::new().push_static("output") };
+    let plan = sequence(stage).then_owned(Buffer!::new().push_static("state"),
+        |state, output| unexpected_resume(state, output), discard_expired);
+    let engine = EarlyDeadline.{};
+    match drive_sequence(plan, &engine, Option::Some.(Duration::from_secs(1))) {
+        SequenceOutcome::Cancelled => true,
+        SequenceOutcome::Finished(output) => { output.destroy(); false },
+        SequenceOutcome::Stopped => false,
+    }
+}
+
+fn check_local_timeout_handoff() -> bool {
+    let immediate = Duration::from_nanos(0);
+    let stage = sleep(Duration::from_secs(30), 7u8).within(immediate);
+    let plan = sequence(stage).then(|outcome| {
+        let ((value, status), deadline) = outcome;
+        match status { Completion::Cancelled => (), _ => trap() };
+        match deadline {
+            DeadlineStatus::TimedOut => Option::Some.(sleep(immediate, value)),
+            _ => trap(),
+        }
+    });
+    match run_sequence(plan, Option::None) {
+        SequenceOutcome::Finished(outcome) => {
+            let (value, status) = outcome;
+            match status { Completion::Ready => value == 7, _ => false }
+        },
+        _ => false,
+    }
+}
+
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0), 1u8), second: sleep(Duration::from_secs(30), 2u8), id: Option::None };
-    if run(plan) && check_unrooted_timer() && check_deadline_timer_results() { 0 } else { 1 }
+    if run(plan) && check_unrooted_timer() && check_deadline_timer_results() &&
+        check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
 }

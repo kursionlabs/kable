@@ -294,6 +294,9 @@ Match the result using `task::sequence::SequenceOutcome`.
 - `Cancelled` means the shared deadline prevented a handoff. The skipped
   stages release their owned state through their cleanup callbacks.
 
+A stage's local `.within()` timeout is part of the output passed to the next
+continuation while the shared budget remains.
+
 ```sh
 ../kursal/bin/kursal build examples/task-chain -o bin/task-chain
 bin/task-chain
