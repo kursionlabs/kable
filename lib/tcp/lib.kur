@@ -31,8 +31,6 @@ extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
 extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
-extern "C" fn kable_tcp_stream_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8, u8) -> i32) -> i32;
 extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
 
 struct Connection! { raw: *u8 }
@@ -160,9 +158,7 @@ impl Connection! {
     unsafe fn submit_stream(self, prepare: closure[Env](Connection!) -> HostedPlan!) -> i32 {
         let { raw } = self;
         let task = prepare(Connection!.{ raw });
-        let submission = unsafe task.submit(raw, |scope, root, plan, finish| {
-            unsafe kable_tcp_stream_schedule(raw, scope, root, plan, finish)
-        });
+        let submission = unsafe submit_hosted(raw, task);
         submission.unwrap_or_else(|rejection| {
             let (error, continued) = rejection;
             error
@@ -284,9 +280,7 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
         Action!::Wait(next) => unsafe submit(next, Option::None),
         Action!::Write(bytes, next) => unsafe submit(next, Option::Some.(bytes)),
         Action!::Scoped(plan) => {
-            let submission = unsafe plan.submit(connection, |scope, root, plan, finish| {
-                unsafe kable_tcp_schedule(connection, scope, root, plan, finish)
-            });
+            let submission = unsafe submit_hosted(connection, plan);
             submission.unwrap_or_else(|rejection| {
                 let (error, continued) = rejection;
                 continued
@@ -298,6 +292,12 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
             0i32
         },
     }
+}
+
+unsafe fn submit_hosted(connection: *u8, plan: HostedPlan!) -> Result[i32, (i32, i32)] {
+    unsafe plan.submit(connection, |scope, root, plan, finish| {
+        unsafe kable_tcp_schedule(connection, scope, root, plan, finish)
+    })
 }
 
 unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {

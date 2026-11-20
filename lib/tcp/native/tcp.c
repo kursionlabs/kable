@@ -423,23 +423,28 @@ static int queue_write(Connection *connection, uint8_t *bytes, size_t len) {
     return status;
 }
 
-static void start_scope(Connection *connection, uint8_t *scope, size_t root,
-    uint8_t *plan, KablePlanFinish finish) {
+int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
+    KablePlanFinish finish) {
+    Connection *connection = (Connection *)raw;
+    if (socket_closing(connection)) return UV_ECANCELED;
+    switch (connection->phase) {
+    case IDLE:
+        if (connection->listener->stopping) return UV_ECANCELED;
+        connection->phase = SCOPED;
+        break;
+    case STREAMING:
+        if (connection->cancelled) return UV_ECANCELED;
+        if (connection->plan) return UV_EBUSY;
+        break;
+    default:
+        return UV_ECANCELED;
+    }
     connection->scope = scope;
     connection->plan = plan;
     connection->finish_plan = finish;
     if (!kable_scope_start(scope, root, &connection->listener->loop, 0, 0, scope_joined, connection)) {
         scope_joined(connection);
     }
-}
-
-int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != IDLE || connection->listener->stopping ||
-        socket_closing(connection)) return UV_ECANCELED;
-    connection->phase = SCOPED;
-    start_scope(connection, scope, root, plan, finish);
     return 0;
 }
 
@@ -546,15 +551,6 @@ int32_t kable_tcp_stream_end(uint8_t *raw) {
     if (connection->phase != STREAMING || connection->cancelled) return UV_ECANCELED;
     if (connection->plan) return UV_EBUSY;
     end_stream(connection, 1);
-    return 0;
-}
-
-int32_t kable_tcp_stream_schedule(uint8_t *raw, uint8_t *scope, size_t root,
-    uint8_t *plan, KablePlanFinish finish) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != STREAMING || connection->cancelled || socket_closing(connection)) return UV_ECANCELED;
-    if (connection->plan) return UV_EBUSY;
-    start_scope(connection, scope, root, plan, finish);
     return 0;
 }
 
