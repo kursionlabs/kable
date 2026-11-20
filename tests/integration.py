@@ -876,6 +876,20 @@ def check_tcp_session(command):
                           bufsize=0) as process:
         try:
             port = listening_port(process, b"Listening on 127.0.0.1:")
+            with connect(port) as batched:
+                batched.sendall(b"one\ntwo\nleft")
+                assert_received(batched, b"one\ntwo\n")
+                batched.sendall(b"over\nunfinished")
+                assert_received(batched, b"leftover\n")
+                batched.shutdown(socket.SHUT_WR)
+                assert batched.recv(1) == b""
+                read_log_until(process.stderr, b"Closed session with 10 buffered bytes.")
+
+            with connect(port) as overlong:
+                overlong.sendall(b"x" * 16385)
+                assert overlong.recv(1) == b""
+                read_log_until(process.stderr, b"Closed session with 16385 buffered bytes.")
+
             with connect(port) as idle:
                 idle.sendall(b"retry limit")
                 assert idle.recv(1) == b""

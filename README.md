@@ -453,11 +453,11 @@ Other connections can continue while either operation is pending.
 
 ### Connection-local state
 
-The session example starts each connection with its own linear buffer.
-Each read continuation owns the pending bytes and can retry one idle read
-with the same buffer. When complete lines arrive, the write continuation
-holds any trailing partial line until the write joins. Closing the session
-releases the buffer and returns an action to close the connection.
+The session example gives each connection a suspended parser that owns its
+pending bytes. The read continuation resumes the parser with each chunk and
+carries it across one idle retry. When the parser returns complete lines,
+the write continuation holds a new parser for the trailing bytes until the
+write joins. Closing the session discards the parser and its pending bytes.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-session -o bin/tcp-session

@@ -10,5 +10,8 @@ path="../../../kursal/lib/std"
 [dependencies.task]
 path="../../lib/task"
 
+[dependencies.thunk]
+path="../../lib/thunk"
+
 [dependencies.tcp]
 path="../../lib/tcp"

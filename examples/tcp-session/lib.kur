@@ -5,72 +5,102 @@ use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!, defer};
+use thunk::{Step, Suspension!, suspend};
 
-fn start(connection: Connection!) -> Action! {
-    read_line(connection, Buffer!::new(), false)
+enum Lines! {
+    Complete(Buffer!, Buffer!),
+    TooLong(Buffer!),
 }
 
-fn close_session(connection: Connection!, pending: Buffer!) -> Action! {
+fn start(connection: Connection!) -> Action! {
+    read_line(connection, line_reader(Buffer!::new()), false)
+}
+
+fn discard_line(pending: Buffer!) {
     let length = &pending.len();
     pending.destroy();
     eprint_buffer(f"Closed session with {length} buffered bytes.\n");
-    connection.close()
 }
 
-fn read_line(connection: Connection!, pending: Buffer!, retried: bool) -> Action! {
-    defer(connection.next().within(Duration::from_secs(1)), |result| read_finished(result, pending, retried))
+fn line_reader(pending: Buffer!) -> Suspension![Buffer!, Buffer!, Lines!, ()] {
+    suspend(pending, |pending, bytes| parse_lines(pending, bytes), discard_line)
 }
 
-fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
-    pending: Buffer!, retried: bool) -> Action! {
-    let ((connection, outcome), deadline) = result;
-    let chunk = match outcome {
-        Completion::Ready(chunk) => chunk,
-        Completion::Cancelled => return match deadline {
-            DeadlineStatus::TimedOut => {
-                if retried { return close_session(connection, pending); }
-                eprint_buffer(f"Retrying idle read.\n");
-                read_line(connection, pending, true)
-            },
-            _ => close_session(connection, pending),
-        },
-        Completion::Failed => return close_session(connection, pending),
-    };
-    let bytes = match chunk {
-        Option::Some(bytes) => bytes,
-        Option::None => return close_session(connection, pending),
-    };
-    match deadline {
-        DeadlineStatus::Completed => receive(connection, pending.push_buffer(bytes)),
-        _ => { bytes.destroy(); close_session(connection, pending) },
-    }
-}
-
-fn receive(connection: Connection!, pending: Buffer!) -> Action! {
+fn parse_lines(pending: Buffer!, bytes: Buffer!) -> Step[Buffer!, Lines!] {
+    let pending = pending.push_buffer(bytes);
     let exists 'k. (access, bytes, restore) = pending.open();
     let span = Span::from_slice(bytes);
     match span.rfind_byte(&access, b'\n') {
         Option::None => {
             let pending = restore.restore(access);
-            if &pending.len() > 16384 { close_session(connection, pending) }
-            else { read_line(connection, pending, false) }
+            if &pending.len() > 16384 { Step::Done.(Lines!::TooLong.(pending)) }
+            else { Step::Suspended.(pending) }
         },
         Option::Some(index) => {
             let end = index + 1;
             let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
-            let tail = span.skip(end);
-            let pending = Buffer!::new_with_cap(tail.len()).push_bytes(&access, tail);
+            let rest = span.skip(end);
+            let tail = Buffer!::new_with_cap(rest.len()).push_bytes(&access, rest);
             restore.restore(access).destroy();
-            defer(connection.write(complete), |result| {
-                let (connection, bytes, status) = result;
-                bytes.destroy();
-                match status {
-                    Completion::Ready => read_line(connection, pending, false),
-                    Completion::Cancelled | Completion::Failed => close_session(connection, pending),
-                }
-            })
+            Step::Done.(Lines!::Complete.(complete, tail))
         },
     }
+}
+
+fn close_session(connection: Connection!, reader: Suspension![Buffer!, Buffer!, Lines!, ()]) -> Action! {
+    reader.discard();
+    connection.close()
+}
+
+fn read_line(connection: Connection!, reader: Suspension![Buffer!, Buffer!, Lines!, ()], retried: bool) -> Action! {
+    defer(connection.next().within(Duration::from_secs(1)), |result| read_finished(result, reader, retried))
+}
+
+fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
+    reader: Suspension![Buffer!, Buffer!, Lines!, ()], retried: bool) -> Action! {
+    let ((connection, outcome), deadline) = result;
+    let chunk = match outcome {
+        Completion::Ready(chunk) => chunk,
+        Completion::Cancelled => return match deadline {
+            DeadlineStatus::TimedOut => {
+                if retried { return close_session(connection, reader); }
+                eprint_buffer(f"Retrying idle read.\n");
+                read_line(connection, reader, true)
+            },
+            _ => close_session(connection, reader),
+        },
+        Completion::Failed => return close_session(connection, reader),
+    };
+    let bytes = match chunk {
+        Option::Some(bytes) => bytes,
+        Option::None => return close_session(connection, reader),
+    };
+    match deadline {
+        DeadlineStatus::Completed => match reader.resume(bytes) {
+            Step::Suspended(next) => read_line(connection, next, false),
+            Step::Done(lines) => write_lines(connection, lines),
+        },
+        _ => { bytes.destroy(); close_session(connection, reader) },
+    }
+}
+
+fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
+    let (complete, tail) = match lines {
+        Lines!::Complete(complete, tail) => (complete, tail),
+        Lines!::TooLong(pending) => {
+            discard_line(pending);
+            return connection.close();
+        },
+    };
+    let reader = line_reader(tail);
+    defer(connection.write(complete), |result| {
+        let (connection, bytes, status) = result;
+        bytes.destroy();
+        match status {
+            Completion::Ready => read_line(connection, reader, false),
+            Completion::Cancelled | Completion::Failed => close_session(connection, reader),
+        }
+    })
 }
 
 fn main() -> i32 {
