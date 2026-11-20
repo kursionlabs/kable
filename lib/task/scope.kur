@@ -164,7 +164,12 @@ impl ScopeState! {
         id
     }
 
-    fn result(&self, id: usize) -> Option[Resolution] {
+    /// Returns a registered node's result after the scope joins.
+    fn result(&self, id: Option[usize]) -> Option[Resolution] {
+        let id = match id {
+            Option::Some(id) => id,
+            Option::None => return Option::None,
+        };
         let { nodes, root, pending, ..rest } = self;
         let result = if scope_joined(&nodes, root, pending) && id < &nodes.len() {
             (&nodes.at(id)).result

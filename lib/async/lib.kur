@@ -266,7 +266,7 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
         4u8 => if &state.complete(id) { 1usize } else { 0usize },
         5u8 => { &state.cancel(); 0usize },
         6u8 => (&state.take_cancel()).unwrap_or(usize::MAX),
-        7u8 => match &state.result(id) {
+        7u8 => match &state.result(registered(id)) {
             Option::Some(result) => match result {
                 Resolution::Cancelled => CANCELLED as usize,
                 Resolution::Completed => COMPLETED as usize,

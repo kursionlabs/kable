@@ -353,7 +353,7 @@ int32_t kable_scope_result(uint8_t *raw, size_t id) {
     if (scope->start_error < 0) return scope->start_error;
     if (scope->invalid_plan) return SCOPE_INVALID_PLAN;
     if (!scope->driven) return SCOPE_NOT_STARTED;
-    if (report(scope, PENDING, 0) || id >= scope->count) return SCOPE_INVALID_RESULT;
+    if (id >= scope->count) return SCOPE_INVALID_RESULT;
     size_t result = report(scope, RESULT, id);
     return result == SIZE_MAX ? SCOPE_INVALID_RESULT : (int32_t)result;
 }

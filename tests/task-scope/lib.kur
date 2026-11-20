@@ -7,7 +7,6 @@ fn check_retirement_before_resolution() -> bool {
     let second = (&scope.add_leaf()).unwrap();
     let root = &scope.add_pair(Pair.{ kind: PairKind::Join, first, second });
     let valid = &scope.begin(root);
-    let root = root.unwrap();
     &scope.started(Resource::Leaf.(first));
     &scope.started(Resource::Leaf.(second));
     let first_resolved_root = &scope.complete(first);
@@ -16,11 +15,11 @@ fn check_retirement_before_resolution() -> bool {
     &scope.retired(Resource::Leaf.(second));
     let drained = !&scope.pending();
     let joined_early = &scope.joined();
-    let hidden = (&scope.result(first)).is_none() && (&scope.result(root)).is_none();
+    let hidden = (&scope.result(Option::Some.(first))).is_none() && (&scope.result(root)).is_none();
     let root_resolved = &scope.complete(second);
     let joined = &scope.joined();
     let result = &scope.result(root);
-    let first_result = &scope.result(first);
+    let first_result = &scope.result(Option::Some.(first));
     scope.destroy();
     let root_ready = match result.unwrap() { Resolution::Completed => true, _ => false };
     let first_ready = match first_result.unwrap() { Resolution::Completed => true, _ => false };
@@ -53,13 +52,16 @@ fn main() -> i32 {
     let late = &scope.complete(second);
     &scope.started(Resource::Leaf.(first));
     &scope.retired(Resource::Leaf.(second));
-    let waiting_for_timer = &scope.pending() && !&scope.joined() && (&scope.result(root)).is_none();
+    let waiting_for_timer = &scope.pending() && !&scope.joined() &&
+        (&scope.result(Option::Some.(root))).is_none();
     &scope.retired(Resource::ParentTimer);
     &scope.retired(Resource::ParentTimer);
     let scope_joined = &scope.joined();
-    let result = &scope.result(root);
-    let winner = &scope.result(first);
-    let loser = &scope.result(second);
+    let missing_result = (&scope.result(Option::None)).is_none();
+    let out_of_range = (&scope.result(Option::Some.(root + 1))).is_none();
+    let result = &scope.result(Option::Some.(root));
+    let winner = &scope.result(Option::Some.(first));
+    let loser = &scope.result(Option::Some.(second));
     let next_stop = &scope.take_cancel();
     scope.destroy();
     let first_won = match result.unwrap() { Resolution::First => true, _ => false, };
@@ -67,6 +69,6 @@ fn main() -> i32 {
     let loser_cancelled = match loser.unwrap() { Resolution::Cancelled => true, _ => false, };
     if missing_root_rejected && disconnected_root_rejected && rejected && refused_reparent && valid &&
         won && cancelled.unwrap() == second && waiting_for_timer &&
-        !late && scope_joined && first_won && winner_completed && loser_cancelled &&
+        !late && scope_joined && missing_result && out_of_range && first_won && winner_completed && loser_cancelled &&
         next_stop.is_none() { 0i32 } else { 1i32 }
 }

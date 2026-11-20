@@ -9,6 +9,13 @@ use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_seq
 
 struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
 
+fn invalid_result(resolution: Resolution) -> bool {
+    match resolution {
+        Resolution::Failed(failure) => match failure { Failure::InvalidResult => true, _ => false },
+        _ => false,
+    }
+}
+
 forall Driver where PlanDriver[Driver].
 instance Plan[ReverseSelect!, Driver -> bool] {
     fn stage(&task: ReverseSelect!, &scope: Driver) -> Option[usize] {
@@ -42,7 +49,9 @@ instance Plan[ReverseSelect!, Driver -> bool] {
             Completion::Ready => true,
             _ => false,
         };
-        selected && cancelled && completed
+        let missing = PlanDriver[Driver]::result(&scope, Option::None);
+        let out_of_range = PlanDriver[Driver]::result(&scope, Option::Some.(id.unwrap() + 1));
+        selected && cancelled && completed && invalid_result(missing) && invalid_result(out_of_range)
     }
 }
 
@@ -124,10 +133,9 @@ instance PlanDriver[DeadlineDriver!] {
 
     fn result(&scope: DeadlineDriver!, id: Option[usize]) -> Resolution {
         let { state, timer, timer_result } = scope;
-        let id = id.unwrap();
         let result = (&state.result(id)).unwrap();
         scope = DeadlineDriver!.{ state, timer, timer_result };
-        if id == timer.unwrap() { timer_result } else { result }
+        if id.unwrap() == timer.unwrap() { timer_result } else { result }
     }
 }
 

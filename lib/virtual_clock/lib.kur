@@ -31,10 +31,7 @@ instance PlanDriver[Virtual!] {
 
     fn result(&scope: Virtual!, id: Option[usize]) -> Resolution {
         let { state, timers, invalid_plan } = scope;
-        let result = match id {
-            Option::Some(id) => &state.result(id),
-            Option::None => Option::None,
-        };
+        let result = &state.result(id);
         scope = Virtual!.{ state, timers, invalid_plan };
         let failure = if invalid_plan { Failure::InvalidPlan } else { Failure::InvalidResult };
         result.unwrap_or(Resolution::Failed.(failure))
