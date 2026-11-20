@@ -15,9 +15,11 @@ export host;
 
 extern "C" fn uv_hrtime() -> u64;
 
-extern "C" fn kable_scope_new(policy: *u8, add: unsafe fn(*u8, u8, usize, usize) -> usize,
+extern "C" fn kable_scope_new(policy: *u8, add_leaf: unsafe fn(*u8) -> usize,
+    add_pair: unsafe fn(*u8, u8, usize, usize) -> usize,
     event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
-extern "C" fn kable_scope_add(scope: *u8, kind: u8, ms: u64, first: usize, second: usize) -> usize;
+extern "C" fn kable_scope_add_timer(scope: *u8, ms: u64) -> usize;
+extern "C" fn kable_scope_add_pair(scope: *u8, kind: u8, first: usize, second: usize) -> usize;
 extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize, mode: u8) -> usize;
 extern "C" fn kable_scope_add_chunk(scope: *u8, fd: i32, offset: u64, limit: usize) -> usize;
 extern "C" fn kable_scope_add_write(scope: *u8, fd: i32, offset: u64, bytes: *u8, len: usize) -> usize;
@@ -179,18 +181,23 @@ const SECOND: i32 = 3i32;
 const NOT_STARTED: i32 = 4;
 const INVALID_PLAN: i32 = 5;
 
-unsafe fn add_branch(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
-    let branch = match kind {
-        0u8 => Branch::Leaf,
-        1u8 => Branch::Pair.(Pair.{ kind: PairKind::Select, first, second }),
-        2u8 => Branch::Pair.(Pair.{ kind: PairKind::Join, first, second }),
-        _ => return usize::MAX,
-    };
+unsafe fn add_branch(raw: *u8, branch: Branch) -> usize {
     let ptr = unsafe (raw as *ScopeState!);
     let state = unsafe *ptr;
     let id = &state.add(branch);
     unsafe *ptr = state;
     id.unwrap_or(usize::MAX)
+}
+
+unsafe fn add_leaf(raw: *u8) -> usize { unsafe add_branch(raw, Branch::Leaf) }
+
+unsafe fn add_pair(raw: *u8, kind: u8, first: usize, second: usize) -> usize {
+    let kind = match kind {
+        0u8 => PairKind::Select,
+        1u8 => PairKind::Join,
+        _ => return usize::MAX,
+    };
+    unsafe add_branch(raw, Branch::Pair.(Pair.{ kind, first, second }))
 }
 
 // Messages sent by the libuv adapter. Only the portable state decides which
@@ -242,16 +249,9 @@ impl Scope! {
     fn new() -> Scope! {
         let policy = HeapAllocator::alloc(sizeof[ScopeState!]()).into_raw();
         unsafe *(unsafe (policy as *ScopeState!)) = ScopeState!::new();
-        let raw = unsafe kable_scope_new(policy, add_branch, scope_event);
+        let raw = unsafe kable_scope_new(policy, add_leaf, add_pair, scope_event);
         if is_null(raw) { unsafe scope_event(policy, 8u8, 0usize); }
         Scope!.{ raw }
-    }
-
-    fn add(&self, kind: u8, ms: u64, first: usize, second: usize) -> Option[usize] {
-        let { raw } = self;
-        let id = unsafe kable_scope_add(raw, kind, ms, first, second);
-        self = Scope!.{ raw };
-        registered(id)
     }
 
     fn add_file(&self, &path: Buffer!, limit: usize, mode: u8) -> Option[usize] {
@@ -490,16 +490,22 @@ instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()
 
 instance PlanDriver[Scope!] {
     fn timer(&scope: Scope!, duration: Duration) -> Option[usize] {
-        &scope.add(0u8, timer_millis(duration), 0usize, 0usize)
+        let { raw } = scope;
+        let id = unsafe kable_scope_add_timer(raw, timer_millis(duration));
+        scope = Scope!.{ raw };
+        registered(id)
     }
 
     fn pair(&scope: Scope!, pair: Pair) -> Option[usize] {
         let { kind, first, second } = pair;
         let tag = match kind {
-            PairKind::Select => 1u8,
-            PairKind::Join => 2u8,
+            PairKind::Select => 0u8,
+            PairKind::Join => 1u8,
         };
-        &scope.add(tag, 0u64, first, second)
+        let { raw } = scope;
+        let id = unsafe kable_scope_add_pair(raw, tag, first, second);
+        scope = Scope!.{ raw };
+        registered(id)
     }
 
     fn result(&scope: Scope!, id: Option[usize]) -> Resolution { &scope.result(id) }
