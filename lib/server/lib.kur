@@ -32,7 +32,7 @@ extern "C" fn kable_stop(server: *u8) -> ();
 
 exposed enum Action! {
     Reply(Response!),
-    Deferred(Deferred!),
+    Deferred(HostedPlan!),
     File(FileReply!),
 }
 
@@ -78,9 +78,6 @@ enum Handler {
     Deferred(fn(Request!) -> Action!),
 }
 
-struct Pending! { response: Response!, head: bool, http10: bool }
-struct Deferred! { hosted: HostedPlan! }
-
 exposed enum RequestState { Active, Cancelled }
 
 forall Task, Output where PlanOutput[Task -> Output].
@@ -104,13 +101,11 @@ impl Task {
                 Option::None => -1,
             }
         });
-        Action!::Deferred.(Deferred!.{ hosted })
+        Action!::Deferred.(hosted)
     }
 }
 
-unsafe fn write_response(client: *u8, pending: Pending!) -> i32 {
-    let { response, head, http10 } = pending;
-    let wire = response.encode(head, http10);
+unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
     let ptr = unsafe &wire.as_ptr();
     let len = &wire.len();
     let result = unsafe kable_write(client, ptr, len);
@@ -125,26 +120,20 @@ unsafe fn discard_action(client: *u8, action: Action!) {
             let { file, content_type } = reply;
             file.close();
         },
-        Action!::Deferred(deferred) => {
-            let { hosted } = deferred;
-            unsafe hosted.discard(client);
-        },
+        Action!::Deferred(plan) => unsafe plan.discard(client),
     }
-}
-
-unsafe fn schedule(client: *u8, deferred: Deferred!, head: bool, http10: bool) -> i32 {
-    let { hosted } = deferred;
-    let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
-    let (status, handled) = unsafe hosted.submit(client, |scope, root, plan, finish| {
-        unsafe kable_schedule(client, scope, root, plan, finish, flags)
-    });
-    status
 }
 
 unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
     match action {
-        Action!::Reply(response) => unsafe write_response(client, Pending!.{ response, head, http10 }),
-        Action!::Deferred(plan) => unsafe schedule(client, plan, head, http10),
+        Action!::Reply(response) => unsafe write_wire(client, response.encode(head, http10)),
+        Action!::Deferred(plan) => {
+            let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
+            let (status, handled) = unsafe plan.submit(client, |scope, root, plan, finish| {
+                unsafe kable_schedule(client, scope, root, plan, finish, flags)
+            });
+            status
+        },
         Action!::File(reply) => unsafe write_file(client, reply, head, http10),
     }
 }
@@ -160,9 +149,7 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
     let headers = encode_file_headers(status, content_type, start, count, total, http10);
     if head || count == 0 {
         file.close();
-        let result = unsafe kable_write(client, unsafe &headers.as_ptr(), &headers.len());
-        headers.destroy();
-        return result;
+        return unsafe write_wire(client, headers);
     }
     let connection = unsafe kable_client_connection(client);
     unsafe write_then_next(connection, headers, file.chunks(start, count))
@@ -206,7 +193,7 @@ unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8
     let head = method == 2u8;
     let http10 = http10 != 0u8;
     if status != 0u16 {
-        return unsafe write_response(client, Pending!.{ response: Response!::rejected(status), head, http10 });
+        return unsafe write_wire(client, Response!::rejected(status).encode(head, http10));
     }
     let method = match method {
         1u8 => Method::Get,
