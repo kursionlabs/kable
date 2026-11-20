@@ -70,29 +70,31 @@ trait Resumable {
 /// An owned computation paused until its caller supplies the next input.
 forall State, Input, Output, Env.
 struct Suspension! {
-    pending: Thunk![State, Input, Step[State, Output], Env, fn(State) -> ()],
+    state: State,
+    step: closure[Env](State, Input) -> Step[State, Output],
+    cleanup: fn(State) -> (),
 }
 
 /// Stores the first step's state. The step may capture copyable configuration.
 forall State, Input, Output, Env where Copy[Env].
 fn suspend(state: State, step: closure[Env](State, Input) -> Step[State, Output], cleanup: fn(State) -> ())
     -> Suspension![State, Input, Output, Env] {
-    Suspension!.{ pending: Thunk!.{ state, evaluate: step, cleanup } }
+    Suspension!.{ state, step, cleanup }
 }
 
 forall State, Input, Output, Env where Copy[Env].
 instance Resumable[Suspension![State, Input, Output, Env] -> Input, Output] {
     fn resume(suspension: Suspension![State, Input, Output, Env], input: Input)
         -> Step[Suspension![State, Input, Output, Env], Output] {
-        let { pending: { state, evaluate, cleanup } } = suspension;
-        match evaluate(state, input) {
+        let { state, step, cleanup } = suspension;
+        match step(state, input) {
             Step::Done(output) => Step::Done.(output),
-            Step::Suspended(state) => Step::Suspended.(Suspension!.{ pending: Thunk!.{ state, evaluate, cleanup } }),
+            Step::Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
         }
     }
 
     fn discard(suspension: Suspension![State, Input, Output, Env]) {
-        let { pending } = suspension;
-        pending.discard();
+        let { state, step, cleanup } = suspension;
+        cleanup(state);
     }
 }

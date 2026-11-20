@@ -181,7 +181,7 @@ fn discard_runner_sequence(state: (Buffer!, *u8), prior: Option[(Buffer!, Comple
     bytes.destroy();
     if !valid { trap(); }
     match status { Completion::Cancelled => (), _ => trap() };
-    unsafe *cleaned = 1;
+    unsafe *cleaned = (unsafe *cleaned) + 1;
 }
 
 fn check_runner_sequence() -> bool {
