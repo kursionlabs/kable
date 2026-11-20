@@ -95,12 +95,12 @@ impl ScopeState! {
         &self.update_resource(resource, true);
     }
 
-    /// Returns true when this report retires the last resource of a resolved scope.
-    fn retired(&self, resource: Resource) -> bool {
-        &self.update_resource(resource, false) && &self.joined()
+    /// Reports that a resource has retired. Use joined() to query scope completion.
+    fn retired(&self, resource: Resource) {
+        &self.update_resource(resource, false);
     }
 
-    fn update_resource(&self, resource: Resource, starting: bool) -> bool {
+    fn update_resource(&self, resource: Resource, starting: bool) {
         let { nodes, root, pending, parent_timer, ..rest } = self;
         let changed = if root.is_some() {
             match resource {
@@ -112,7 +112,6 @@ impl ScopeState! {
             if starting { pending + 1usize } else { pending - 1usize }
         } else { pending };
         self = ScopeState!.{ nodes, root, pending, parent_timer, ..rest };
-        changed
     }
 
     fn pending(&self) -> bool {
@@ -129,6 +128,7 @@ impl ScopeState! {
         joined
     }
 
+    /// Reports a leaf's completion and returns true if it resolves the root.
     fn complete(&self, id: usize) -> bool {
         let { nodes, stops, root, ..rest } = self;
         var resolved = false;

@@ -261,7 +261,7 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
     let result = match event {
         0u8 => if &state.begin(id) { 1usize } else { 0usize },
         1u8 => { &state.started(resource_id(id)); 0usize },
-        2u8 => if &state.retired(resource_id(id)) { 1usize } else { 0usize },
+        2u8 => { &state.retired(resource_id(id)); 0usize },
         3u8 => if &state.pending() { 1usize } else { 0usize },
         4u8 => if &state.complete(id) { 1usize } else { 0usize },
         5u8 => { &state.cancel(); 0usize },

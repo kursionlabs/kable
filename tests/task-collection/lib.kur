@@ -138,7 +138,8 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
     if !&state.complete(winner) { trap(); }
     let loser = (&state.take_cancel()).unwrap();
     &state.retired(Resource::Leaf.(winner));
-    if !&state.retired(Resource::Leaf.(loser)) { trap(); }
+    &state.retired(Resource::Leaf.(loser));
+    if !&state.joined() { trap(); }
 
     let driver = DeadlineDriver!.{ state, timer, timer_result };
     let ((bytes, status), deadline) =

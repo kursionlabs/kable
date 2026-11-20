@@ -305,11 +305,12 @@ The virtual clock is a reference driver for timer plans. It uses the same
 2. Use `prepare(task, scope).drive(run, close)` for a standalone run. The
    `run` callback receives the scope and optional root. Validate the root
    with `begin`. Report `started(resource)` for each scheduled leaf or parent
-   timer and `complete(id)` when an operation finishes. Report
-   `retired(resource)` after that resource is safe to release. Drain
-   `take_cancel` to stop leaves the policy cancelled. A cancelled operation
-   can still be in flight. Each resource transitions from unstarted to active
-   to retired once.
+   timer and `complete(id)` when an operation finishes. A true return from
+   `complete(id)` means the root resolved, so the driver can cancel the
+   parent timer. Report `retired(resource)` when a resource is safe to
+   release. Drain `take_cancel` to stop leaves the policy cancelled. A
+   cancelled operation can still be in flight. Each resource transitions
+   from unstarted to active to retired once.
 3. Check `joined()` after the root resolves or a resource retires. Once
    `run` returns, `.drive(...)` collects the owned outcome and closes the
    scope. Hosted drivers can use `&prepared.with_scope(...)` to access the
