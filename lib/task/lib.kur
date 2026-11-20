@@ -73,33 +73,49 @@ struct Sleep! { duration: Duration, value: T, id: Option[usize] }
 forall T.
 fn sleep(duration: Duration, value: T) -> Sleep![T] { Sleep!.{ duration, value, id: Option::None } }
 
-forall First, Second.
-struct Select! { first: First, second: Second, id: Option[usize] }
+forall First, Second, Status.
+struct PairPlan! {
+    first: First,
+    second: Second,
+    kind: PairKind,
+    resolve: fn(Resolution) -> Completion[Status],
+    id: Option[usize],
+}
 
 /// Starts both plans and selects the first to complete, including a plan
 /// whose operation reports an error. The losing plan is cancelled and joined.
 forall First, Second.
-fn select(first: First, second: Second) -> Select![First, Second] { Select!.{ first, second, id: Option::None } }
-
-forall First, Second.
-struct Join! { first: First, second: Second, id: Option[usize] }
+fn select(first: First, second: Second) -> PairPlan![First, Second, Side] {
+    PairPlan!.{ first, second, kind: PairKind::Select, resolve: select_result, id: Option::None }
+}
 
 /// Returns both child outputs in input order alongside the join status,
 /// including when the scope is cancelled or fails.
 forall First, Second.
-fn join(first: First, second: Second) -> Join![First, Second] { Join!.{ first, second, id: Option::None } }
+fn join(first: First, second: Second) -> PairPlan![First, Second, ()] {
+    PairPlan!.{ first, second, kind: PairKind::Join, resolve: join_result, id: Option::None }
+}
 
 /// The input that finished first in a selection.
 exposed enum Side { First, Second }
 
+fn select_result(result: Resolution) -> Completion[Side] {
+    match result {
+        Resolution::First => Completion::Ready.(Side::First),
+        Resolution::Second => Completion::Ready.(Side::Second),
+        Resolution::Cancelled => Completion::Cancelled,
+        Resolution::Failed(failure) => Completion::Failed.(failure),
+        Resolution::Completed => Completion::Failed.(Failure::InvalidResult),
+    }
+}
+
+fn join_result(result: Resolution) -> Completion[()] { result.completion() }
+
 forall T.
 instance PlanOutput[Sleep![T] -> (T, Completion[()])] {}
 
-forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
-instance PlanOutput[Select![First, Second] -> (A, B, Completion[Side])] {}
-
-forall First, Second, A, B where PlanOutput[First -> A], PlanOutput[Second -> B].
-instance PlanOutput[Join![First, Second] -> (A, B, Completion[()])] {}
+forall First, Second, A, B, Status where PlanOutput[First -> A], PlanOutput[Second -> B].
+instance PlanOutput[PairPlan![First, Second, Status] -> (A, B, Completion[Status])] {}
 
 forall T, Driver where PlanDriver[Driver].
 instance Plan[Sleep![T], Driver -> (T, Completion[()])] {
@@ -123,50 +139,22 @@ fn stage_pair(&first: First, &second: Second, &scope: Driver, kind: PairKind) ->
     PlanDriver[Driver]::pair(&scope, Pair.{ kind, first: a?, second: b? })
 }
 
-forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-fn collect_pair(first: First, second: Second, &scope: Driver, id: Option[usize]) -> (A, B, Resolution) {
-    let a = Plan[First, Driver -> A]::collect(first, &scope);
-    let b = Plan[Second, Driver -> B]::collect(second, &scope);
-    let result = PlanDriver[Driver]::result(&scope, id);
-    (a, b, result)
-}
-
-forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-instance Plan[Select![First, Second], Driver -> (A, B, Completion[Side])] {
-    fn stage(&task: Select![First, Second], &scope: Driver) -> Option[usize] {
-        let { first, second, id } = task;
-        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, PairKind::Select);
-        task = Select!.{ first, second, id };
+forall First, Second, A, B, Status, Driver
+    where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
+instance Plan[PairPlan![First, Second, Status], Driver -> (A, B, Completion[Status])] {
+    fn stage(&task: PairPlan![First, Second, Status], &scope: Driver) -> Option[usize] {
+        let { first, second, kind, resolve, id } = task;
+        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, kind);
+        task = PairPlan!.{ first, second, kind, resolve, id };
         id
     }
 
-    fn collect(task: Select![First, Second], &scope: Driver) -> (A, B, Completion[Side]) {
-        let { first, second, id } = task;
-        let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope, id);
-        let status = match result {
-            Resolution::First => Completion::Ready.(Side::First),
-            Resolution::Second => Completion::Ready.(Side::Second),
-            Resolution::Cancelled => Completion::Cancelled,
-            Resolution::Failed(failure) => Completion::Failed.(failure),
-            Resolution::Completed => Completion::Failed.(Failure::InvalidResult),
-        };
-        (a, b, status)
-    }
-}
-
-forall First, Second, A, B, Driver where PlanDriver[Driver], Plan[First, Driver -> A], Plan[Second, Driver -> B].
-instance Plan[Join![First, Second], Driver -> (A, B, Completion[()])] {
-    fn stage(&task: Join![First, Second], &scope: Driver) -> Option[usize] {
-        let { first, second, id } = task;
-        let id = stage_pair[First, Second, A, B, Driver](&first, &second, &scope, PairKind::Join);
-        task = Join!.{ first, second, id };
-        id
-    }
-
-    fn collect(task: Join![First, Second], &scope: Driver) -> (A, B, Completion[()]) {
-        let { first, second, id } = task;
-        let (a, b, result) = collect_pair[First, Second, A, B, Driver](first, second, &scope, id);
-        (a, b, result.completion())
+    fn collect(task: PairPlan![First, Second, Status], &scope: Driver) -> (A, B, Completion[Status]) {
+        let { first, second, kind, resolve, id } = task;
+        let a = Plan[First, Driver -> A]::collect(first, &scope);
+        let b = Plan[Second, Driver -> B]::collect(second, &scope);
+        let result = PlanDriver[Driver]::result(&scope, id);
+        (a, b, resolve(result))
     }
 }
 
@@ -187,7 +175,7 @@ impl Task {
 
     /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, duration: Duration)
-        -> Map![Select![Sleep![()], Task], (((), Completion[()]), Input, Completion[Side]), (Input, DeadlineStatus), ()] {
+        -> Map![PairPlan![Sleep![()], Task, Side], (((), Completion[()]), Input, Completion[Side]), (Input, DeadlineStatus), ()] {
         select(sleep(duration, ()), self).map(|result| {
             let ((unit, timer_status), outcome, status) = result;
             let deadline = match status {

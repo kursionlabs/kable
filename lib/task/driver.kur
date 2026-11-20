@@ -1,7 +1,7 @@
 //! Staging and collection for task drivers.
 use std::option::Option;
 use std::time::Duration;
-use package::{Completion, Failure, PlanOutput};
+use package::{Completion, Failure};
 use package::scope::{Branch, Pair, PairKind, Resolution, Resource, ScopeState!};
 
 export Branch;
@@ -46,7 +46,7 @@ forall Task, Driver.
 struct Prepared! { task: Task, scope: Driver, root: Option[usize] }
 
 /// Stages the plan and retains its state even when staging fails.
-forall Task, Driver, Output where PlanOutput[Task -> Output], Plan[Task, Driver -> Output].
+forall Task, Driver, Output where Plan[Task, Driver -> Output].
 fn prepare(task: Task, scope: Driver) -> Prepared![Task, Driver] {
     let root = Plan[Task, Driver -> Output]::stage(&task, &scope);
     Prepared!.{ task, scope, root }
@@ -64,7 +64,7 @@ impl Prepared![Task, Driver] {
     }
 
     /// Collects a joined or unsubmitted plan and returns the scope for teardown.
-    forall Output where PlanOutput[Task -> Output], Plan[Task, Driver -> Output].
+    forall Output where Plan[Task, Driver -> Output].
     fn collect(self) -> (Output, Driver) {
         let { task, scope, root } = self;
         let output = Plan[Task, Driver -> Output]::collect(task, &scope);

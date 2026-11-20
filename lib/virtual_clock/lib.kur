@@ -133,13 +133,13 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
 
 fn ignore_timer(timer: Option[Duration]) {}
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive(task: Task, deadline: Option[Duration]) -> Output {
     let ({ output, deadline_expired }, elapsed) = drive_timed(task, deadline);
     output
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[Duration]) -> (StageResult[Output], Duration) {
     let scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
     let prepared = prepare(task, scope);
@@ -167,7 +167,7 @@ instance Clock[SequenceClock!] {
     }
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Virtual! -> Output].
+forall Task, Output where Plan[Task, Virtual! -> Output].
 instance StageDriver[Task, SequenceClock! -> Output] {
     fn drive(task: Task, &engine: SequenceClock!, deadline: Option[Duration]) -> StageResult[Output] {
         let remaining = remaining_budget(&engine, deadline);

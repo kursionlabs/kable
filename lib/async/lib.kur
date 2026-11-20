@@ -545,21 +545,21 @@ unsafe fn native_scope(&prepared: Prepared![Task, Scope!]) -> (*u8, usize) {
     })
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn collect(prepared: Prepared![Task, Scope!]) -> Output {
     let (result, scope) = prepared.collect();
     scope.close();
     result
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn drive_plan(task: Task, deadline: Option[Duration]) -> Output {
     let prepared = prepare(task, Scope!::new());
     let { output, deadline_expired } = run_prepared(prepared, relative_deadline(deadline), RunLoop::Standalone);
     output
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output where Plan[Task, Scope! -> Output].
 fn run_prepared(prepared: Prepared![Task, Scope!], deadline: RunDeadline, loop: RunLoop) -> StageResult[Output] {
     let deadline_expired = &prepared.with_scope(|&scope, root| &scope.run(root, deadline, loop));
     StageResult.{ output: collect(prepared), deadline_expired }
@@ -587,7 +587,7 @@ impl Runner! {
         output
     }
 
-    forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+    forall Task, Output where Plan[Task, Scope! -> Output].
     fn run_prepared(&self, prepared: Prepared![Task, Scope!], deadline: RunDeadline) -> StageResult[Output] {
         let { loop } = self;
         self = Runner!.{ loop };
@@ -612,7 +612,7 @@ instance Clock[Runner!] {
     }
 }
 
-forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+forall Task, Output where Plan[Task, Scope! -> Output].
 instance StageDriver[Task, Runner! -> Output] {
     fn drive(task: Task, &engine: Runner!, deadline: Option[Duration]) -> StageResult[Output] {
         let prepared = prepare(task, Scope!::new());
