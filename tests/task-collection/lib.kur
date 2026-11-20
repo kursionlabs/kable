@@ -5,7 +5,7 @@ use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
-use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence};
+use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
 
@@ -217,7 +217,7 @@ fn check_reported_deadline() -> bool {
     let plan = stage.then_owned(Buffer!::new().push_static("state"),
         |state, output| unexpected_resume(state, output), discard_expired);
     let engine = EarlyDeadline.{};
-    match drive_sequence(plan, &engine, Option::Some.(Duration::from_secs(1))) {
+    match drive_sequence_until(plan, &engine, Option::Some.(Duration::from_secs(1))) {
         SequenceOutcome::Cancelled => true,
         SequenceOutcome::Finished(output) => { output.destroy(); false },
         SequenceOutcome::Stopped => false,

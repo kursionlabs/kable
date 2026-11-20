@@ -1,4 +1,4 @@
-use async::{Scope!, run, run_sequence, with_runner};
+use async::{Scope!, run, run_sequence, run_with_deadline, with_runner};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
@@ -13,6 +13,8 @@ use task::sequence::{SequenceOutcome, sequence};
 extern "C" fn kable_test_loop_begin(error: i32) -> ();
 extern "C" fn kable_test_loop_end(expected_closes: u32) -> u8;
 extern "C" fn kable_test_advance_clock_on_init(nanoseconds: u64) -> ();
+extern "C" fn kable_test_advance_clock_on_allocation(nanoseconds: u64) -> ();
+extern "C" fn kable_test_advance_clock(nanoseconds: u64) -> ();
 extern "C" fn kable_test_deferred_start(operation: *u8, loop: *u8,
     ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
 extern "C" fn kable_test_deferred_stop(operation: *u8) -> u8;
@@ -26,7 +28,7 @@ fn not_started(status: Completion[()]) -> bool {
     match status { Completion::Failed(failure) => never_started(failure), _ => false }
 }
 
-struct FailStart {}
+struct FailStart { stage_nanos: u64 }
 
 unsafe fn fail_start(operation: *u8, loop: *u8, ready: unsafe fn(*u8) -> (), context: *u8) -> i32 { -42 }
 unsafe fn stop_unstarted(operation: *u8) -> u8 { trap() }
@@ -35,6 +37,9 @@ instance PlanOutput[FailStart -> ()] {}
 
 instance Plan[FailStart, Scope! -> ()] {
     fn stage(&task: FailStart, &scope: Scope!) -> Option[usize] {
+        let { stage_nanos } = task;
+        task = FailStart.{ stage_nanos };
+        unsafe kable_test_advance_clock(stage_nanos);
         unsafe &scope.add_operation(null(), fail_start, stop_unstarted)
     }
     fn collect(task: FailStart, &scope: Scope!) -> () { () }
@@ -55,7 +60,7 @@ fn check_startup_failure() -> bool {
     let second = Buffer!::new().push_static("second");
     let first = sleep(Duration::from_secs(30)).map(|status| (first, status));
     let second = sleep(Duration::from_secs(30)).map(|status| (second, status));
-    let plan = join(first, join(second, FailStart.{}));
+    let plan = join(first, join(second, FailStart.{ stage_nanos: 0 }));
     let (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(Duration::from_secs(1)));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
@@ -85,7 +90,7 @@ instance Plan[DeferredClose, Scope! -> bool] {
 }
 
 fn check_partial_start_retirement() -> bool {
-    let (retired, unit, status) = run(join(DeferredClose.{}, FailStart.{}));
+    let (retired, unit, status) = run(join(DeferredClose.{}, FailStart.{ stage_nanos: 0 }));
     retired && startup_failed(status)
 }
 
@@ -106,6 +111,20 @@ fn check_one_shot_loop(error: i32) -> bool {
     let status = run(sleep(Duration::from_nanos(0)));
     let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
     loop_matched && sequence_stage_status(status, error != 0)
+}
+
+fn check_one_shot_deadline(budget: Duration, init_time: Duration, should_finish: bool) -> bool {
+    let immediate = Duration::from_nanos(0);
+    unsafe kable_test_loop_begin(0);
+    unsafe kable_test_advance_clock_on_init(init_time.as_nanos());
+    let status = run_with_deadline(sleep(immediate), budget);
+    let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
+    let expected = match status {
+        Completion::Ready => should_finish,
+        Completion::Cancelled => !should_finish,
+        Completion::Failed => false,
+    };
+    loop_matched && expected
 }
 
 fn check_sequence_loop(error: i32) -> bool {
@@ -131,28 +150,37 @@ fn check_sequence_loop(error: i32) -> bool {
 fn check_runner_reuse() -> bool {
     let immediate = Duration::from_nanos(0);
     unsafe kable_test_loop_begin(0);
-    let (bytes, first, second) = with_runner(|&runner| {
+    unsafe kable_test_advance_clock_on_init(0);
+    let (bytes, first, second, timer, joined) = with_runner(|&runner| {
         let bytes = Buffer!::new().push_static("owned");
         let slow = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
         let (bytes, first) = &runner.run_with_deadline(slow, immediate);
         let quick = sleep(immediate).map(|status| (bytes, status));
         let (bytes, second) = &runner.run(quick);
-        (bytes, first, second)
+        let stage_time = Duration::from_millis(10);
+        let budget = Duration::from_millis(5);
+        let plan = join(sleep(immediate), FailStart.{ stage_nanos: stage_time.as_nanos() });
+        let (timer, unit, joined) = &runner.run_with_deadline(plan, budget);
+        (bytes, first, second, timer, joined)
     });
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
     let length = &bytes.len();
     bytes.destroy();
     let cancelled = match first { Completion::Cancelled => true, _ => false };
     let ready = match second { Completion::Ready => true, _ => false };
-    loop_matched && length == 5 && cancelled && ready
+    let timer_cancelled = match timer { Completion::Cancelled => true, _ => false };
+    let scope_cancelled = match joined { Completion::Cancelled => true, _ => false };
+    loop_matched && length == 5 && cancelled && ready && timer_cancelled && scope_cancelled
 }
 
-fn check_sequence_expires_during_init() -> bool {
+fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Duration) -> bool {
     let bytes = Buffer!::new().push_static("owned");
     let owned = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
-    let plan = sequence(join(owned, FailStart.{}));
+    let plan = sequence(join(owned, FailStart.{ stage_nanos: 0 }));
     unsafe kable_test_loop_begin(0);
-    unsafe kable_test_advance_clock_on_init(Duration::from_millis(10).as_nanos());
+    unsafe kable_test_advance_clock_on_init(init_time.as_nanos());
+    // The sequence allocates its runner before staging its first plan.
+    unsafe kable_test_advance_clock_on_allocation(allocation_time.as_nanos());
     let result = run_sequence(plan, Option::Some.(Duration::from_millis(5)));
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
     match result {
@@ -192,10 +220,17 @@ fn pending() -> HostedPlan! {
 }
 
 fn main() -> i32 {
+    let zero = Duration::from_nanos(0);
+    let tiny = Duration::from_nanos(1);
+    let setup_time = Duration::from_millis(10);
     if !check_startup_failure() || !check_partial_start_retirement() ||
         !check_one_shot_loop(0) || !check_one_shot_loop(-42) ||
-        !check_sequence_loop(0) || !check_sequence_loop(-42) ||
-        !check_runner_reuse() || !check_sequence_expires_during_init() { return 1; }
+        !check_one_shot_deadline(zero, zero, false) ||
+        !check_one_shot_deadline(tiny, zero, true) ||
+        !check_one_shot_deadline(tiny, Duration::from_millis(1), false) ||
+        !check_sequence_loop(0) || !check_sequence_loop(-42) || !check_runner_reuse() ||
+        !check_sequence_expires_during_setup(setup_time, zero) ||
+        !check_sequence_expires_during_setup(zero, setup_time) { return 1; }
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let host = unsafe (count as *u8);

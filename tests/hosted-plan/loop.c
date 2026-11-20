@@ -4,7 +4,9 @@
 static int32_t init_error;
 static unsigned init_count;
 static unsigned close_count;
+static uint8_t fake_clock;
 static uint64_t now;
+static uint64_t advance_on_allocation;
 static uint64_t advance_on_init;
 
 static uv_idle_t deferred_close;
@@ -15,6 +17,13 @@ static uint8_t deferred_retired;
 int __real_uv_loop_init(uv_loop_t *loop);
 int __real_uv_loop_close(uv_loop_t *loop);
 uint64_t __real_uv_hrtime(void);
+void *__real_calloc(size_t count, size_t size);
+
+void *__wrap_calloc(size_t count, size_t size) {
+    now += advance_on_allocation;
+    advance_on_allocation = 0;
+    return __real_calloc(count, size);
+}
 
 int __wrap_uv_loop_init(uv_loop_t *loop) {
     init_count++;
@@ -29,7 +38,7 @@ int __wrap_uv_loop_close(uv_loop_t *loop) {
 }
 
 uint64_t __wrap_uv_hrtime(void) {
-    return advance_on_init ? now : __real_uv_hrtime();
+    return fake_clock ? now : __real_uv_hrtime();
 }
 
 void kable_test_loop_begin(int32_t error) {
@@ -39,12 +48,23 @@ void kable_test_loop_begin(int32_t error) {
 }
 
 void kable_test_advance_clock_on_init(uint64_t nanoseconds) {
+    fake_clock = 1;
     now = 1000000000;
     advance_on_init = nanoseconds;
 }
 
+void kable_test_advance_clock(uint64_t nanoseconds) {
+    now += nanoseconds;
+}
+
+void kable_test_advance_clock_on_allocation(uint64_t nanoseconds) {
+    advance_on_allocation = nanoseconds;
+}
+
 uint8_t kable_test_loop_end(uint32_t expected_closes) {
     init_error = 0;
+    fake_clock = 0;
+    advance_on_allocation = 0;
     advance_on_init = 0;
     return init_count == 1 && close_count == expected_closes;
 }

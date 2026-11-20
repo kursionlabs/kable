@@ -9,7 +9,7 @@ use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, Resource, ScopeState!, drive_plan};
-use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence};
+use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
 
@@ -26,9 +26,9 @@ extern "C" fn kable_scope_add_write(scope: *u8, fd: i32, offset: u64, bytes: *u8
 extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> u8) -> usize;
-extern "C" fn kable_scope_run(scope: *u8, root: usize, ms: u64, deadline: u8) -> u8;
+extern "C" fn kable_scope_run(scope: *u8, root: usize, end_ms: u64, timed: u8) -> u8;
 extern "C" fn kable_runner_new() -> *u8;
-extern "C" fn kable_runner_run(loop: *u8, scope: *u8, root: usize, ms: u64, deadline: u8) -> u8;
+extern "C" fn kable_runner_run(loop: *u8, scope: *u8, root: usize, end_ms: u64, timed: u8) -> u8;
 extern "C" fn kable_runner_free(loop: *u8) -> ();
 extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
 extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
@@ -178,7 +178,9 @@ struct Scope! { raw: *u8 }
 
 enum RunLoop { Standalone, Reusable(*u8) }
 
-enum RunDeadline { None, After(Duration), At(Duration) }
+fn monotonic_now() -> Duration { Duration::from_millis(unsafe kable_now_millis()) }
+
+fn deadline_after(budget: Duration) -> Duration { monotonic_now().add(budget) }
 
 // Scalar encoding used by the native scope adapter.
 const CANCELLED: i32 = 0i32;
@@ -348,17 +350,16 @@ impl Scope! {
         if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
     }
 
-    fn run(&self, root: Option[usize], deadline: RunDeadline, loop: RunLoop) -> bool {
+    fn run(&self, root: Option[usize], deadline: Option[Duration], loop: RunLoop) -> bool {
         let { raw } = self;
         let root = root.unwrap_or(usize::MAX);
-        let (ms, kind) = match deadline {
-            RunDeadline::None => (0u64, 0u8),
-            RunDeadline::After(duration) => (timer_millis(duration), 1u8),
-            RunDeadline::At(deadline) => (timer_millis(deadline), 2u8),
+        let (end_ms, timed) = match deadline {
+            Option::None => (0u64, 0u8),
+            Option::Some(end) => (timer_millis(end), 1u8),
         };
         let expired = match loop {
-            RunLoop::Standalone => unsafe kable_scope_run(raw, root, ms, kind),
-            RunLoop::Reusable(loop) => unsafe kable_runner_run(loop, raw, root, ms, kind),
+            RunLoop::Standalone => unsafe kable_scope_run(raw, root, end_ms, timed),
+            RunLoop::Reusable(loop) => unsafe kable_runner_run(loop, raw, root, end_ms, timed),
         };
         self = Scope!.{ raw };
         expired != 0
@@ -546,13 +547,13 @@ fn collect(prepared: Prepared![Task, Scope!]) -> Output {
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
-fn run_standalone(task: Task, deadline: RunDeadline) -> Output {
+fn run_standalone(task: Task, deadline: Option[Duration]) -> Output {
     let { output, deadline_expired } = drive_on_loop(task, deadline, RunLoop::Standalone);
     output
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
-fn drive_on_loop(task: Task, deadline: RunDeadline, loop: RunLoop) -> StageResult[Output] {
+fn drive_on_loop(task: Task, deadline: Option[Duration], loop: RunLoop) -> StageResult[Output] {
     let (output, deadline_expired) = drive_plan(task, Scope!::new(),
         |&scope, root| &scope.run(root, deadline, loop), Scope!::close);
     StageResult.{ output, deadline_expired }
@@ -560,12 +561,13 @@ fn drive_on_loop(task: Task, deadline: RunDeadline, loop: RunLoop) -> StageResul
 
 /// Drives the plan to completion and joins its children before returning.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run(task: Task) -> Output { run_standalone(task, RunDeadline::None) }
+fn run(task: Task) -> Output { run_standalone(task, Option::None) }
 
-/// Cancels unfinished children when the parent deadline expires, then joins them.
+/// Includes setup time in the parent budget and joins all children before returning.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn run_with_deadline(task: Task, duration: Duration) -> Output {
-    run_standalone(task, RunDeadline::After.(duration))
+    let deadline = deadline_after(duration);
+    run_standalone(task, Option::Some.(deadline))
 }
 
 /// Owns the libuv loop lent by with_runner.
@@ -575,19 +577,20 @@ impl Runner! {
     /// Runs and joins one plan on this loop.
     forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
     fn run(&self, task: Task) -> Output {
-        let { output, deadline_expired } = &self.drive(task, RunDeadline::None);
+        let { output, deadline_expired } = &self.drive(task, Option::None);
         output
     }
 
-    /// Cancels unfinished children when the parent deadline expires, then joins them.
+    /// Includes setup time in the parent budget and joins all children before returning.
     forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
     fn run_with_deadline(&self, task: Task, duration: Duration) -> Output {
-        let { output, deadline_expired } = &self.drive(task, RunDeadline::After.(duration));
+        let deadline = deadline_after(duration);
+        let { output, deadline_expired } = &self.drive(task, Option::Some.(deadline));
         output
     }
 
     forall Task, Output where Plan[Task, Scope! -> Output].
-    fn drive(&self, task: Task, deadline: RunDeadline) -> StageResult[Output] {
+    fn drive(&self, task: Task, deadline: Option[Duration]) -> StageResult[Output] {
         let { loop } = self;
         self = Runner!.{ loop };
         drive_on_loop(task, deadline, RunLoop::Reusable.(loop))
@@ -606,18 +609,12 @@ fn with_runner(body: closure[Env](&_: Runner!) -> Output) -> Output {
 }
 
 instance Clock[Runner!] {
-    fn now(&engine: Runner!) -> Duration {
-        Duration::from_millis(unsafe kable_now_millis())
-    }
+    fn now(&engine: Runner!) -> Duration { monotonic_now() }
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
 instance StageDriver[Task, Runner! -> Output] {
     fn drive(task: Task, &engine: Runner!, deadline: Option[Duration]) -> StageResult[Output] {
-        let deadline = match deadline {
-            Option::Some(end) => RunDeadline::At.(end),
-            Option::None => RunDeadline::None,
-        };
         &engine.drive(task, deadline)
     }
 }
@@ -625,5 +622,6 @@ instance StageDriver[Task, Runner! -> Output] {
 /// Runs a sequence with an optional shared time budget.
 forall Stages, Output where Chain[Stages, Runner! -> Output].
 fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
-    with_runner(|&runner| drive_sequence(plan, &runner, budget))
+    let deadline = budget.map(|duration| deadline_after(duration));
+    with_runner(|&runner| drive_sequence_until(plan, &runner, deadline))
 }

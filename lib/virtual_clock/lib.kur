@@ -4,7 +4,7 @@ use std::option::Option;
 use std::time::Duration;
 use task::{Failure, PlanOutput};
 use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, drive_plan};
-use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence, remaining_budget};
+use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until, remaining_budget};
 
 struct Virtual! {
     state: ScopeState!,
@@ -184,7 +184,8 @@ instance StageDriver[Task, SequenceClock! -> Output] {
 forall Stages, Output where Chain[Stages, SequenceClock! -> Output].
 fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
     let clock = SequenceClock!.{ time: Duration::from_nanos(0) };
-    let result = drive_sequence(plan, &clock, budget);
+    // The clock starts at zero, so the budget gives the absolute deadline.
+    let result = drive_sequence_until(plan, &clock, budget);
     let { time } = clock;
     result
 }

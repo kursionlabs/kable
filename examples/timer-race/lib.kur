@@ -32,8 +32,7 @@ fn check_timer_resolution() -> bool {
     let (first, second, status) = run(plan);
     if !won(status, Side::Second) || !cancelled(first) || !ready(second) { return false; }
 
-    ready(run_with_deadline(sleep(immediate), positive))
-        && ready(run_with_deadline(sleep(immediate), Duration::from_nanos(u64::MAX)))
+    ready(run_with_deadline(sleep(immediate), Duration::from_nanos(u64::MAX)))
 }
 
 fn check_within() -> bool {

@@ -107,7 +107,7 @@ fn remaining_budget(&engine: Engine, deadline: Option[Duration]) -> Option[Durat
     }
 }
 
-forall Task, Output, Engine where Clock[Engine], StageDriver[Task, Engine -> Output].
+forall Task, Output, Engine where StageDriver[Task, Engine -> Output].
 instance Chain[First![Task], Engine -> Output] {
     fn drive(stages: First![Task], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[StageResult[Output]] {
         let { task } = stages;
@@ -149,13 +149,9 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
 }
 
 /// Drives the chain with one absolute deadline for all stages and handoffs.
-forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Engine -> Output].
-fn drive_sequence(sequence: Sequence![Stages, Output], &engine: Engine, budget: Option[Duration]) -> SequenceOutcome[Output] {
+forall Stages, Output, Engine where Chain[Stages, Engine -> Output].
+fn drive_sequence_until(sequence: Sequence![Stages, Output], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output] {
     let { stages } = sequence;
-    let deadline = match budget {
-        Option::Some(duration) => Option::Some.(Clock[Engine]::now(&engine).add(duration)),
-        Option::None => Option::None,
-    };
     match Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline) {
         SequenceOutcome::Finished(stage) => {
             let { output, deadline_expired } = stage;

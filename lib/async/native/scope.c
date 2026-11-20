@@ -5,7 +5,7 @@
 #include <stdlib.h>
 
 enum { TIMER, PAIR, FILE_IO, OPERATION };
-/* Matches the deadline arguments encoded by Scope.run in async/lib.kur. */
+/* Hosts supply a remaining delay. Runners supply an absolute clock reading. */
 enum { DEADLINE_NONE, DEADLINE_AFTER, DEADLINE_AT };
 /* Matches the event bridge in async/lib.kur. */
 enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY, JOINED };
@@ -307,7 +307,7 @@ static void require_closed_handle(uv_handle_t *handle, void *context) {
     abort();
 }
 
-static uint8_t runner_run(Runner *runner, Scope *scope, size_t root, uint64_t ms, uint8_t deadline) {
+static uint8_t runner_run(Runner *runner, Scope *scope, size_t root, uint64_t end_ms, uint8_t timed) {
     if (!scope || scope->driven || scope->invalid_plan || scope->start_error < 0) return 0;
 
     if (!runner) {
@@ -324,8 +324,8 @@ static uint8_t runner_run(Runner *runner, Scope *scope, size_t root, uint64_t ms
     }
 
     uv_loop_t *loop = &runner->loop;
-    if (deadline == DEADLINE_NONE) uv_update_time(loop);
-    start_scope(scope, root, loop, ms, deadline, NULL, NULL);
+    if (!timed) uv_update_time(loop);
+    start_scope(scope, root, loop, end_ms, timed ? DEADLINE_AT : DEADLINE_NONE, NULL, NULL);
     if (uv_run(loop, UV_RUN_DEFAULT) != 0 || report(scope, PENDING, 0)) abort();
     /* Inactive handles also have to close before the scope's storage is freed. */
     uv_walk(loop, require_closed_handle, NULL);
@@ -336,9 +336,9 @@ static void runner_close(Runner *runner) {
     if (runner->attempted && runner->start_error == 0 && uv_loop_close(&runner->loop) != 0) abort();
 }
 
-uint8_t kable_scope_run(uint8_t *raw, size_t root, uint64_t ms, uint8_t deadline) {
+uint8_t kable_scope_run(uint8_t *raw, size_t root, uint64_t end_ms, uint8_t timed) {
     Runner runner = {0};
-    uint8_t expired = runner_run(&runner, (Scope *)raw, root, ms, deadline);
+    uint8_t expired = runner_run(&runner, (Scope *)raw, root, end_ms, timed);
     runner_close(&runner);
     return expired;
 }
@@ -347,8 +347,8 @@ uint8_t *kable_runner_new(void) {
     return (uint8_t *)calloc(1, sizeof(Runner));
 }
 
-uint8_t kable_runner_run(uint8_t *raw_runner, uint8_t *raw_scope, size_t root, uint64_t ms, uint8_t deadline) {
-    return runner_run((Runner *)raw_runner, (Scope *)raw_scope, root, ms, deadline);
+uint8_t kable_runner_run(uint8_t *raw_runner, uint8_t *raw_scope, size_t root, uint64_t end_ms, uint8_t timed) {
+    return runner_run((Runner *)raw_runner, (Scope *)raw_scope, root, end_ms, timed);
 }
 
 void kable_runner_free(uint8_t *raw) {

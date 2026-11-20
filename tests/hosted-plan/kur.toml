@@ -4,7 +4,7 @@ source_root="."
 kind="executable"
 entry="main"
 c_sources=["loop.c"]
-link_flags=["-Wl,--wrap=uv_loop_init,--wrap=uv_loop_close,--wrap=uv_hrtime"]
+link_flags=["-Wl,--wrap=uv_loop_init,--wrap=uv_loop_close,--wrap=uv_hrtime,--wrap=calloc"]
 
 [dependencies.std]
 path="../../../kursal/lib/std"

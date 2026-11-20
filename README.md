@@ -214,7 +214,10 @@ as `Side::First` or `Side::Second`. Cancellation and failure also return both
 outputs. Both combinators accept nested plans and operations supported by the driver.
 
 `run_with_deadline(plan, duration)` adds a parent deadline that cancels every
-pending child, including children of nested joins. The scope closes all timer handles before returning.
+pending child, including children of nested joins. In the libuv runner, the
+budget starts before staging the plan and includes loop startup. If the budget
+has expired when setup succeeds, the scope cancels the plan before its
+operations start. The scope closes all timer handles before returning.
 The outcome hands ownership of the values back to the caller on readiness,
 cancellation, or startup failure. A cancelled join preserves the individual
 outcomes of children that already completed.
@@ -276,8 +279,9 @@ The virtual clock is a reference driver for timer plans. It uses the same
    outcome and the scope for teardown.
 
 An engine that supports sequences also implements `Clock` and
-`StageDriver`. Each stage uses the sequence's absolute deadline and reports
-parent deadline expiry alongside its joined output. [Driver interfaces](lib/task/driver.kur) · [Sequence interfaces](lib/task/sequence.kur)
+`StageDriver`. Pass an optional absolute deadline in the engine's clock to
+`drive_sequence_until`. Each stage uses that deadline and reports parent
+deadline expiry alongside its joined output. [Driver interfaces](lib/task/driver.kur) · [Sequence interfaces](lib/task/sequence.kur)
 
 ### Pull-based streams
 
