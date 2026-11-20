@@ -343,9 +343,7 @@ SIGTERM the listener stops accepting and waits for pending scopes to join.
 
 Use `Listener!::bind_local(port, handle)` to receive each TCP event. Its handler can use
 `connection.read().timeout(1000u64).wait()`, `write(bytes, next_read)`, and
-`connection.close()`. `Listener!::bind_stateful(port, start, handle, finish)`
-also threads a connection-local value through those events and passes it to
-`finish` after the connection and pending operations close.
+`connection.close()`.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-echo -o bin/tcp-echo
