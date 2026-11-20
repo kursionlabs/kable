@@ -5,7 +5,7 @@ use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select, sleep};
 use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
-use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence, sequence};
+use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence};
 
 struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
 
@@ -214,7 +214,7 @@ fn discard_expired(state: Buffer!, output: Option[Buffer!]) {
 
 fn check_reported_deadline() -> bool {
     let stage = ExpiredStage!.{ output: Buffer!::new().push_static("output") };
-    let plan = sequence(stage).then_owned(Buffer!::new().push_static("state"),
+    let plan = stage.then_owned(Buffer!::new().push_static("state"),
         |state, output| unexpected_resume(state, output), discard_expired);
     let engine = EarlyDeadline.{};
     match drive_sequence(plan, &engine, Option::Some.(Duration::from_secs(1))) {
@@ -227,7 +227,7 @@ fn check_reported_deadline() -> bool {
 fn check_local_timeout_handoff() -> bool {
     let immediate = Duration::from_nanos(0);
     let stage = sleep(Duration::from_secs(30)).within(immediate);
-    let plan = sequence(stage).then(|outcome| {
+    let plan = stage.then(|outcome| {
         let (status, deadline) = outcome;
         match status { Completion::Cancelled => (), _ => trap() };
         match deadline {

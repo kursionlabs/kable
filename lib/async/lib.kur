@@ -180,13 +180,6 @@ enum RunLoop { Standalone, Reusable(*u8) }
 
 enum RunDeadline { None, After(Duration), At(Duration) }
 
-fn relative_deadline(duration: Option[Duration]) -> RunDeadline {
-    match duration {
-        Option::Some(duration) => RunDeadline::After.(duration),
-        Option::None => RunDeadline::None,
-    }
-}
-
 // Scalar encoding used by the native scope adapter.
 const CANCELLED: i32 = 0i32;
 const COMPLETED: i32 = 1i32;
@@ -553,8 +546,8 @@ fn collect(prepared: Prepared![Task, Scope!]) -> Output {
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
-fn run_standalone(task: Task, deadline: Option[Duration]) -> Output {
-    let { output, deadline_expired } = drive_on_loop(task, relative_deadline(deadline), RunLoop::Standalone);
+fn run_standalone(task: Task, deadline: RunDeadline) -> Output {
+    let { output, deadline_expired } = drive_on_loop(task, deadline, RunLoop::Standalone);
     output
 }
 
@@ -567,22 +560,29 @@ fn drive_on_loop(task: Task, deadline: RunDeadline, loop: RunLoop) -> StageResul
 
 /// Drives the plan to completion and joins its children before returning.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run(task: Task) -> Output { run_standalone(task, Option::None) }
+fn run(task: Task) -> Output { run_standalone(task, RunDeadline::None) }
 
 /// Cancels unfinished children when the parent deadline expires, then joins them.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn run_with_deadline(task: Task, duration: Duration) -> Output {
-    run_standalone(task, Option::Some.(duration))
+    run_standalone(task, RunDeadline::After.(duration))
 }
 
 /// Owns the libuv loop lent by with_runner.
 struct Runner! { loop: *u8 }
 
 impl Runner! {
-    /// Runs and joins one plan with an optional parent deadline.
+    /// Runs and joins one plan on this loop.
     forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-    fn run(&self, task: Task, deadline: Option[Duration]) -> Output {
-        let { output, deadline_expired } = &self.drive(task, relative_deadline(deadline));
+    fn run(&self, task: Task) -> Output {
+        let { output, deadline_expired } = &self.drive(task, RunDeadline::None);
+        output
+    }
+
+    /// Cancels unfinished children when the parent deadline expires, then joins them.
+    forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+    fn run_with_deadline(&self, task: Task, duration: Duration) -> Output {
+        let { output, deadline_expired } = &self.drive(task, RunDeadline::After.(duration));
         output
     }
 

@@ -50,6 +50,23 @@ fn sequence(task: Task) -> Sequence![First![Task], Output] {
     Sequence!.{ stages: First!.{ task } }
 }
 
+forall Task, Input where PlanOutput[Task -> Input].
+impl Task {
+    /// Starts a sequence whose first handoff can be skipped by dropping its inputs.
+    forall Env, Next, Output where PlanOutput[Next -> Output], Copy[Env], Copy[Input].
+    fn then(self, resume: closure[Env](Input) -> Option[Next])
+        -> Sequence![Then![First![Task], closure[Env](Input) -> Option[Next], Input, Next, ()], Output] {
+        sequence(self).then(resume)
+    }
+
+    /// Starts a sequence with explicit cleanup for a skipped first handoff.
+    forall State, Next, Output, Env where PlanOutput[Next -> Output], Copy[Env].
+    fn then_owned(self, state: State, resume: closure[Env](State, Input) -> Option[Next],
+        cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![First![Task], State, Input, Next, Env], Output] {
+        sequence(self).then_owned(state, resume, cancel)
+    }
+}
+
 forall Env, Input, Task where Copy[Env], Copy[Input].
 fn skip_copy(resume: closure[Env](Input) -> Option[Task], input: Option[Input]) {}
 

@@ -111,7 +111,7 @@ fn check_one_shot_loop(error: i32) -> bool {
 fn check_sequence_loop(error: i32) -> bool {
     let immediate = Duration::from_nanos(0);
     let bytes = Buffer!::new().push_static("owned");
-    let plan = sequence(sleep(immediate).map(|status| (bytes, status)))
+    let plan = sleep(immediate).map(|status| (bytes, status))
         .then_owned((), |unit, prior| Option::Some.(sleep(immediate).map(|status| (prior, status))), discard_sequence);
     unsafe kable_test_loop_begin(error);
     let result = run_sequence(plan, Option::None);
@@ -134,9 +134,9 @@ fn check_runner_reuse() -> bool {
     let (bytes, first, second) = with_runner(|&runner| {
         let bytes = Buffer!::new().push_static("owned");
         let slow = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
-        let (bytes, first) = &runner.run(slow, Option::Some.(immediate));
+        let (bytes, first) = &runner.run_with_deadline(slow, immediate);
         let quick = sleep(immediate).map(|status| (bytes, status));
-        let (bytes, second) = &runner.run(quick, Option::None);
+        let (bytes, second) = &runner.run(quick);
         (bytes, first, second)
     });
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;

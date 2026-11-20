@@ -9,7 +9,7 @@ use task::{Completion, Sink, Stream, StreamOutcome!};
 
 fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, deadline: Option[Duration]) -> bool {
     while &source.remaining() != 0 {
-        let (next, outcome) = &runner.run(source.next(), Option::None);
+        let (next, outcome) = &runner.run(source.next());
         source = next;
         let bytes = match outcome {
             StreamOutcome!::Item(bytes) => bytes,
@@ -20,7 +20,11 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
                 return false;
             },
         };
-        let (file, bytes, outcome) = &runner.run(destination.write(bytes), deadline);
+        let write = destination.write(bytes);
+        let (file, bytes, outcome) = match deadline {
+            Option::Some(duration) => &runner.run_with_deadline(write, duration),
+            Option::None => &runner.run(write),
+        };
         destination = file;
         bytes.destroy();
         match outcome {
@@ -42,12 +46,12 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
 
 fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'static], deadline: Option[Duration]) -> i32 {
     let access = StaticRead::new();
-    let input = match &runner.run(open_file(&access, source), Option::None) {
+    let input = match &runner.run(open_file(&access, source)) {
         Completion::Ready(file) => file,
         Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
         Completion::Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
     };
-    let destination = match &runner.run(create_file(&access, destination), Option::None) {
+    let destination = match &runner.run(create_file(&access, destination)) {
         Completion::Ready(file) => file,
         Completion::Cancelled => {
             input.close();

@@ -298,7 +298,7 @@ every path.
 
 ### Standalone sequencing
 
-Import `sequence` from `task::sequence`. `sequence(first).then(resume)` builds a chain of adapters in the style
+Import `task::PlanOutput` to start a chain with `first.then(resume)` in the style
 of Kursal’s iterator chaining. The previous plan determines the closure’s
 input type. The closure consumes the previous outcome
 and returns `Some(next)` to start another stage or `None` to stop. Both
@@ -314,6 +314,7 @@ consume them and any available outcome if the handoff is skipped. The
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
 The budget is an `Option[Duration]` that applies to the whole chain.
+Use `task::sequence::sequence(first)` to build a chain with a single stage.
 Match the result using `task::sequence::SequenceOutcome`.
 
 - `Finished(output)` returns the final stage's joined output, including any
@@ -358,8 +359,8 @@ bin/file-copy README.md README.copy.md
 
 The example uses `async::with_runner` to share one libuv loop across the
 open, create, read, and write operations. Inside the callback,
-`&runner.run(plan, deadline)` runs and joins one plan at a time. The optional
-`Duration` sets a parent deadline for that operation.
+`&runner.run(plan)` runs and joins one plan at a time. Use
+`&runner.run_with_deadline(plan, duration)` to set a parent deadline for that operation.
 
 The copy pulls one chunk from `FileChunks!` and waits for
 `destination.write(bytes)` to join before pulling the next. Each sequential
