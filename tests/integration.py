@@ -1093,6 +1093,7 @@ def check_timer_engines(directory):
     check(build("tests/task-collection", directory / "task-collection"))
     check(build_virtual("tests/task-collection", directory))
     check(build("tests/hosted-plan", directory / "hosted-plan"))
+    check(build("tests/virtual-clock", directory / "virtual-clock"))
     check_virtual_file_rejected(directory)
     print("Kable task driver contract checks passed")
 

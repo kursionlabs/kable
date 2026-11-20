@@ -214,7 +214,8 @@ Plans collect results by the node IDs they registered during staging.
 
 `lib/async/` drives plans with libuv and provides bounded file reads.
 `lib/virtual_clock/` drives timer plans by advancing directly to the next
-event. It builds and links without libuv. The integration suite builds
+event. A parent deadline wins when a timer is due at the same time. The
+virtual clock builds and links without libuv. The integration suite builds
 the same timer program against both drivers and compares its outcomes.
 
 Import plans, combinators, and outcome types from `task`. For standalone

@@ -38,17 +38,18 @@ instance PlanDriver[Virtual!] {
     }
 }
 
-fn earliest(&timers: OwnedVec![Option[Duration]]) -> Option[(usize, Duration)] {
-    var next = Option::None;
+fn next_event(&timers: OwnedVec![Option[Duration]], deadline: Option[Duration]) -> Option[(Resource, Duration)] {
+    // A leaf replaces the parent deadline only if it is due sooner.
+    var next = deadline.map(|due| (Resource::ParentTimer, due));
     var i = 0usize;
     while i < &timers.len() {
         match &timers.at(i) {
             Option::Some(duration) => {
                 let sooner = match next {
-                    Option::Some(timer) => { let (id, due) = timer; duration.as_nanos() < due.as_nanos() },
+                    Option::Some(event) => { let (resource, due) = event; duration.as_nanos() < due.as_nanos() },
                     Option::None => true,
                 };
-                if sooner { next = Option::Some.((i, duration)); }
+                if sooner { next = Option::Some.((Resource::Leaf.(i), duration)); }
             },
             Option::None => (),
         }
@@ -79,29 +80,17 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
 
     var elapsed = Duration::from_nanos(0);
     var deadline_expired = false;
-    while &state.pending() {
-        let timer = earliest(&timers);
-        let next_deadline = match timer {
-            Option::Some(entry) => {
-                let (id, due) = entry;
-                match limit {
-                    Option::Some(duration) => if duration.as_nanos() <= due.as_nanos() { limit } else { Option::None },
-                    Option::None => Option::None,
-                }
-            },
-            Option::None => limit,
-        };
-        match next_deadline {
-            Option::Some(duration) => {
-                elapsed = duration;
+    while !&state.joined() {
+        let (resource, due) = next_event(&timers, limit).unwrap();
+        elapsed = due;
+        match resource {
+            Resource::ParentTimer => {
                 deadline_expired = true;
                 &state.cancel();
                 &state.retired(Resource::ParentTimer);
                 limit = Option::None;
             },
-            Option::None => {
-                let (id, due) = timer.unwrap();
-                elapsed = due;
+            Resource::Leaf(id) => {
                 &timers.set(id, Option::None);
                 let finished = &state.complete(id);
                 &state.retired(Resource::Leaf.(id));

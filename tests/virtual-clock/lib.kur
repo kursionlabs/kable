@@ -1,0 +1,18 @@
+use std::buffer::Buffer!;
+use std::time::Duration;
+use task::{Completion, PlanOutput, join, sleep};
+use virtual_clock::run_with_deadline;
+
+fn main() -> i32 {
+    let deadline = Duration::from_nanos(2);
+    let earlier = sleep(Duration::from_nanos(1));
+    let bytes = Buffer!::new().push_static("owned");
+    let tied = sleep(deadline).map(|status| (bytes, status));
+    let (earlier, (bytes, tied), scope) = run_with_deadline(join(earlier, tied), deadline);
+    let valid_buffer = &bytes.len() == 5;
+    bytes.destroy();
+    let earlier_ready = match earlier { Completion::Ready => true, _ => false };
+    let tied_cancelled = match tied { Completion::Cancelled => true, _ => false };
+    let scope_cancelled = match scope { Completion::Cancelled => true, _ => false };
+    if valid_buffer && earlier_ready && tied_cancelled && scope_cancelled { 0 } else { 1 }
+}
