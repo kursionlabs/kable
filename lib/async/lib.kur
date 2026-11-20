@@ -8,7 +8,7 @@ use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome!};
-use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, Resource, ScopeState!, prepare};
+use task::driver::{Branch, Pair, PairKind, Plan, PlanDriver, Prepared!, Resolution, Resource, ScopeState!, drive_plan};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence};
 
 export host;
@@ -553,26 +553,26 @@ fn collect(prepared: Prepared![Task, Scope!]) -> Output {
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
-fn drive_plan(task: Task, deadline: Option[Duration]) -> Output {
-    let prepared = prepare(task, Scope!::new());
-    let { output, deadline_expired } = run_prepared(prepared, relative_deadline(deadline), RunLoop::Standalone);
+fn run_standalone(task: Task, deadline: Option[Duration]) -> Output {
+    let { output, deadline_expired } = drive_on_loop(task, relative_deadline(deadline), RunLoop::Standalone);
     output
 }
 
 forall Task, Output where Plan[Task, Scope! -> Output].
-fn run_prepared(prepared: Prepared![Task, Scope!], deadline: RunDeadline, loop: RunLoop) -> StageResult[Output] {
-    let deadline_expired = &prepared.with_scope(|&scope, root| &scope.run(root, deadline, loop));
-    StageResult.{ output: collect(prepared), deadline_expired }
+fn drive_on_loop(task: Task, deadline: RunDeadline, loop: RunLoop) -> StageResult[Output] {
+    let (output, deadline_expired) = drive_plan(task, Scope!::new(),
+        |&scope, root| &scope.run(root, deadline, loop), Scope!::close);
+    StageResult.{ output, deadline_expired }
 }
 
 /// Drives the plan to completion and joins its children before returning.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-fn run(task: Task) -> Output { drive_plan(task, Option::None) }
+fn run(task: Task) -> Output { run_standalone(task, Option::None) }
 
 /// Cancels unfinished children when the parent deadline expires, then joins them.
 forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
 fn run_with_deadline(task: Task, duration: Duration) -> Output {
-    drive_plan(task, Option::Some.(duration))
+    run_standalone(task, Option::Some.(duration))
 }
 
 /// Owns the libuv loop lent by with_runner.
@@ -582,16 +582,15 @@ impl Runner! {
     /// Runs and joins one plan with an optional parent deadline.
     forall Task, Output where PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
     fn run(&self, task: Task, deadline: Option[Duration]) -> Output {
-        let prepared = prepare(task, Scope!::new());
-        let { output, deadline_expired } = &self.run_prepared(prepared, relative_deadline(deadline));
+        let { output, deadline_expired } = &self.drive(task, relative_deadline(deadline));
         output
     }
 
     forall Task, Output where Plan[Task, Scope! -> Output].
-    fn run_prepared(&self, prepared: Prepared![Task, Scope!], deadline: RunDeadline) -> StageResult[Output] {
+    fn drive(&self, task: Task, deadline: RunDeadline) -> StageResult[Output] {
         let { loop } = self;
         self = Runner!.{ loop };
-        run_prepared(prepared, deadline, RunLoop::Reusable.(loop))
+        drive_on_loop(task, deadline, RunLoop::Reusable.(loop))
     }
 }
 
@@ -615,12 +614,11 @@ instance Clock[Runner!] {
 forall Task, Output where Plan[Task, Scope! -> Output].
 instance StageDriver[Task, Runner! -> Output] {
     fn drive(task: Task, &engine: Runner!, deadline: Option[Duration]) -> StageResult[Output] {
-        let prepared = prepare(task, Scope!::new());
         let deadline = match deadline {
             Option::Some(end) => RunDeadline::At.(end),
             Option::None => RunDeadline::None,
         };
-        &engine.run_prepared(prepared, deadline)
+        &engine.drive(task, deadline)
     }
 }
 

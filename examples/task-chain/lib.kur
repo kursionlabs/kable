@@ -4,29 +4,23 @@ use std::io::print_buffer;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, Map!, PlanOutput, Sleep!, sleep};
+use task::{Completion, PlanOutput, sleep};
 use task::sequence::{SequenceOutcome, sequence};
 
-fn wait_with_buffer(duration: Duration, bytes: Buffer!) -> Map![Sleep!, Completion[()], (Buffer!, Completion[()]), (Buffer!,)] {
-    sleep(duration).map(|status| (bytes, status))
-}
-
-fn resume(state: Buffer!, prior: (Buffer!, Completion[()]), delay: Option[Duration])
-    -> Option[Map![Sleep!, Completion[()], (Buffer!, Completion[()]), (Buffer!,)]] {
+fn append(state: Buffer!, prior: (Buffer!, Completion[()])) -> Buffer! {
     let (bytes, status) = prior;
     match status {
-        Completion::Ready => (),
+        Completion::Ready => bytes.push_buffer(state),
         _ => { bytes.destroy(); state.destroy(); trap(); },
     }
-    match delay {
-        Option::Some(duration) => Option::Some.(wait_with_buffer(duration, bytes.push_buffer(state))),
-        Option::None => {
-            bytes.destroy();
-            state.destroy();
-            print_buffer(f"Stopped after the first result and reclaimed both buffers.\n");
-            Option::None
-        },
-    }
+}
+
+fn stop(state: Buffer!, prior: (Buffer!, Completion[()])) {
+    let (bytes, status) = prior;
+    bytes.destroy();
+    state.destroy();
+    match status { Completion::Ready => (), _ => trap() };
+    print_buffer(f"Stopped after the first result and reclaimed both buffers.\n");
 }
 
 fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
@@ -44,8 +38,25 @@ fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
     }
 }
 
-fn check_early_end(result: SequenceOutcome[(Buffer!, Completion[()])], cancelled: bool) {
-    match result {
+fn check_early_end(budget: Option[Duration]) {
+    let cancelled = budget.is_some();
+    let delay = if cancelled { Duration::from_secs(30) } else { Duration::from_nanos(0) };
+    let bytes = Buffer!::new();
+    let first = sleep(delay).map(|status| (bytes, status));
+    let plan = sequence(first)
+        .then_owned(Buffer!::new(), |state, prior| {
+            if !cancelled {
+                stop(state, prior);
+                return Option::None;
+            }
+            let bytes = append(state, prior);
+            Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
+        }, discard)
+        .then_owned(Buffer!::new(), |state, prior| {
+            let bytes = append(state, prior);
+            Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
+        }, discard);
+    match run_sequence(plan, budget) {
         SequenceOutcome::Stopped => { if cancelled { trap(); } },
         SequenceOutcome::Cancelled => { if !cancelled { trap(); } },
         SequenceOutcome::Finished(outcome) => { let (bytes, status) = outcome; bytes.destroy(); trap(); },
@@ -53,10 +64,13 @@ fn check_early_end(result: SequenceOutcome[(Buffer!, Completion[()])], cancelled
 }
 
 fn check_chain(budget: Option[Duration], should_finish: bool) {
-    let delay = Option::Some.(Duration::from_millis(150));
-    let plan = sequence(wait_with_buffer(Duration::from_millis(65), Buffer!::new().push_static("first")))
-        .then_owned(Buffer!::new().push_static("second"),
-            |state, prior| resume(state, prior, delay), discard);
+    let bytes = Buffer!::new().push_static("first");
+    let first = sleep(Duration::from_millis(65)).map(|status| (bytes, status));
+    let plan = sequence(first)
+        .then_owned(Buffer!::new().push_static("second"), |state, prior| {
+            let bytes = append(state, prior);
+            Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
+        }, discard);
     let result = run_sequence(plan, budget);
     match result {
         SequenceOutcome::Finished(outcome) => {
@@ -92,17 +106,7 @@ fn main() -> i32 {
     check_chain(Option::Some.(Duration::from_millis(180)), false);
     print_buffer(f"The second stage used the original deadline.\n");
 
-    let delay = Option::Some.(Duration::from_millis(150));
-    let plan = sequence(wait_with_buffer(Duration::from_nanos(0), Buffer!::new()))
-        .then_owned(Buffer!::new(), |state, prior| resume(state, prior, Option::None), discard)
-        .then_owned(Buffer!::new(), |state, prior| resume(state, prior, delay), discard);
-    let result = run_sequence(plan, Option::None);
-    check_early_end(result, false);
-
-    let plan = sequence(wait_with_buffer(Duration::from_secs(30), Buffer!::new()))
-        .then_owned(Buffer!::new(), |state, prior| resume(state, prior, delay), discard)
-        .then_owned(Buffer!::new(), |state, prior| resume(state, prior, delay), discard);
-    let result = run_sequence(plan, Option::Some.(Duration::from_millis(10)));
-    check_early_end(result, true);
+    check_early_end(Option::None);
+    check_early_end(Option::Some.(Duration::from_millis(10)));
     0i32
 }

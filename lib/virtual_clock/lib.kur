@@ -3,7 +3,7 @@ use std::collections::vec::OwnedVec!;
 use std::option::Option;
 use std::time::Duration;
 use task::{Failure, PlanOutput};
-use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
+use task::driver::{Branch, Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, drive_plan};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence, remaining_budget};
 
 struct Virtual! {
@@ -133,6 +133,12 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
 
 fn ignore_timer(timer: Option[Duration]) {}
 
+fn close_scope(scope: Virtual!) {
+    let { state, timers, invalid_plan } = scope;
+    state.destroy();
+    timers.destroy(ignore_timer);
+}
+
 forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive(task: Task, deadline: Option[Duration]) -> Output {
     let ({ output, deadline_expired }, elapsed) = drive_timed(task, deadline);
@@ -142,12 +148,8 @@ fn drive(task: Task, deadline: Option[Duration]) -> Output {
 forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[Duration]) -> (StageResult[Output], Duration) {
     let scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
-    let prepared = prepare(task, scope);
-    let (elapsed, deadline_expired) = &prepared.with_scope(|&scope, root| advance(&scope, root, deadline));
-    let (output, scope) = prepared.collect();
-    let { state, timers, invalid_plan } = scope;
-    state.destroy();
-    timers.destroy(ignore_timer);
+    let (output, (elapsed, deadline_expired)) = drive_plan(task, scope,
+        |&scope, root| advance(&scope, root, deadline), close_scope);
     (StageResult.{ output, deadline_expired }, elapsed)
 }
 
