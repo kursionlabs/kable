@@ -56,7 +56,7 @@ typedef struct {
     char field[8];
     size_t field_len;
     unsigned hosts;
-    char range[MAX_RANGE];
+    uint8_t range[MAX_RANGE];
     size_t range_len;
     unsigned ranges;
     int if_range;
@@ -208,59 +208,15 @@ int32_t kable_write(uint8_t *raw, uint8_t *bytes, size_t len) {
     return kable_tcp_finish(client->connection, bytes, len, WRITE_TIMEOUT);
 }
 
-static int space(char byte) { return byte == ' ' || byte == '\t'; }
-
-/* Saturation keeps large decimal positions above any servable file size. */
-static int decimal(const char **at, const char *end, uint64_t *value) {
-    const char *start = *at;
-    *value = 0;
-    while (*at < end && **at >= '0' && **at <= '9') {
-        unsigned digit = (unsigned)(**at - '0');
-        *value = *value > (UINT64_MAX - digit) / 10 ? UINT64_MAX : *value * 10 + digit;
-        (*at)++;
-    }
-    return *at != start;
-}
-
-/* Selects a response for one file. Unsupported ranges fall back to the whole file. */
-uint16_t kable_file_range(uint8_t *raw, uint64_t total, uint64_t *offset, uint64_t *length) {
+/* Borrows the bounded Range value from the live client, or exposes zero bytes. */
+const uint8_t *kable_range_header(uint8_t *raw, size_t *length) {
     Client *client = (Client *)raw;
-    *offset = 0;
-    *length = total;
-    if (llhttp_get_method(&client->parser) != HTTP_GET || client->if_range ||
-        client->ranges != 1 || client->range_len > MAX_RANGE) return 200;
-
-    const char *at = client->range;
-    const char *end = at + client->range_len;
-    while (at < end && space(*at)) at++;
-    while (end > at && space(end[-1])) end--;
-    if (end - at < 6 || strncasecmp(at, "bytes=", 6) != 0) return 200;
-    at += 6;
-    while (at < end && space(*at)) at++;
-
-    uint64_t first, last;
-    int suffix = !decimal(&at, end, &first);
-    if (at == end || *at++ != '-') return 200;
-    if (suffix || at < end) {
-        if (!decimal(&at, end, &last) || at != end || (!suffix && last < first)) return 200;
-    } else {
-        last = UINT64_MAX;
+    *length = 0;
+    if (llhttp_get_method(&client->parser) == HTTP_GET && !client->if_range &&
+        client->ranges == 1 && client->range_len <= MAX_RANGE) {
+        *length = client->range_len;
     }
-
-    if (suffix && last && !total) return 200;
-    if ((suffix && !last) || first >= total) {
-        *length = 0;
-        return 416;
-    }
-    if (suffix) {
-        *length = last < total ? last : total;
-        *offset = total - *length;
-    } else {
-        *offset = first;
-        if (last >= total) last = total - 1;
-        *length = last - first + 1;
-    }
-    return 206;
+    return client->range;
 }
 
 uint8_t *kable_client_connection(uint8_t *raw) {

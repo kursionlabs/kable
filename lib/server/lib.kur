@@ -2,12 +2,14 @@
 //! every connection. Native callbacks borrow their arguments for one call.
 use async::{FileChunks!, OpenedFile!, Scope!};
 use async::host::{HostedPlan!, prepare_hosted};
-use http::{Method, Request!, Response!, encode_file_headers};
+use http::{Method, Request!, Response!, encode_file_headers, select_file_range};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
+use std::cap::Exclusive!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
+use std::raw::Span;
 use std::slice::Slice;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, sleep};
@@ -19,7 +21,7 @@ extern "C" fn kable_bind(port: u16,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
-extern "C" fn kable_file_range(client: *u8, total: u64, offset: *u64, length: *u64) -> u16;
+extern "C" fn kable_range_header(client: *u8, length: *usize) -> *u8;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
@@ -191,11 +193,13 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
 unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -> i32 {
     let { file, content_type } = reply;
     let total = &file.len();
-    let offset = unsafe alloca[u64]();
-    let length = unsafe alloca[u64]();
-    let status = unsafe kable_file_range(client, total, offset, length);
-    let start = unsafe *offset;
-    let count = unsafe *length;
+    let length = unsafe alloca[usize]();
+    let range = unsafe kable_range_header(client, length);
+    let exists 'k. (brand, access) = Exclusive!::fresh();
+    // The span borrows the client's inline header bytes through range selection.
+    let range = unsafe Span::from_raw_parts_branded(range, unsafe *length, brand);
+    let (status, start, count) = select_file_range(&access, range, total);
+    access.retire();
     let headers = encode_file_headers(status, content_type, start, count, total, http10);
     if head || count == 0 {
         file.close();

@@ -200,6 +200,8 @@ def check_static_files(command, directory, check_write_timeout=False):
             assert_response(request(b"/large.bin", b"HEAD"), 200, large, head=True)
             for value, start, end in (
                 (b"bytes=65000-140000", 65000, 140000),
+                (b"\tByTeS=\t65000-65019 \t", 65000, 65019),
+                (b"bytes=" + b"0" * 247 + b"0-0", 0, 0),
                 (f"bytes={len(large) - 19}-".encode(), len(large) - 19, len(large) - 1),
                 (f"bytes={len(large) - 19}-999999999999999999999".encode(), len(large) - 19, len(large) - 1),
                 (b"bytes=-19", len(large) - 19, len(large) - 1),
@@ -226,7 +228,7 @@ def check_static_files(command, directory, check_write_timeout=False):
                 b"Range: bytes=0-0,2-2\r\n",
                 b"Range: bytes=0-0\r\nRange: bytes=2-2\r\n",
                 b"Range: bytes=0-0\r\nIf-Range: \"unavailable\"\r\n",
-                b"Range: bytes=" + b"9" * 256 + b"-\r\n",
+                b"Range: bytes=" + b"0" * 248 + b"0-0\r\n",
             ):
                 headers = assert_response(request(b"/payload.bin", headers=extra), 200, b"\x00\x01\xff")
                 assert b"content-range" not in headers, headers

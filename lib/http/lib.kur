@@ -1,8 +1,10 @@
 //! Request ownership and HTTP response serialization.
+use std::ascii::{is_digit, to_lower};
 use std::buffer::Buffer!;
+use std::cmp::min;
 use std::option::Option;
 use std::raw::Span;
-use std::slice::Slice;
+use std::slice::{ReadBytes, Slice, StaticRead};
 
 exposed enum Method { Other, Get, Head, Post }
 
@@ -114,6 +116,68 @@ fn encode_headers(status: u16, content_type: Slice[u8, 'static], allow: Slice[u8
     let wire = if allow.is_empty() { wire }
         else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
     wire.push_static("\r\n")
+}
+
+fn header_space(byte: u8) -> bool { byte == b' ' || byte == b'\t' }
+
+forall C, 'k where ReadBytes[C, Span['k]].
+fn skip_header_space(&access: C, bytes: Span['k]) -> Span['k] {
+    var start = 0;
+    while header_space(bytes.byte_or_zero(&access, start)) { start = start + 1; }
+    bytes.skip(start)
+}
+
+// Saturate oversized positions while continuing to validate the decimal digits.
+forall C, 'k where ReadBytes[C, Span['k]].
+fn decimal_prefix(&access: C, bytes: Span['k]) -> (u64, usize) {
+    var number = 0;
+    var count = 0;
+    var byte = bytes.byte_or_zero(&access, count);
+    while is_digit(byte) {
+        let digit = (byte - b'0') as u64;
+        number = if number > (u64::MAX - digit) / 10 { u64::MAX } else { number * 10 + digit };
+        count = count + 1;
+        byte = bytes.byte_or_zero(&access, count);
+    }
+    (number, count)
+}
+
+/// Selects the status, offset, and length for a file and an eligible Range value.
+/// An empty or unsupported header selects the whole file.
+forall C, 'k where ReadBytes[C, Span['k]].
+fn select_file_range(&access: C, header: Span['k], total: u64) -> (u16, u64, u64) {
+    let whole = (200u16, 0u64, total);
+    let header = skip_header_space(&access, header);
+    var end = header.len();
+    while end > 0 && header_space(header.at(&access, end - 1)) { end = end - 1; }
+    let unit: Slice[u8, 'static] = "bytes=";
+    if end < unit.len() { return whole; }
+    let static_access = StaticRead::new();
+    var i = 0;
+    while i < unit.len() {
+        if to_lower(header.at(&access, i)) != unit.byte_or_zero(&static_access, i) { return whole; }
+        i = i + 1;
+    }
+
+    let positions = skip_header_space(&access, header.slice(unit.len(), end));
+    let (first, digits) = decimal_prefix(&access, positions);
+    if positions.byte_or_zero(&access, digits) != b'-' { return whole; }
+    let suffix = digits == 0;
+    let rest = positions.skip(digits + 1);
+    let last = if !suffix && rest.is_empty() { u64::MAX } else {
+        let (last, digits) = decimal_prefix(&access, rest);
+        if digits == 0 || digits != rest.len() || (!suffix && last < first) { return whole; }
+        last
+    };
+
+    if suffix && last != 0 && total == 0 { return whole; }
+    if (suffix && last == 0) || first >= total { return (416, 0, 0); }
+    if suffix {
+        let length = min(last, total);
+        (206, total - length, length)
+    } else {
+        (206, first, min(last, total - 1) - first + 1)
+    }
 }
 
 fn encode_file_headers(status: u16, content_type: Slice[u8, 'static], offset: u64,
