@@ -163,31 +163,37 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
         file.close();
         return status;
     }
+    let connection = unsafe Connection!::from_raw(connection);
     unsafe write_then_next(connection, headers, file.chunks(start, count))
 }
 
-unsafe fn write_then_next(connection: *u8, bytes: Buffer!, stream: FileChunks!) -> i32 {
-    let writer = unsafe Connection!::from_raw(connection);
-    let write = prepare_hosted(writer.write(bytes), |result, raw, flags| {
-        let (writer, bytes, completion) = result;
-        let connection = unsafe writer.into_raw();
+unsafe fn write_then_next(connection: Connection!, bytes: Buffer!, stream: FileChunks!) -> i32 {
+    let raw = unsafe &connection.as_raw();
+    let write = prepare_hosted(connection.write(bytes), |result, host, flags| {
+        let (connection, bytes, completion) = result;
         bytes.destroy();
         match completion {
             Completion::Ready => {
                 if &stream.remaining() == 0 {
                     stream.close();
-                    unsafe kable_tcp_stream_end(connection)
+                    let raw = unsafe connection.into_raw();
+                    unsafe kable_tcp_stream_end(raw)
                 } else {
-                    let read = prepare_hosted(stream.next(), |result, raw, flags| {
-                        unsafe chunk_joined(raw, result)
+                    let raw = unsafe &connection.as_raw();
+                    let read = prepare_hosted(stream.next(), |result, host, flags| {
+                        unsafe chunk_joined(connection, result)
                     });
-                    unsafe schedule_stream(connection, read)
+                    unsafe schedule_stream(raw, read)
                 }
             },
-            Completion::Cancelled | Completion::Failed => { stream.close(); -1 },
+            Completion::Cancelled | Completion::Failed => {
+                stream.close();
+                unsafe connection.into_raw();
+                -1
+            },
         }
     });
-    unsafe schedule_stream(connection, write)
+    unsafe schedule_stream(raw, write)
 }
 
 unsafe fn schedule_stream(connection: *u8, task: HostedPlan!) -> i32 {
@@ -200,12 +206,13 @@ unsafe fn schedule_stream(connection: *u8, task: HostedPlan!) -> i32 {
     })
 }
 
-unsafe fn chunk_joined(connection: *u8, result: (FileChunks!, StreamOutcome![Buffer!])) -> i32 {
+unsafe fn chunk_joined(connection: Connection!, result: (FileChunks!, StreamOutcome![Buffer!])) -> i32 {
     let (stream, outcome) = result;
     let bytes = match outcome {
         StreamOutcome!::Item(bytes) => bytes,
         StreamOutcome!::End | StreamOutcome!::Cancelled | StreamOutcome!::Failed => {
             stream.close();
+            unsafe connection.into_raw();
             return -1;
         },
     };

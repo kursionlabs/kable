@@ -142,11 +142,19 @@ fn write(bytes: Buffer!, next: Read!) -> Action! {
 fn close(connection: Connection!) -> Action! { Action!::Close.(connection) }
 
 impl Connection! {
-    /// Takes the connection for one operation. The native host must hold it
-    /// through collection and must provide a single owner.
+    /// Takes the connection from its native host. The host must keep the
+    /// pointer valid until the owner returns it and must provide a single owner.
     unsafe fn from_raw(raw: *u8) -> Connection! { Connection!.{ raw } }
 
-    /// Returns the connection to its native host after the operation joins.
+    /// Borrows the raw pointer for submission to the native host. The caller
+    /// must keep the owned connection alive through the submitted scope.
+    unsafe fn as_raw(&self) -> *u8 {
+        let { raw } = self;
+        self = Connection!.{ raw };
+        raw
+    }
+
+    /// Returns ownership to the native host once the last operation joins.
     unsafe fn into_raw(self) -> *u8 {
         let { raw } = self;
         raw
