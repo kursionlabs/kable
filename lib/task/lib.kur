@@ -164,7 +164,7 @@ instance Plan[PairPlan![First, Second, Status], Driver -> (A, B, Completion[Stat
 forall Task, Input, Output, Env.
 struct Map! { task: Task, transform: closure[Env](Input) -> Output }
 
-forall Task, Input, Output, Env where PlanOutput[Task -> Input].
+forall Task, Input, Output, Env.
 instance PlanOutput[Map![Task, Input, Output, Env] -> Output] {}
 
 forall Task, Input where PlanOutput[Task -> Input].

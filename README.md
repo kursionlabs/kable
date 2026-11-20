@@ -356,8 +356,8 @@ consume them and any available outcome if the handoff is skipped. The
 Inside a libuv `with_runner` callback, `&runner.run_sequence(chain, budget)`
 drives the chain on the same loop as other runs in the callback.
 The budget is an `Option[Duration]` that applies to the whole chain.
-Use `task::sequence::sequence(first)` to build a chain with a single stage.
-Match the result using `task::sequence::SequenceOutcome`.
+For a single plan, use `run` or `run_with_deadline`.
+Match the sequence result using `task::sequence::SequenceOutcome`.
 
 - `Finished(output)` returns the final stage's joined output, including any
   cancellation or failure reported by that stage.

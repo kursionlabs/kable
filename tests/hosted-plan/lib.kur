@@ -6,9 +6,9 @@ use std::option::{Option, Result};
 use std::ptr::null;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, join, sleep};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, sleep};
 use task::driver::Plan;
-use task::sequence::{SequenceOutcome, sequence};
+use task::sequence::SequenceOutcome;
 
 extern "C" fn kable_test_loop_begin(error: i32) -> ();
 extern "C" fn kable_test_loop_end(expected_closes: u32) -> u8;
@@ -211,27 +211,35 @@ fn check_runner_sequence() -> bool {
     valid && loop_matched
 }
 
+fn discard_setup_sequence(cleaned: *u8, prior: Option[((Buffer!, Completion[()]), (), Completion[()])]) {
+    let ((bytes, timer), unit, joined) = prior.unwrap();
+    let length = &bytes.len();
+    bytes.destroy();
+    match timer { Completion::Cancelled => (), _ => trap() };
+    match joined { Completion::Cancelled => (), _ => trap() };
+    if length != 5 { trap(); }
+    unsafe *cleaned = (unsafe *cleaned) + 1;
+}
+
 fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Duration) -> bool {
+    let cleaned = unsafe alloca[u8]();
+    unsafe *cleaned = 0;
     let bytes = Buffer!::new().push_static("owned");
     let owned = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
-    let plan = sequence(join(owned, FailStart.{ stage_nanos: 0 }));
+    let first = join(owned, FailStart.{ stage_nanos: 0 });
+    let plan = first.then_owned(cleaned, |cleaned, prior| -> Option[Sleep!] {
+        let ((bytes, timer), unit, joined) = prior;
+        bytes.destroy();
+        trap()
+    }, discard_setup_sequence);
     unsafe kable_test_loop_begin(0);
     unsafe kable_test_advance_clock_on_init(init_time.as_nanos());
     // The sequence allocates its runner before staging its first plan.
     unsafe kable_test_advance_clock_on_allocation(allocation_time.as_nanos());
     let result = run_sequence(plan, Option::Some.(Duration::from_millis(5)));
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
-    match result {
-        SequenceOutcome::Finished(outcome) => {
-            let ((bytes, timer), unit, joined) = outcome;
-            let length = &bytes.len();
-            bytes.destroy();
-            let cancelled = match timer { Completion::Cancelled => true, _ => false };
-            let scope_cancelled = match joined { Completion::Cancelled => true, _ => false };
-            loop_matched && length == 5 && cancelled && scope_cancelled
-        },
-        _ => false,
-    }
+    let cancelled = match result { SequenceOutcome::Cancelled => true, _ => false };
+    loop_matched && cancelled && (unsafe *cleaned) == 1
 }
 
 fn pending() -> HostedPlan! {
