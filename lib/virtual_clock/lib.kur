@@ -180,7 +180,7 @@ instance StageDriver[Task, SequenceClock! -> Output] {
 }
 
 forall Stages, Output where Chain[Stages, SequenceClock! -> Output].
-fn run_sequence(plan: Sequence![Stages], budget: Option[Duration]) -> SequenceOutcome[Output] {
+fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
     let clock = SequenceClock!.{ time: Duration::from_nanos(0) };
     let result = drive_sequence(plan, &clock, budget);
     let { time } = clock;

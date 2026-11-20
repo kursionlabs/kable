@@ -8,7 +8,7 @@ enum { TIMER, PAIR, FILE_IO, OPERATION };
 /* Matches the deadline arguments encoded by Scope.run in async/lib.kur. */
 enum { DEADLINE_NONE, DEADLINE_AFTER, DEADLINE_AT };
 /* Matches the event bridge in async/lib.kur. */
-enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY };
+enum { BEGIN, STARTED, RETIRED, PENDING, COMPLETE, CANCEL, TAKE_CANCEL, RESULT, DESTROY, JOINED };
 /* STARTED and RETIRED use a leaf ID or this separate parent timer ID. */
 static const size_t PARENT_TIMER_ID = SIZE_MAX;
 /* Matches the status decoding in async/lib.kur. Negative codes are backend startup errors. */
@@ -171,15 +171,24 @@ static void cancel_operations(Scope *scope) {
     }
 }
 
+static void notify_joined(Scope *scope) {
+    if (!scope->done || !report(scope, JOINED, 0)) return;
+    void (*done)(void *) = scope->done;
+    scope->done = NULL;
+    done(scope->context);
+}
+
 static void deadline_ready(void *context) {
     Scope *scope = context;
     scope->deadline_expired = 1;
     report(scope, CANCEL, 0);
     cancel_operations(scope);
+    notify_joined(scope);
 }
 
 static void retire_resource(Scope *scope, size_t id) {
-    if (report(scope, RETIRED, id) && scope->done) scope->done(scope->context);
+    report(scope, RETIRED, id);
+    notify_joined(scope);
 }
 
 static void deadline_closed(void *context, int fired) {
@@ -189,11 +198,16 @@ static void deadline_closed(void *context, int fired) {
     retire_resource(scope, PARENT_TIMER_ID);
 }
 
-static void task_ready(void *context) {
-    Node *node = context;
+static void settle_leaf(Node *node) {
     Scope *scope = node->scope;
     if (report(scope, COMPLETE, node->id)) kable_timer_cancel(scope->deadline);
     cancel_operations(scope);
+}
+
+static void timer_ready(void *context) {
+    Node *node = context;
+    settle_leaf(node);
+    notify_joined(node->scope);
 }
 
 static void clear_timer(void *context, int fired) {
@@ -205,7 +219,7 @@ static void clear_timer(void *context, int fired) {
 
 static void leaf_done(void *context) {
     Node *node = context;
-    task_ready(node);
+    settle_leaf(node);
     retire_resource(node->scope, node->id);
 }
 
@@ -223,9 +237,9 @@ static void cancel_scope(Scope *scope) {
 
 void kable_scope_cancel(uint8_t *raw) {
     Scope *scope = (Scope *)raw;
-    if (!scope || !report(scope, PENDING, 0)) return;
+    if (!scope || !scope->driven || scope->invalid_plan || report(scope, JOINED, 0)) return;
     cancel_scope(scope);
-    if (!report(scope, PENDING, 0) && scope->done) scope->done(scope->context);
+    notify_joined(scope);
 }
 
 uint64_t kable_now_millis(void) {
@@ -264,7 +278,7 @@ static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
     for (size_t i = 0; i < scope->count && scope->start_error == 0; i++) {
         Node *node = &scope->nodes[i];
         if (node->kind == TIMER) {
-            scope->start_error = kable_timer_start(loop, node->ms, task_ready,
+            scope->start_error = kable_timer_start(loop, node->ms, timer_ready,
                 clear_timer, node, &node->timer);
             if (scope->start_error == 0) report(scope, STARTED, node->id);
         } else if (node->kind == FILE_IO) {
@@ -279,7 +293,7 @@ static int start_scope(Scope *scope, size_t root, uv_loop_t *loop, uint64_t ms,
         }
     }
     if (scope->start_error < 0) cancel_scope(scope);
-    return report(scope, PENDING, 0) != 0;
+    return !report(scope, JOINED, 0);
 }
 
 int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t ms,
@@ -373,7 +387,7 @@ int32_t kable_scope_file_result(uint8_t *raw, size_t id, uint8_t **data, size_t 
 int32_t kable_scope_write_result(uint8_t *raw, size_t id, size_t *written) {
     *written = 0;
     Scope *scope = (Scope *)raw;
-    if (!scope || !scope->driven || report(scope, PENDING, 0) || id >= scope->count) return UV_EINVAL;
+    if (!scope || !scope->driven || !report(scope, JOINED, 0) || id >= scope->count) return UV_EINVAL;
     Node *node = &scope->nodes[id];
     if (node->kind != FILE_IO) return UV_EINVAL;
     return kable_file_write_result(node->file, written);

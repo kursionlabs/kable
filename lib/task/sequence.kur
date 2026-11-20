@@ -33,43 +33,32 @@ exposed enum SequenceOutcome {
     Cancelled,
 }
 
-forall State, Input, Task, Env.
-struct Handoff! {
+forall Previous, State, Input, Task, Env.
+struct Then! {
+    previous: Previous,
     state: State,
     resume: closure[Env](State, Input) -> Option[Task],
     cancel: fn(State, Option[Input]) -> (),
 }
 
-forall Previous, State, Input, Task, Env.
-struct Then! { previous: Previous, handoff: Handoff![State, Input, Task, Env] }
-
-/// The outcome type of the last stage in a sequence.
-forall Stages -> Output.
-trait SequenceOutput {}
-
-forall Task, Output where PlanOutput[Task -> Output].
-instance SequenceOutput[First![Task] -> Output] {}
-
-forall Previous, State, Input, Task, Env, Output where PlanOutput[Task -> Output].
-instance SequenceOutput[Then![Previous, State, Input, Task, Env] -> Output] {}
-
-forall Stages.
+/// A chain with the joined output type of its last plan.
+forall Stages, Output.
 struct Sequence! { stages: Stages }
 
-forall Task.
-fn sequence(task: Task) -> Sequence![First![Task]] {
+forall Task, Output where PlanOutput[Task -> Output].
+fn sequence(task: Task) -> Sequence![First![Task], Output] {
     Sequence!.{ stages: First!.{ task } }
 }
 
 forall Env, Input, Task where Copy[Env], Copy[Input].
 fn skip_copy(resume: closure[Env](Input) -> Option[Task], input: Option[Input]) {}
 
-forall Stages.
-impl Sequence![Stages] {
+forall Stages, Input.
+impl Sequence![Stages, Input] {
     /// The callback and its input can both be dropped if the handoff is skipped.
-    forall Env, Input, Task where SequenceOutput[Stages -> Input], Copy[Env], Copy[Input].
+    forall Env, Task, Output where PlanOutput[Task -> Output], Copy[Env], Copy[Input].
     fn then(self, resume: closure[Env](Input) -> Option[Task])
-        -> Sequence![Then![Stages, closure[Env](Input) -> Option[Task], Input, Task, ()]] {
+        -> Sequence![Then![Stages, closure[Env](Input) -> Option[Task], Input, Task, ()], Output] {
         self.then_owned(resume, |resume, input| resume(input), skip_copy[Env, Input, Task])
     }
 
@@ -77,11 +66,11 @@ impl Sequence![Stages] {
     /// prevents the handoff, cancel receives the state and any prior outcome.
     /// Resume can consume its inputs and return None to stop explicitly.
     /// Its captures must be copyable because cancellation can skip it.
-    forall State, Input, Task, Env where SequenceOutput[Stages -> Input], Copy[Env].
+    forall State, Task, Output, Env where PlanOutput[Task -> Output], Copy[Env].
     fn then_owned(self, state: State, resume: closure[Env](State, Input) -> Option[Task],
-        cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task, Env]] {
+        cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task, Env], Output] {
         let { stages } = self;
-        Sequence!.{ stages: Then!.{ previous: stages, handoff: Handoff!.{ state, resume, cancel } } }
+        Sequence!.{ stages: Then!.{ previous: stages, state, resume, cancel } }
     }
 }
 
@@ -114,7 +103,7 @@ forall Previous, State, Input, Task, Env, Output, Engine
 instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
     fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[Duration])
         -> SequenceOutcome[StageResult[Output]] {
-        let { previous, handoff: { state, resume, cancel } } = stages;
+        let { previous, state, resume, cancel } = stages;
         let stage = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
             SequenceOutcome::Finished(stage) => stage,
             SequenceOutcome::Stopped => {
@@ -144,7 +133,7 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
 
 /// Drives the chain with one absolute deadline for all stages and handoffs.
 forall Stages, Output, Engine where Clock[Engine], Chain[Stages, Engine -> Output].
-fn drive_sequence(sequence: Sequence![Stages], &engine: Engine, budget: Option[Duration]) -> SequenceOutcome[Output] {
+fn drive_sequence(sequence: Sequence![Stages, Output], &engine: Engine, budget: Option[Duration]) -> SequenceOutcome[Output] {
     let { stages } = sequence;
     let deadline = match budget {
         Option::Some(duration) => Option::Some.(Clock[Engine]::now(&engine).add(duration)),

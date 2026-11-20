@@ -1,7 +1,33 @@
 use std::option::Option;
 use task::driver::{Branch, Pair, PairKind, Resolution, Resource, ScopeState!};
 
+fn check_retirement_before_resolution() -> bool {
+    let scope = ScopeState!::new();
+    let first = (&scope.add(Branch::Leaf)).unwrap();
+    let second = (&scope.add(Branch::Leaf)).unwrap();
+    let root = (&scope.add(Branch::Pair.(Pair.{ kind: PairKind::Join, first, second }))).unwrap();
+    let valid = &scope.begin(root);
+    &scope.started(Resource::Leaf.(first));
+    &scope.started(Resource::Leaf.(second));
+    let first_resolved_root = &scope.complete(first);
+    let first_joined = &scope.retired(Resource::Leaf.(first));
+    let second_joined = &scope.retired(Resource::Leaf.(second));
+    let drained = !&scope.pending();
+    let joined_early = &scope.joined();
+    let hidden = (&scope.result(first)).is_none() && (&scope.result(root)).is_none();
+    let root_resolved = &scope.complete(second);
+    let joined = &scope.joined();
+    let result = &scope.result(root);
+    let first_result = &scope.result(first);
+    scope.destroy();
+    let root_ready = match result.unwrap() { Resolution::Completed => true, _ => false };
+    let first_ready = match first_result.unwrap() { Resolution::Completed => true, _ => false };
+    valid && !first_resolved_root && !first_joined && !second_joined && drained &&
+        !joined_early && hidden && root_resolved && joined && root_ready && first_ready
+}
+
 fn main() -> i32 {
+    if !check_retirement_before_resolution() { return 1; }
     let scope = ScopeState!::new();
     let first = (&scope.add(Branch::Leaf)).unwrap();
     let second = (&scope.add(Branch::Leaf)).unwrap();
@@ -27,6 +53,7 @@ fn main() -> i32 {
     let late = &scope.complete(second);
     &scope.started(Resource::Leaf.(first));
     let joined = &scope.retired(Resource::Leaf.(second));
+    let scope_joined = &scope.joined();
     let result = &scope.result(root);
     let winner = &scope.result(first);
     let loser = &scope.result(second);
@@ -38,6 +65,6 @@ fn main() -> i32 {
     let loser_cancelled = match loser.unwrap() { Resolution::Cancelled => true, _ => false, };
     if rejected && refused_reparent && valid && won && cancelled.unwrap() == second && !first_retired &&
         !duplicate_leaf && !timer_retired && !duplicate_timer && !pair_retired && still_pending &&
-        hidden_until_joined && !late && joined && first_won && winner_completed && loser_cancelled &&
+        hidden_until_joined && !late && joined && scope_joined && first_won && winner_completed && loser_cancelled &&
         next_stop.is_none() { 0i32 } else { 1i32 }
 }

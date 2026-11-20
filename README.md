@@ -177,7 +177,8 @@ has ended. [Dependent file handler](examples/http-file/file_sequence.kur)
 `lib/task/` defines owned task plans, typed outcomes, and scope policy in
 Kursal. A driver provides primitive operations and reports logical completion
 and resource retirement separately. The scope chooses winners, tracks
-cancellation, and exposes results after all operations have retired.
+cancellation, and exposes results once its root resolves and all resources
+retire.
 Plans collect results by the node IDs they registered during staging.
 
 `lib/async/` drives plans with libuv and provides bounded file reads.
@@ -267,7 +268,8 @@ The virtual clock is a reference driver for timer plans. It uses the same
    release. Drain `take_cancel` to stop leaves the policy cancelled. A
    cancelled operation can still be in flight. Each resource transitions
    from unstarted to active to retired once.
-3. Call `prepared.collect()` after the scope joins, or to reclaim a plan
+3. Check `joined()` after the root resolves or a resource retires. Call
+   `prepared.collect()` after the scope joins, or to reclaim a plan
    whose staging or submission failed. Collection returns the plan's owned
    outcome and the scope for teardown.
 

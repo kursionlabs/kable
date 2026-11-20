@@ -115,9 +115,9 @@ impl ScopeState! {
         &self.update_resource(resource, true);
     }
 
-    /// Returns true when this report retires the last active resource.
+    /// Returns true when this report retires the last resource of a resolved scope.
     fn retired(&self, resource: Resource) -> bool {
-        &self.update_resource(resource, false)
+        &self.update_resource(resource, false) && &self.joined()
     }
 
     fn update_resource(&self, resource: Resource, starting: bool) -> bool {
@@ -132,13 +132,21 @@ impl ScopeState! {
             if starting { pending + 1usize } else { pending - 1usize }
         } else { pending };
         self = ScopeState!.{ nodes, root, pending, parent_timer, ..rest };
-        changed && pending == 0usize
+        changed
     }
 
     fn pending(&self) -> bool {
         let { pending, ..rest } = self;
         self = ScopeState!.{ pending, ..rest };
         pending != 0usize
+    }
+
+    /// A scope joins when its root resolves and all resources retire.
+    fn joined(&self) -> bool {
+        let { nodes, root, pending, ..rest } = self;
+        let joined = scope_joined(&nodes, root, pending);
+        self = ScopeState!.{ nodes, root, pending, ..rest };
+        joined
     }
 
     fn complete(&self, id: usize) -> bool {
@@ -173,7 +181,7 @@ impl ScopeState! {
 
     fn result(&self, id: usize) -> Option[Resolution] {
         let { nodes, root, pending, ..rest } = self;
-        let result = if root.is_some() && pending == 0usize && id < &nodes.len() {
+        let result = if scope_joined(&nodes, root, pending) && id < &nodes.len() {
             (&nodes.at(id)).result
         } else { Option::None };
         self = ScopeState!.{ nodes, root, pending, ..rest };
@@ -184,6 +192,14 @@ impl ScopeState! {
         let { nodes, stops, root, pending, parent_timer } = self;
         nodes.destroy(ignore_node);
         stops.destroy(ignore_id);
+    }
+}
+
+fn scope_joined(&nodes: OwnedVec![Node], root: Option[usize], pending: usize) -> bool {
+    if pending != 0usize { return false; }
+    match root {
+        Option::Some(id) => (&nodes.at(id)).result.is_some(),
+        Option::None => false,
     }
 }
 

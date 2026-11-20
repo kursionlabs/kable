@@ -246,6 +246,7 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
             },
             Option::None => usize::MAX,
         },
+        9u8 => if &state.joined() { 1usize } else { 0usize },
         _ => 0usize,
     };
     unsafe *ptr = state;
@@ -625,6 +626,6 @@ instance StageDriver[Task, Runner! -> Output] {
 
 /// Runs a sequence with an optional shared time budget.
 forall Stages, Output where Chain[Stages, Runner! -> Output].
-fn run_sequence(plan: Sequence![Stages], budget: Option[Duration]) -> SequenceOutcome[Output] {
+fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
     with_runner(|&runner| drive_sequence(plan, &runner, budget))
 }
