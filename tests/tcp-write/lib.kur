@@ -2,7 +2,7 @@ use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Connection!, Event!, Listener!, defer};
+use tcp::{Action!, Connection!, Listener!, defer};
 
 fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
     let ((connection, bytes, completion), deadline) = result;
@@ -33,26 +33,19 @@ fn send_after_eof(connection: Connection!) -> Action! {
     })
 }
 
-fn serve(event: Event!) -> Action! {
-    match event {
-        Event!::Connected(connection) => defer(connection.next(), |result| {
-            let (connection, outcome) = result;
-            match outcome {
-                StreamOutcome!::End => send_after_eof(connection),
-                StreamOutcome!::Item(bytes) => { bytes.destroy(); connection.close() },
-                StreamOutcome!::Cancelled | StreamOutcome!::Failed => connection.close(),
-            }
-        }),
-        Event!::Bytes(connection, bytes) => { bytes.destroy(); connection.close() },
-        Event!::TimedOut(connection) => connection.close(),
-        Event!::End(connection) => connection.close(),
-        Event!::Cancelled(connection) => connection.close(),
-        Event!::Failed(connection, code) => connection.close(),
-    }
+fn serve(connection: Connection!) -> Action! {
+    defer(connection.next(), |result| {
+        let (connection, outcome) = result;
+        match outcome {
+            StreamOutcome!::End => send_after_eof(connection),
+            StreamOutcome!::Item(bytes) => { bytes.destroy(); connection.close() },
+            StreamOutcome!::Cancelled | StreamOutcome!::Failed => connection.close(),
+        }
+    })
 }
 
 fn main() -> i32 {
-    let listener = match Listener!::bind_local(0, serve) {
+    let listener = match Listener!::bind_connections(0, serve) {
         Result::Ok(listener) => listener,
         Result::Err(code) => return 1,
     };

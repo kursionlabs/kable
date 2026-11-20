@@ -310,7 +310,9 @@ the destination contains the bytes written so far.
 ## Scoped TCP reads and writes
 
 `lib/tcp/` runs a loopback listener with one in-flight operation per
-connection. The echo handler runs `connection.next().within(1000)`
+connection. `Listener!::bind_connections(port, read_next)` calls
+`read_next(connection)` once per accepted connection. The echo handler runs
+`connection.next().within(1000)`
 with `tcp::defer` on the listener loop. When it receives bytes, it defers
 `connection.write(bytes).within(1000)`. The next read starts after
 the write joins.
@@ -321,7 +323,7 @@ waits for the write callback. On failure or cancellation, the buffer is
 available for cleanup and delivery progress is unspecified. On SIGINT or
 SIGTERM the listener stops accepting and waits for pending scopes to join.
 
-Handlers that work directly with TCP events can use
+Use `Listener!::bind_local(port, handle)` to receive each TCP event. Its handler can use
 `connection.read().timeout(1000u64).wait()`, `write(bytes, next_read)`, and
 `connection.close()`.
 

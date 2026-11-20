@@ -2,7 +2,7 @@ use async::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome!
 use std::bytes::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use tcp::{Action!, Connection!, Event!, Listener!, defer};
+use tcp::{Action!, Connection!, Listener!, defer};
 
 fn read_next(connection: Connection!) -> Action! {
     defer(connection.next().within(1000), |result| read_finished(result))
@@ -44,25 +44,8 @@ fn write_finished(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatu
     }
 }
 
-fn echo(event: Event!) -> Action! {
-    match event {
-        Event!::Connected(connection) => read_next(connection),
-        Event!::Bytes(connection, bytes) => { bytes.destroy(); connection.close() },
-        Event!::TimedOut(connection) => {
-            eprint_buffer(f"Read deadline expired.\n");
-            connection.close()
-        },
-        Event!::End(connection) => connection.close(),
-        Event!::Cancelled(connection) => {
-            eprint_buffer(f"Cancelled connection on shutdown.\n");
-            connection.close()
-        },
-        Event!::Failed(connection, code) => connection.close(),
-    }
-}
-
 fn main() -> i32 {
-    let listener = match Listener!::bind_local(0u16, echo) {
+    let listener = match Listener!::bind_connections(0, read_next) {
         Result::Ok(listener) => listener,
         Result::Err(code) => {
             eprint_buffer(f"tcp-echo: cannot listen (libuv error {code})\n");

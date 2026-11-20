@@ -183,7 +183,10 @@ impl Read! {
     fn wait(self) -> Action! { wait(self) }
 }
 
-struct Handler { handle: fn(Event!) -> Action! }
+enum Handler {
+    Connections(fn(Connection!) -> Action!),
+    Events(fn(Event!) -> Action!),
+}
 
 forall State.
 struct StatefulHandler {
@@ -208,9 +211,15 @@ unsafe fn make_event(raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> E
 }
 
 unsafe fn dispatch(context: *u8, raw: *u8, kind: u8, bytes: *u8, len: usize, code: i32) -> i32 {
-    let { handle } = unsafe *(unsafe (context as *Handler));
-    let event = unsafe make_event(raw, kind, bytes, len, code);
-    unsafe apply(raw, handle(event))
+    let handler = unsafe *(unsafe (context as *Handler));
+    let action = match handler {
+        Handler::Connections(accept) => {
+            let connection = Connection!.{ raw };
+            if kind == 0 { accept(connection) } else { connection.close() }
+        },
+        Handler::Events(handle) => handle(unsafe make_event(raw, kind, bytes, len, code)),
+    };
+    unsafe apply(raw, action)
 }
 
 forall State.
@@ -293,9 +302,19 @@ unsafe fn submit(next: Read!, output: Option[Buffer!]) -> i32 {
 struct Listener! { raw: *u8, context: *u8 }
 
 impl Listener! {
+    /// Calls accept once per connection. Drive subsequent reads and writes
+    /// with defer. An event-based read closes the connection when its event arrives.
+    fn bind_connections(port: u16, accept: fn(Connection!) -> Action!) -> Result[Listener!, i32] {
+        Listener!::bind_handler(port, Handler::Connections.(accept))
+    }
+
     fn bind_local(port: u16, handle: fn(Event!) -> Action!) -> Result[Listener!, i32] {
+        Listener!::bind_handler(port, Handler::Events.(handle))
+    }
+
+    fn bind_handler(port: u16, handler: Handler) -> Result[Listener!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
-        unsafe *(unsafe (context as *Handler)) = Handler.{ handle };
+        unsafe *(unsafe (context as *Handler)) = handler;
         unsafe Listener!::bind(port, context, dispatch)
     }
 
