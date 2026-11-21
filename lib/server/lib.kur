@@ -30,7 +30,8 @@ extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_receive_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
-extern "C" fn kable_receive_joined(client: *u8, timed_out: u8) -> i32;
+extern "C" fn kable_parse_input(client: *u8) -> u16;
+extern "C" fn kable_reply(client: *u8, status: u16) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
 extern "C" fn kable_stop(server: *u8) -> ();
 
@@ -49,6 +50,11 @@ const STREAM_IDLE: u64 = 5000;
 
 const RESPONSE_HEAD: u8 = 2;
 const RESPONSE_HTTP10: u8 = 4;
+
+// The parser returns zero for a complete request and HTTP codes for rejections.
+const REQUEST_MORE: u16 = 1;
+const REQUEST_TRUNCATED: u16 = 2;
+const REQUEST_CLOSED: u16 = 3;
 
 /// Sends a measured file using one write at a time.
 fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
@@ -219,11 +225,15 @@ unsafe fn receive(client: *u8) -> i32 {
     let raw = unsafe kable_client_connection(client);
     let plan = prepare_hosted(unsafe host::read(raw), |completion, client, flags| {
         if (flags & host::PLAN_ACTIVE) == 0 { return -1; }
-        match completion {
-            Completion::Ready => unsafe kable_receive_joined(client, 0),
-            Completion::Cancelled => unsafe kable_receive_joined(client, 1),
-            Completion::Failed => -1,
-        }
+        let result = match completion {
+            Completion::Ready => unsafe kable_parse_input(client),
+            Completion::Cancelled => 408,
+            Completion::Failed => return -1,
+        };
+        if result == REQUEST_MORE { return unsafe receive(client); }
+        if result == REQUEST_CLOSED { return -1; }
+        let status = if result == REQUEST_TRUNCATED { 400 } else { result };
+        unsafe kable_reply(client, status)
     });
     let submission = unsafe plan.submit(client, 0, kable_receive_schedule);
     submission.unwrap_or_else(|rejection| rejection.scheduler_error)

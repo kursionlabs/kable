@@ -24,6 +24,9 @@ typedef uint16_t (*validate_head_fn)(uint8_t, uint8_t, uint32_t, uint8_t, uint8_
 /* Values shared with respond in server.kur. */
 enum { METHOD_OTHER, METHOD_GET, METHOD_HEAD, METHOD_POST };
 
+/* Read outcomes below the HTTP rejection codes returned to receive. */
+enum { REQUEST_COMPLETE, REQUEST_MORE, REQUEST_TRUNCATED, REQUEST_CLOSED };
+
 typedef struct {
     uint8_t *data;
     size_t len;
@@ -214,7 +217,8 @@ int32_t kable_receive_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_
         scope, root, plan, finish, 0, raw, client->deadline);
 }
 
-static int reply(Client *client, uint16_t status) {
+int32_t kable_reply(uint8_t *raw, uint16_t status) {
+    Client *client = (Client *)raw;
     uint8_t method = METHOD_OTHER;
     switch (llhttp_get_method(&client->parser)) {
     case HTTP_GET: method = METHOD_GET; break;
@@ -230,11 +234,7 @@ static int reply(Client *client, uint16_t status) {
     return result;
 }
 
-static int read_request(Client *client) {
-    return client->server->receive((uint8_t *)client);
-}
-
-static int consume_request(Client *client, const char *data, size_t remaining) {
+static uint16_t consume_request(Client *client, const char *data, size_t remaining) {
     while (remaining) {
         size_t limit = client->headers_done ? MAX_WIRE : MAX_HEAD;
         size_t budget = limit - client->wire_bytes;
@@ -242,23 +242,22 @@ static int consume_request(Client *client, const char *data, size_t remaining) {
         llhttp_errno_t result = llhttp_execute(&client->parser, data, count);
         client->wire_bytes += count;
         if (client->complete) {
-            return reply(client, 0);
+            return REQUEST_COMPLETE;
         }
         if (result != HPE_OK) {
-            uint16_t status = client->rejection ? client->rejection : 400;
-            if (result == HPE_INVALID_VERSION) status = 505;
-            return reply(client, status);
+            if (result == HPE_INVALID_VERSION) return 505;
+            return client->rejection ? client->rejection : 400;
         }
         if (!client->headers_done && client->wire_bytes == MAX_HEAD) {
-            return reply(client, 431);
+            return 431;
         }
         if (client->wire_bytes == MAX_WIRE) {
-            return reply(client, 413);
+            return 413;
         }
         remaining -= count;
         data += count;
     }
-    return read_request(client);
+    return REQUEST_MORE;
 }
 
 static int32_t accept_request(uint8_t *context, uint8_t *connection) {
@@ -271,17 +270,16 @@ static int32_t accept_request(uint8_t *context, uint8_t *connection) {
     client->parser.data = client;
     client->deadline = kable_now_millis() + READ_TIMEOUT;
     kable_tcp_attach(connection, (uint8_t *)client, destroy_client);
-    return read_request(client);
+    return client->server->receive((uint8_t *)client);
 }
 
-int32_t kable_receive_joined(uint8_t *raw, uint8_t timed_out) {
+uint16_t kable_parse_input(uint8_t *raw) {
     Client *client = (Client *)raw;
-    if (timed_out) return reply(client, 408);
     uint8_t *bytes;
     int32_t count = kable_tcp_read_result(client->connection, &bytes);
     if (count > 0) return consume_request(client, (const char *)bytes, (size_t)count);
-    if (count == 0 && client->wire_bytes) return reply(client, 400);
-    return -1;
+    if (count == 0 && client->wire_bytes) return REQUEST_TRUNCATED;
+    return REQUEST_CLOSED;
 }
 
 uint8_t *kable_bind(uint16_t port, validate_head_fn validate_head, receive_fn receive,
