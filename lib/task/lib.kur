@@ -45,6 +45,14 @@ exposed enum Completion {
 
 forall T.
 impl Completion[T] {
+    /// Releases the owned value if the operation completed successfully.
+    fn discard(self, release: fn(T) -> ()) {
+        match self {
+            Completion::Ready(value) => release(value),
+            _ => (),
+        }
+    }
+
     /// Runs next on the ready value and forwards cancellation or failure.
     /// The callback captures must be copyable because it can be skipped.
     forall Output, Env where Copy[Env].
@@ -65,6 +73,17 @@ exposed enum StreamOutcome {
     TimedOut,
     Cancelled,
     Failed(Failure),
+}
+
+forall T.
+impl StreamOutcome[T] {
+    /// Releases the owned item if the read produced one.
+    fn discard(self, release: fn(T) -> ()) {
+        match self {
+            StreamOutcome::Item(item) => release(item),
+            _ => (),
+        }
+    }
 }
 
 /// A source that builds a one-shot plan for its next item.
@@ -88,10 +107,7 @@ impl Source {
                 DeadlineStatus::Cancelled => StreamOutcome::Cancelled,
                 DeadlineStatus::Failed(failure) => StreamOutcome::Failed.(failure),
             };
-            match read {
-                StreamOutcome::Item(bytes) => bytes.destroy(),
-                _ => (),
-            };
+            read.discard(Buffer!::destroy);
             (source, interrupted)
         })
     }

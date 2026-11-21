@@ -38,19 +38,13 @@ fn file_response(outcome: Completion[Buffer!]) -> Response! {
 }
 
 fn discard_file(outcome: Completion[Buffer!]) {
-    release_file(outcome, false);
+    outcome.discard(Buffer!::destroy);
 }
 
 fn discard_plain_file(outcome: Completion[Buffer!]) {
-    release_file(outcome, true);
-}
-
-fn release_file(outcome: Completion[Buffer!], report_cancelled: bool) {
     match outcome {
         Completion::Ready(bytes) => bytes.destroy(),
-        Completion::Cancelled => {
-            if report_cancelled { eprint_buffer(f"File request cancelled.\n"); }
-        },
+        Completion::Cancelled => { eprint_buffer(f"File request cancelled.\n"); },
         Completion::Failed => (),
     }
 }

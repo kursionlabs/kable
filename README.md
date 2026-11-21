@@ -275,6 +275,9 @@ a missing or unexpected driver result.
 which returns another `Completion`. Cancellation and failure pass through
 with the callback skipped, so its captures must be copyable.
 
+`outcome.discard(release)` consumes a `Completion` or `StreamOutcome` and
+passes any owned value to `release`, such as `Buffer!::destroy`.
+
 ```sh
 ../kursal/bin/kursal build examples/timer-race -o bin/timer-race
 bin/timer-race
@@ -485,13 +488,14 @@ Other connections can continue while either operation is pending.
 
 ### Connection-local state
 
-The session example gives each connection a `LineReader!` that owns its
-pending bytes and implements `Resumable`. The read continuation resumes the
-reader with each chunk and carries it across one idle retry. When the reader
-returns complete lines, the write continuation holds a new reader for the
-trailing bytes until the write joins. Both plans use
-`.defer_tcp_owned(state, resume, discard)`. The active continuation receives
-the state and the `(connection, outcome)` pair, including after an idle timeout.
+The session example gives each connection a `Session!` that owns its
+pending bytes and tracks whether it has retried an idle read. The read
+continuation uses `Resumable` to feed each chunk into the session. A chunk
+resets the retry flag. When the session returns complete lines, the write
+continuation holds the trailing bytes in a fresh session until the write
+joins. Both plans use `.defer_tcp_owned(state, resume, discard)`. The active
+continuation receives the state and the `(connection, outcome)` pair,
+including after an idle timeout.
 On shutdown, socket closure, or submission rejection, the cleanup function
 receives the state and outcome after collection. The listener closes the
 socket.
