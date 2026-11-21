@@ -25,6 +25,8 @@ enum { METHOD_OTHER, METHOD_GET, METHOD_HEAD, METHOD_POST };
 /* Read outcomes below the HTTP rejection codes returned to receive. */
 enum { REQUEST_COMPLETE, REQUEST_MORE, REQUEST_TRUNCATED, REQUEST_CLOSED };
 
+typedef enum { HEADER_OTHER, HEADER_HOST, HEADER_RANGE, HEADER_IF_RANGE, HEADER_EXPECT } HeaderKind;
+
 typedef struct {
     uint8_t *data;
     size_t len;
@@ -49,9 +51,9 @@ typedef struct {
     uint64_t deadline;
     uint16_t rejection;
     int headers_done;
-    int complete;
     char field[8];
     size_t field_len;
+    HeaderKind header;
     uint32_t hosts;
     uint8_t range[MAX_RANGE];
     size_t range_len;
@@ -107,13 +109,25 @@ static int field_is(const Client *client, const char *name, size_t len) {
     return client->field_len == len && strncasecmp(client->field, name, len) == 0;
 }
 
+static int on_field_complete(llhttp_t *parser) {
+    Client *client = parser->data;
+    if (client->headers_done) return 0;
+    if (field_is(client, "host", 4)) client->header = HEADER_HOST;
+    else if (field_is(client, "range", 5)) client->header = HEADER_RANGE;
+    else if (field_is(client, "if-range", 8)) client->header = HEADER_IF_RANGE;
+    else if (field_is(client, "expect", 6)) client->header = HEADER_EXPECT;
+    else client->header = HEADER_OTHER;
+    client->field_len = 0;
+    return 0;
+}
+
 static int on_value(llhttp_t *parser, const char *at, size_t len) {
     Client *client = parser->data;
     if (client->headers_done) return 0;
-    if (!client->hosts && field_is(client, "host", 4)) {
+    if (client->header == HEADER_HOST && !client->hosts) {
         return append_head(client, at, len);
     }
-    if (field_is(client, "range", 5) && !client->ranges && client->range_len <= MAX_RANGE) {
+    if (client->header == HEADER_RANGE && !client->ranges && client->range_len <= MAX_RANGE) {
         if (len > MAX_RANGE - client->range_len) {
             client->range_len = MAX_RANGE + 1;
         } else if (len) {
@@ -127,11 +141,13 @@ static int on_value(llhttp_t *parser, const char *at, size_t len) {
 static int on_value_complete(llhttp_t *parser) {
     Client *client = parser->data;
     if (client->headers_done) return 0;
-    if (field_is(client, "host", 4)) client->hosts++;
-    if (field_is(client, "expect", 6)) client->expect = 1;
-    if (field_is(client, "range", 5)) client->ranges++;
-    if (field_is(client, "if-range", 8)) client->if_range = 1;
-    client->field_len = 0;
+    switch (client->header) {
+    case HEADER_HOST: client->hosts++; break;
+    case HEADER_RANGE: client->ranges++; break;
+    case HEADER_IF_RANGE: client->if_range = 1; break;
+    case HEADER_EXPECT: client->expect = 1; break;
+    case HEADER_OTHER: break;
+    }
     return 0;
 }
 
@@ -155,14 +171,14 @@ static int on_body(llhttp_t *parser, const char *at, size_t len) {
 }
 
 static int on_complete(llhttp_t *parser) {
-    Client *client = parser->data;
-    client->complete = 1;
+    (void)parser;
     return HPE_PAUSED;
 }
 
 static const llhttp_settings_t settings = {
     .on_url = on_url,
     .on_header_field = on_field,
+    .on_header_field_complete = on_field_complete,
     .on_header_value = on_value,
     .on_header_value_complete = on_value_complete,
     .on_headers_complete = on_headers,
@@ -239,7 +255,7 @@ static uint16_t consume_request(Client *client, const char *data, size_t remaini
         size_t count = remaining < budget ? remaining : budget;
         llhttp_errno_t result = llhttp_execute(&client->parser, data, count);
         client->wire_bytes += count;
-        if (client->complete) {
+        if (result == HPE_PAUSED) {
             return REQUEST_COMPLETE;
         }
         if (result != HPE_OK) {

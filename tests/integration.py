@@ -85,7 +85,9 @@ def check_http(port):
         (b"two ", b"names", 400, b"Bad Request\n"),
     ):
         with connect(port) as client:
-            client.sendall(b"GET / HTTP/1.1\r\nHost: " + first)
+            client.sendall(b"GET / HTTP/1.1\r\nHo")
+            assert not select.select([client], [], [], 0.05)[0]
+            client.sendall(b"st: " + first)
             assert not select.select([client], [], [], 0.05)[0]
             client.sendall(rest + b"\r\n\r\n")
             assert_response(read_response(client), status, body)
@@ -231,6 +233,14 @@ def check_static_files(command, directory, check_write_timeout=False):
                 assert headers[b"content-range"] == f"bytes {start}-{end}/{len(large)}".encode(), headers
                 assert headers[b"accept-ranges"] == b"bytes", headers
                 assert headers[b"content-type"] == b"application/octet-stream", headers
+            with connect(port) as client:
+                client.sendall(b"GET /payload.bin HTTP/1.1\r\nHost: localhost\r\nRa")
+                assert not select.select([client], [], [], 0.05)[0]
+                client.sendall(b"nGe: bytes=1-")
+                assert not select.select([client], [], [], 0.05)[0]
+                client.sendall(b"1\r\n\r\n")
+                headers = assert_response(read_response(client), 206, b"\x01")
+                assert headers[b"content-range"] == b"bytes 1-1/3", headers
             for path, size, value in (
                 (b"/large.bin", len(large), f"bytes={len(large)}-".encode()),
                 (b"/large.bin", len(large), b"bytes=999999999999999999999-"),
