@@ -1,0 +1,88 @@
+//! Owns a native file worker request from registration through collection.
+use package::{Scope!, kable_scope_fail_allocation};
+use std::buffer::Buffer!;
+use std::mem::alloca;
+use std::option::Option;
+use std::ptr::{is_null, null};
+use task::{Completion, Failure};
+
+extern "C" fn kable_file_new(path: *u8, len: usize, limit: usize, mode: u8) -> *u8;
+extern "C" fn kable_file_chunk(fd: i32, offset: u64, limit: usize) -> *u8;
+extern "C" fn kable_file_write_chunk(fd: i32, offset: u64, bytes: *u8, len: usize) -> *u8;
+extern "C" fn kable_file_start(request: *u8, loop: *u8,
+    done: unsafe fn(*u8) -> (), context: *u8) -> i32;
+extern "C" fn kable_file_stop(request: *u8) -> u8;
+extern "C" fn kable_file_result(request: *u8, bytes: *(*u8), len: *usize) -> i32;
+extern "C" fn kable_file_write_result(request: *u8, written: *usize) -> i32;
+extern "C" fn kable_file_take_descriptor(request: *u8, len: *u64) -> i32;
+extern "C" fn kable_file_free(request: *u8) -> ();
+
+struct FileRequest! { raw: *u8, id: Option[usize] }
+
+impl FileRequest! {
+    fn empty() -> FileRequest! { FileRequest!.{ raw: null(), id: Option::None } }
+
+    /// Takes an unqueued native file request, or null on allocation failure.
+    unsafe fn register(&self, &scope: Scope!, raw: *u8) -> Option[usize] {
+        let { raw: previous, id: previous_id } = self;
+        if !is_null(previous) {
+            unsafe kable_file_free(raw);
+            self = FileRequest!.{ raw: previous, id: previous_id };
+            return Option::None;
+        }
+        if is_null(raw) {
+            let { raw: scope_raw } = scope;
+            unsafe kable_scope_fail_allocation(scope_raw);
+            scope = Scope!.{ raw: scope_raw };
+            self = FileRequest!::empty();
+            return Option::None;
+        }
+        let id = unsafe &scope.add_operation(raw, kable_file_start, kable_file_stop);
+        if id.is_none() {
+            unsafe kable_file_free(raw);
+            self = FileRequest!::empty();
+        } else {
+            self = FileRequest!.{ raw, id };
+        }
+        id
+    }
+
+    forall Item.
+    unsafe fn collect(self, &scope: Scope!, result: unsafe fn(*u8) -> Completion[Item]) -> Completion[Item] {
+        let { raw, id } = self;
+        let outcome = (&scope.result(id)).completion().and_then(|unit| unsafe result(raw));
+        unsafe kable_file_free(raw);
+        outcome
+    }
+
+    fn collect_write(self, &scope: Scope!) -> (usize, Completion[()]) {
+        let { raw, id } = self;
+        let resolution = &scope.result(id);
+        // Even a cancelled write can report bytes accepted before retirement.
+        let size = unsafe alloca[usize]();
+        let status = unsafe kable_file_write_result(raw, size);
+        let count = unsafe *size;
+        unsafe kable_file_free(raw);
+        let completion = resolution.completion().and_then(|unit| {
+            if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
+        });
+        (count, completion)
+    }
+}
+
+unsafe fn collect_read(request: *u8) -> Completion[Buffer!] {
+    let data = unsafe alloca[*u8]();
+    let size = unsafe alloca[usize]();
+    let code = unsafe kable_file_result(request, data, size);
+    if code < 0 { return Completion::Failed.(Failure::Operation.(code)); }
+    let bytes = unsafe *data;
+    let len = unsafe *size;
+    Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+}
+
+forall File, Env where Copy[Env].
+unsafe fn collect_descriptor(request: *u8, wrap: closure[Env](i32, u64) -> File) -> Completion[File] {
+    let size = unsafe alloca[u64]();
+    let fd = unsafe kable_file_take_descriptor(request, size);
+    if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
+}

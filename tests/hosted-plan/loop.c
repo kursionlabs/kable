@@ -6,6 +6,8 @@ static int32_t init_error;
 static unsigned init_count;
 static unsigned close_count;
 static uint32_t scope_closes;
+static uint8_t track_next_scope;
+static void *tracked_scope;
 static uint8_t fake_clock;
 static uint64_t now;
 static uint64_t advance_on_allocation;
@@ -16,15 +18,64 @@ static void (*deferred_done)(uint8_t *);
 static uint8_t *deferred_context;
 static uint8_t deferred_retired;
 
+enum { FILE_ALLOCATION = 1, FILE_REGISTRATION, FILE_START };
+static uint8_t file_fault;
+static uint8_t *tracked_file;
+static uint8_t reject_file_slot;
+static unsigned file_callocs;
+static unsigned file_starts;
+static unsigned file_releases;
+
 int __real_uv_loop_init(uv_loop_t *loop);
 int __real_uv_loop_close(uv_loop_t *loop);
 uint64_t __real_uv_hrtime(void);
 void *__real_calloc(size_t count, size_t size);
-void __real_kable_scope_free(uint8_t *scope);
+void __real_free(void *ptr);
+void *__real_realloc(void *ptr, size_t size);
+int __real_uv_queue_work(uv_loop_t *loop, uv_work_t *request, uv_work_cb work, uv_after_work_cb after_work);
 
-void __wrap_kable_scope_free(uint8_t *scope) {
-    __real_kable_scope_free(scope);
-    scope_closes++;
+int32_t kable_test_file_fault_begin(uint8_t fault) {
+    file_fault = fault;
+    file_callocs = file_starts = file_releases = 0;
+    return fault == FILE_START ? UV_EIO : UV_ENOMEM;
+}
+
+uint8_t kable_test_file_fault_end(void) {
+    int valid = file_callocs == 2 && file_starts == (file_fault == FILE_START) &&
+        file_releases == (file_fault != FILE_ALLOCATION) && !tracked_file && !reject_file_slot;
+    file_fault = 0;
+    return valid;
+}
+
+void __wrap_free(void *ptr) {
+    if (ptr && ptr == tracked_file) {
+        tracked_file = NULL;
+        file_releases++;
+    }
+    if (ptr && ptr == tracked_scope) {
+        tracked_scope = NULL;
+        scope_closes++;
+    }
+    __real_free(ptr);
+}
+
+void *__wrap_realloc(void *ptr, size_t size) {
+    if (reject_file_slot) {
+        reject_file_slot = 0;
+        return NULL;
+    }
+    return __real_realloc(ptr, size);
+}
+
+int __wrap_uv_queue_work(uv_loop_t *loop, uv_work_t *request, uv_work_cb work, uv_after_work_cb after_work) {
+    if (file_fault) file_starts++;
+    if (file_fault == FILE_START) return UV_EIO;
+    return __real_uv_queue_work(loop, request, work, after_work);
+}
+
+void kable_test_track_scope(void) {
+    if (track_next_scope || tracked_scope) abort();
+    track_next_scope = 1;
 }
 
 uint32_t kable_test_scope_closes(void) {
@@ -34,7 +85,19 @@ uint32_t kable_test_scope_closes(void) {
 void *__wrap_calloc(size_t count, size_t size) {
     now += advance_on_allocation;
     advance_on_allocation = 0;
-    return __real_calloc(count, size);
+    /* Running the read allocates the scope first and the worker request second. */
+    if (file_fault && ++file_callocs == 2) {
+        if (file_fault == FILE_ALLOCATION) return NULL;
+        tracked_file = __real_calloc(count, size);
+        if (file_fault == FILE_REGISTRATION) reject_file_slot = 1;
+        return tracked_file;
+    }
+    void *ptr = __real_calloc(count, size);
+    if (track_next_scope) {
+        track_next_scope = 0;
+        tracked_scope = ptr;
+    }
+    return ptr;
 }
 
 int __wrap_uv_loop_init(uv_loop_t *loop) {

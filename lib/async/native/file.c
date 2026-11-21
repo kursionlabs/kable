@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <uv.h>
 
 #if defined(__linux__) && __has_include(<linux/openat2.h>)
 #include <linux/openat2.h>
@@ -16,7 +17,7 @@
 
 enum { READ_CHUNK = KABLE_CREATE_FILE + 1, WRITE_CHUNK };
 
-struct KableFile {
+typedef struct {
     uv_work_t request;
     void (*done)(uint8_t *);
     uint8_t *context;
@@ -32,7 +33,7 @@ struct KableFile {
     uint64_t size;
     atomic_bool cancelled;
     int status;
-};
+} KableFile;
 
 static KableFile *new_file(size_t limit, uint8_t mode) {
     KableFile *file = calloc(1, sizeof *file);
@@ -44,12 +45,12 @@ static KableFile *new_file(size_t limit, uint8_t mode) {
     return file;
 }
 
-KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t mode) {
+uint8_t *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t mode) {
     KableFile *file = new_file(limit, mode);
     if (!file) return NULL;
     if (mode > KABLE_CREATE_FILE || len == SIZE_MAX || (len && memchr(path, 0, len))) {
         file->status = UV_EINVAL;
-        return file;
+        return (uint8_t *)file;
     }
 
     file->path = malloc(len + 1);
@@ -59,26 +60,26 @@ KableFile *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t
     }
     if (len) memcpy(file->path, path, len);
     file->path[len] = '\0';
-    return file;
+    return (uint8_t *)file;
 }
 
-KableFile *kable_file_chunk(int fd, uint64_t offset, size_t limit) {
+uint8_t *kable_file_chunk(int32_t fd, uint64_t offset, size_t limit) {
     KableFile *file = new_file(limit, READ_CHUNK);
     if (file) {
         file->fd = fd;
         file->offset = offset;
     }
-    return file;
+    return (uint8_t *)file;
 }
 
-KableFile *kable_file_write_chunk(int fd, uint64_t offset, const uint8_t *bytes, size_t len) {
+uint8_t *kable_file_write_chunk(int32_t fd, uint64_t offset, const uint8_t *bytes, size_t len) {
     KableFile *file = new_file(len, WRITE_CHUNK);
     if (file) {
         file->fd = fd;
         file->offset = offset;
         file->input = bytes;
     }
-    return file;
+    return (uint8_t *)file;
 }
 
 static int append(KableFile *file, uint8_t *bytes, size_t count) {
@@ -212,6 +213,7 @@ static void file_work(uv_work_t *request) {
 
 static void file_done(uv_work_t *request, int status) {
     KableFile *file = request->data;
+    request->data = NULL;
     if (status < 0) file->status = status;
     file->done(file->context);
 }
@@ -220,8 +222,11 @@ int32_t kable_file_start(uint8_t *raw, uint8_t *loop, void (*done)(uint8_t *), u
     KableFile *file = (KableFile *)raw;
     file->done = done;
     file->context = context;
+    /* Marks the request as in flight until after-work runs. */
     file->request.data = file;
-    return uv_queue_work((uv_loop_t *)loop, &file->request, file_work, file_done);
+    int status = uv_queue_work((uv_loop_t *)loop, &file->request, file_work, file_done);
+    if (status < 0) file->request.data = NULL;
+    return status;
 }
 
 uint8_t kable_file_stop(uint8_t *raw) {
@@ -232,7 +237,9 @@ uint8_t kable_file_stop(uint8_t *raw) {
     return 1;
 }
 
-int kable_file_result(KableFile *file, uint8_t **data, size_t *len) {
+int32_t kable_file_result(uint8_t *raw, uint8_t **data, size_t *len) {
+    KableFile *file = (KableFile *)raw;
+    if (!file || file->request.data) return UV_EINVAL;
     if (file->status == 0) {
         *data = file->data;
         *len = file->len;
@@ -240,13 +247,17 @@ int kable_file_result(KableFile *file, uint8_t **data, size_t *len) {
     return file->status;
 }
 
-int kable_file_write_result(KableFile *file, size_t *written) {
-    if (file->mode != WRITE_CHUNK) return UV_EINVAL;
+int32_t kable_file_write_result(uint8_t *raw, size_t *written) {
+    KableFile *file = (KableFile *)raw;
+    *written = 0;
+    if (!file || file->request.data || file->mode != WRITE_CHUNK) return UV_EINVAL;
     *written = file->len;
     return file->status;
 }
 
-int kable_file_take_descriptor(KableFile *file, uint64_t *len) {
+int32_t kable_file_take_descriptor(uint8_t *raw, uint64_t *len) {
+    KableFile *file = (KableFile *)raw;
+    if (!file || file->request.data) return UV_EINVAL;
     if (file->status < 0) return file->status;
     if (!retains_descriptor(file) || file->fd < 0) return UV_EINVAL;
     int fd = file->fd;
@@ -273,8 +284,10 @@ uint8_t kable_file_error_kind(int32_t code) {
     }
 }
 
-void kable_file_free(KableFile *file) {
+void kable_file_free(uint8_t *raw) {
+    KableFile *file = (KableFile *)raw;
     if (!file) return;
+    if (file->request.data) abort();
     if (retains_descriptor(file) && file->fd >= 0) close(file->fd);
     free(file->path);
     free(file->data);

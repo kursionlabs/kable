@@ -1,8 +1,11 @@
 //! Structured waits, joins, and bounded file operations on libuv.
 use package::host;
+use package::file_request::{
+    FileRequest!, collect_descriptor, collect_read, kable_file_chunk, kable_file_new, kable_file_write_chunk,
+};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
-use std::mem::{alloca, sizeof};
+use std::mem::sizeof;
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
@@ -20,20 +23,15 @@ extern "C" fn kable_scope_new(policy: *u8, add_leaf: unsafe fn(*u8) -> usize,
     event: unsafe fn(*u8, u8, usize) -> usize) -> *u8;
 extern "C" fn kable_scope_add_timer(scope: *u8, ms: u64) -> usize;
 extern "C" fn kable_scope_add_pair(scope: *u8, kind: u8, first: usize, second: usize) -> usize;
-extern "C" fn kable_scope_add_file(scope: *u8, path: *u8, len: usize, limit: usize, mode: u8) -> usize;
-extern "C" fn kable_scope_add_chunk(scope: *u8, fd: i32, offset: u64, limit: usize) -> usize;
-extern "C" fn kable_scope_add_write(scope: *u8, fd: i32, offset: u64, bytes: *u8, len: usize) -> usize;
 extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> u8) -> usize;
+extern "C" fn kable_scope_fail_allocation(scope: *u8) -> ();
 extern "C" fn kable_scope_run(scope: *u8, root: usize, end_ms: u64, timed: u8) -> u8;
 extern "C" fn kable_runner_new() -> *u8;
 extern "C" fn kable_runner_run(loop: *u8, scope: *u8, root: usize, end_ms: u64, timed: u8) -> u8;
 extern "C" fn kable_runner_free(loop: *u8) -> ();
 extern "C" fn kable_scope_result(scope: *u8, id: usize) -> i32;
-extern "C" fn kable_scope_file_result(scope: *u8, id: usize, bytes: *(*u8), len: *usize) -> i32;
-extern "C" fn kable_scope_write_result(scope: *u8, id: usize, written: *usize) -> i32;
-extern "C" fn kable_scope_take_file(scope: *u8, id: usize, len: *u64) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
 extern "C" fn kable_file_close_descriptor(fd: i32) -> i32;
 extern "C" fn kable_file_error_kind(code: i32) -> u8;
@@ -64,14 +62,14 @@ impl Failure {
 
 forall Item.
 struct FilePathPlan! {
-    path: Buffer!, limit: usize, mode: u8, id: Option[usize],
-    result: fn(&_: Scope!, Option[usize]) -> Completion[Item],
+    path: Buffer!, limit: usize, mode: u8, request: FileRequest!,
+    result: unsafe fn(*u8) -> Completion[Item],
 }
 
 struct OpenedFile! { fd: i32, length: u64 }
 struct OutputFile! { fd: i32, position: u64 }
-struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, id: Option[usize] }
-struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, id: Option[usize] }
+struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, request: FileRequest! }
+struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, request: FileRequest! }
 struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
 
 // Matches KableFileMode in native/file.h.
@@ -83,40 +81,40 @@ const CREATE_FILE: u8 = 4;
 const FILE_CHUNK: u64 = 64 * 1024;
 
 forall C, S, Item where ReadBytes[C, S], Copy[S].
-fn file_path_plan(&cx: C, path: S, limit: usize, mode: u8,
-    result: fn(&_: Scope!, Option[usize]) -> Completion[Item]) -> FilePathPlan![Item] {
-    FilePathPlan!.{ path: Buffer!::new().push_bytes(&cx, path), limit, mode, id: Option::None, result }
+unsafe fn file_path_plan(&cx: C, path: S, limit: usize, mode: u8,
+    result: unsafe fn(*u8) -> Completion[Item]) -> FilePathPlan![Item] {
+    FilePathPlan!.{ path: Buffer!::new().push_bytes(&cx, path), limit, mode, request: FileRequest!::empty(), result }
 }
 
 /// Plans a read of a regular file. A file larger than limit fails.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn read_file(&cx: C, path: S, limit: usize) -> FilePathPlan![Buffer!] {
-    file_path_plan(&cx, path, limit, READ_FILE, Scope!::file_result)
+    unsafe file_path_plan(&cx, path, limit, READ_FILE, collect_read)
 }
 
 /// Plans a regular-file read below the process's working directory.
 /// Linux resolves the relative path without following symlinks.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn read_file_beneath_cwd(&cx: C, path: S, limit: usize) -> FilePathPlan![Buffer!] {
-    file_path_plan(&cx, path, limit, READ_BENEATH, Scope!::file_result)
+    unsafe file_path_plan(&cx, path, limit, READ_BENEATH, collect_read)
 }
 
 /// Opens and measures a regular file.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn open_file(&cx: C, path: S) -> FilePathPlan![OpenedFile!] {
-    file_path_plan(&cx, path, 0, OPEN_FILE, collect_opened_file)
+    unsafe file_path_plan(&cx, path, 0, OPEN_FILE, collect_opened_file)
 }
 
 /// Opens a regular file beneath the working directory and measures its length.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn open_file_beneath_cwd(&cx: C, path: S) -> FilePathPlan![OpenedFile!] {
-    file_path_plan(&cx, path, 0, OPEN_BENEATH, collect_opened_file)
+    unsafe file_path_plan(&cx, path, 0, OPEN_BENEATH, collect_opened_file)
 }
 
 /// Creates a new regular file. An existing destination causes an error.
 forall C, S where ReadBytes[C, S], Copy[S].
 fn create_file(&cx: C, path: S) -> FilePathPlan![OutputFile!] {
-    file_path_plan(&cx, path, 0, CREATE_FILE, collect_output_file)
+    unsafe file_path_plan(&cx, path, 0, CREATE_FILE, collect_output_file)
 }
 
 impl OutputFile! {
@@ -130,7 +128,7 @@ impl OutputFile! {
     /// Writes the buffer at offset without advancing the sequential position.
     /// Returns (file, bytes, count, status). The count includes partial writes.
     fn write_chunk(self, offset: u64, bytes: Buffer!) -> WriteChunk! {
-        WriteChunk!.{ file: self, offset, bytes, id: Option::None }
+        WriteChunk!.{ file: self, offset, bytes, request: FileRequest!::empty() }
     }
 
     fn close(self) -> Result[(), i32] {
@@ -167,7 +165,7 @@ impl OpenedFile! {
         let length = &self.len();
         let remaining = if offset < length { length - offset } else { 0 };
         let limit = if remaining < limit as u64 { remaining as usize } else { limit };
-        ReadChunk!.{ file: self, offset, limit, id: Option::None }
+        ReadChunk!.{ file: self, offset, limit, request: FileRequest!::empty() }
     }
 
     /// Owns the file and reads up to length bytes starting at offset.
@@ -332,33 +330,6 @@ impl Scope! {
         Scope!.{ raw }
     }
 
-    fn add_file(&self, &path: Buffer!, limit: usize, mode: u8) -> Option[usize] {
-        let { raw } = self;
-        let bytes = unsafe &path.as_ptr();
-        let len = &path.len();
-        let id = unsafe kable_scope_add_file(raw, bytes, len, limit, mode);
-        self = Scope!.{ raw };
-        registered(id)
-    }
-
-    fn add_chunk(&self, &file: OpenedFile!, offset: u64, limit: usize) -> Option[usize] {
-        let { raw } = self;
-        let { fd, length } = file;
-        let id = unsafe kable_scope_add_chunk(raw, fd, offset, limit);
-        file = OpenedFile!.{ fd, length };
-        self = Scope!.{ raw };
-        registered(id)
-    }
-
-    fn add_write(&self, &file: OutputFile!, offset: u64, &bytes: Buffer!) -> Option[usize] {
-        let { raw } = self;
-        let { fd, position } = file;
-        let id = unsafe kable_scope_add_write(raw, fd, offset, unsafe &bytes.as_ptr(), &bytes.len());
-        file = OutputFile!.{ fd, position };
-        self = Scope!.{ raw };
-        registered(id)
-    }
-
     /// The context lives through collection. Start schedules an asynchronous
     /// completion on the supplied loop. Stop returns zero to retire now or
     /// one to wait for the completion callback.
@@ -369,46 +340,6 @@ impl Scope! {
         let id = unsafe kable_scope_add_operation(raw, context, start, stop);
         self = Scope!.{ raw };
         registered(id)
-    }
-
-    fn file_result(&self, id: Option[usize]) -> Completion[Buffer!] {
-        let completion = (&self.result(id)).completion();
-        let { raw } = self;
-        self = Scope!.{ raw };
-        completion.and_then(|unit| {
-            let data = unsafe alloca[*u8]();
-            let size = unsafe alloca[usize]();
-            let code = unsafe kable_scope_file_result(raw, id.unwrap_or(usize::MAX), data, size);
-            if code < 0 { return Completion::Failed.(Failure::Operation.(code)); }
-            let bytes = unsafe *data;
-            let len = unsafe *size;
-            Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
-        })
-    }
-
-    fn write_result(&self, id: Option[usize]) -> (usize, Completion[()]) {
-        let resolution = &self.result(id);
-        let { raw } = self;
-        let size = unsafe alloca[usize]();
-        let status = unsafe kable_scope_write_result(raw, id.unwrap_or(usize::MAX), size);
-        let count = unsafe *size;
-        self = Scope!.{ raw };
-        let completion = resolution.completion().and_then(|unit| {
-            if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
-        });
-        (count, completion)
-    }
-
-    forall File, Env where Copy[Env].
-    fn collect_descriptor(&self, id: Option[usize], wrap: closure[Env](i32, u64) -> File) -> Completion[File] {
-        let completion = (&self.result(id)).completion();
-        let { raw } = self;
-        self = Scope!.{ raw };
-        completion.and_then(|unit| {
-            let size = unsafe alloca[u64]();
-            let fd = unsafe kable_scope_take_file(raw, id.unwrap_or(usize::MAX), size);
-            if fd < 0 { Completion::Failed.(Failure::Operation.(fd)) } else { Completion::Ready.(wrap(fd, unsafe *size)) }
-        })
     }
 
     fn run(&self, root: Option[usize], deadline: Option[Duration], loop: RunLoop) -> bool {
@@ -446,12 +377,12 @@ impl Scope! {
     }
 }
 
-fn collect_opened_file(&scope: Scope!, id: Option[usize]) -> Completion[OpenedFile!] {
-    &scope.collect_descriptor(id, |fd, length| OpenedFile!.{ fd, length })
+unsafe fn collect_opened_file(request: *u8) -> Completion[OpenedFile!] {
+    unsafe collect_descriptor(request, |fd, length| OpenedFile!.{ fd, length })
 }
 
-fn collect_output_file(&scope: Scope!, id: Option[usize]) -> Completion[OutputFile!] {
-    &scope.collect_descriptor(id, |fd, length| OutputFile!.{ fd, position: 0 })
+unsafe fn collect_output_file(request: *u8) -> Completion[OutputFile!] {
+    unsafe collect_descriptor(request, |fd, length| OutputFile!.{ fd, position: 0 })
 }
 
 forall Item.
@@ -460,16 +391,17 @@ instance PlanOutput[FilePathPlan![Item] -> Completion[Item]] {}
 forall Item.
 instance Plan[FilePathPlan![Item], Scope! -> Completion[Item]] {
     fn stage(&task: FilePathPlan![Item], &scope: Scope!) -> Option[usize] {
-        let { path, limit, mode, id, result } = task;
-        let id = &scope.add_file(&path, limit, mode);
-        task = FilePathPlan!.{ path, limit, mode, id, result };
+        let { path, limit, mode, request, result } = task;
+        let raw = unsafe kable_file_new(unsafe &path.as_ptr(), &path.len(), limit, mode);
+        let id = unsafe &request.register(&scope, raw);
+        task = FilePathPlan!.{ path, limit, mode, request, result };
         id
     }
 
     fn collect(task: FilePathPlan![Item], &scope: Scope!) -> Completion[Item] {
-        let { path, limit, mode, id, result } = task;
+        let { path, limit, mode, request, result } = task;
         path.destroy();
-        result(&scope, id)
+        unsafe request.collect(&scope, result)
     }
 }
 
@@ -477,15 +409,17 @@ instance PlanOutput[ReadChunk! -> (OpenedFile!, Completion[Buffer!])] {}
 
 instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     fn stage(&task: ReadChunk!, &scope: Scope!) -> Option[usize] {
-        let { file, offset, limit, id } = task;
-        let id = &scope.add_chunk(&file, offset, limit);
-        task = ReadChunk!.{ file, offset, limit, id };
+        let { file, offset, limit, request } = task;
+        let { fd, length } = file;
+        let raw = unsafe kable_file_chunk(fd, offset, limit);
+        let id = unsafe &request.register(&scope, raw);
+        task = ReadChunk!.{ file: OpenedFile!.{ fd, length }, offset, limit, request };
         id
     }
 
     fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
-        let { file, offset, limit, id } = task;
-        (file, &scope.file_result(id))
+        let { file, offset, limit, request } = task;
+        (file, unsafe request.collect(&scope, collect_read))
     }
 }
 
@@ -493,15 +427,17 @@ instance PlanOutput[WriteChunk! -> (OutputFile!, Buffer!, usize, Completion[()])
 
 instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()])] {
     fn stage(&task: WriteChunk!, &scope: Scope!) -> Option[usize] {
-        let { file, offset, bytes, id } = task;
-        let id = &scope.add_write(&file, offset, &bytes);
-        task = WriteChunk!.{ file, offset, bytes, id };
+        let { file, offset, bytes, request } = task;
+        let { fd, position } = file;
+        let raw = unsafe kable_file_write_chunk(fd, offset, unsafe &bytes.as_ptr(), &bytes.len());
+        let id = unsafe &request.register(&scope, raw);
+        task = WriteChunk!.{ file: OutputFile!.{ fd, position }, offset, bytes, request };
         id
     }
 
     fn collect(task: WriteChunk!, &scope: Scope!) -> (OutputFile!, Buffer!, usize, Completion[()]) {
-        let { file, offset, bytes, id } = task;
-        let (count, status) = &scope.write_result(id);
+        let { file, offset, bytes, request } = task;
+        let (count, status) = request.collect_write(&scope);
         (file, bytes, count, status)
     }
 }

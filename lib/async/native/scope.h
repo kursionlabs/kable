@@ -22,5 +22,7 @@ typedef int32_t (*KableOperationStart)(uint8_t *, uint8_t *, void (*)(uint8_t *)
 typedef uint8_t (*KableOperationStop)(uint8_t *);
 size_t kable_scope_add_operation(uint8_t *scope, uint8_t *context,
     KableOperationStart start, KableOperationStop stop);
+/* Records an allocation failure during staging, before any work starts. */
+void kable_scope_fail_allocation(uint8_t *scope);
 
 #endif
