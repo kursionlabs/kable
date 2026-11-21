@@ -20,7 +20,6 @@ extern "C" fn kable_bind(port: u16,
     callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
-extern "C" fn kable_write(client: *u8, bytes: *u8, len: usize) -> i32;
 extern "C" fn kable_range_header(client: *u8, length: *usize) -> *u8;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
@@ -36,6 +35,7 @@ exposed enum Action! {
 
 struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
 
+const WRITE_TIMEOUT: u64 = 5000;
 const STREAM_IDLE: u64 = 5000;
 
 // The native HTTP host adds RESPONSE_ACTIVE when it can still send a reply.
@@ -160,11 +160,7 @@ fn finish_reply(outcome: Output, state: RequestState, deadline: DeadlineStatus,
 }
 
 unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
-    let ptr = unsafe &wire.as_ptr();
-    let len = &wire.len();
-    let result = unsafe kable_write(client, ptr, len);
-    wire.destroy();
-    result
+    unsafe Connection!::write_final(unsafe kable_client_connection(client), wire, WRITE_TIMEOUT)
 }
 
 unsafe fn discard_action(client: *u8, action: Action!) {

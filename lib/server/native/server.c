@@ -12,8 +12,7 @@ enum {
     MAX_RANGE = 256,
     MAX_BODY = 1024 * 1024,
     MAX_WIRE = MAX_BODY + 4 * MAX_HEAD,
-    READ_TIMEOUT = 10000,
-    WRITE_TIMEOUT = 5000
+    READ_TIMEOUT = 10000
 };
 
 typedef int32_t (*respond_fn)(uint8_t *, uint8_t *, uint16_t, uint8_t,
@@ -201,11 +200,6 @@ static void destroy_client(uint8_t *attachment) {
     if (client->plan) abort();
     release_request(client);
     free(client);
-}
-
-int32_t kable_write(uint8_t *raw, uint8_t *bytes, size_t len) {
-    Client *client = (Client *)raw;
-    return kable_tcp_finish(client->connection, bytes, len, WRITE_TIMEOUT);
 }
 
 /* Borrows the bounded Range value from the live client, or exposes zero bytes. */

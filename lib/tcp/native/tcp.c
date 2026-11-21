@@ -2,7 +2,6 @@
 #include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
 #include <uv.h>
 
 #include "../../async/native/timer.h"
@@ -27,9 +26,7 @@ typedef struct {
 
 typedef struct {
     uv_tcp_t socket;
-    uv_write_t write;
     uv_shutdown_t shutdown;
-    uv_buf_t output;
     Listener *listener;
     KableTimer *timer;
     uint8_t *attachment;
@@ -104,7 +101,7 @@ static void close_socket(Connection *connection) {
 }
 
 static void close_connection(Connection *connection) {
-    if (connection->phase == SCOPED) {
+    if (connection->phase == SCOPED || (connection->phase == FINISHING && connection->scope)) {
         kable_scope_cancel(connection->scope);
         return;
     }
@@ -287,7 +284,7 @@ int32_t kable_tcp_start_scoped_write(uint8_t *raw, uint8_t *loop,
     if (!write) return UV_ENOMEM;
     if (write->status < 0) return write->status;
     Connection *connection = write->connection;
-    if ((connection->phase != SCOPED && connection->phase != STREAMING) ||
+    if ((connection->phase != SCOPED && connection->phase != STREAMING && connection->phase != FINISHING) ||
         loop != (uint8_t *)&connection->listener->loop) return UV_EINVAL;
     if (socket_closing(connection) || connection->cancelled) return UV_ECANCELED;
     write->ready = ready;
@@ -325,12 +322,12 @@ static void scope_joined(void *context) {
         connection->scope = NULL;
         uint8_t *plan = connection->plan;
         connection->plan = NULL;
-        int streaming = connection->phase == STREAMING;
-        if (!streaming) connection->phase = IDLE;
+        int phase = connection->phase;
+        if (phase == SCOPED) connection->phase = IDLE;
         int status = connection->finish_plan(plan, (uint8_t *)connection, 0);
-        if (streaming) {
+        if (phase == STREAMING) {
             if (status < 0 || connection->cancelled) end_stream(connection, 0);
-        } else if (status < 0 || connection->listener->stopping) {
+        } else if (status < 0 || (phase == SCOPED && connection->listener->stopping)) {
             close_connection(connection);
         }
     }
@@ -374,33 +371,6 @@ static void cancel_stream(void *context) {
     else end_stream(connection, 0);
 }
 
-static void write_done(uv_write_t *write, int status) {
-    Connection *connection = write->data;
-    free(connection->output.base);
-    connection->output.base = NULL;
-    if (connection->phase == FINISHING) {
-        if (status < 0) close_connection(connection);
-        else shutdown_write(connection);
-    }
-}
-
-static int queue_write(Connection *connection, uint8_t *bytes, size_t len) {
-    if (!len || len > UINT32_MAX) return UV_EINVAL;
-
-    char *copy = malloc(len);
-    if (!copy) return UV_ENOMEM;
-    memcpy(copy, bytes, len);
-    connection->output = (uv_buf_t){ .base = copy, .len = (unsigned int)len };
-    connection->write.data = connection;
-    int status = uv_write(&connection->write, (uv_stream_t *)&connection->socket,
-        &connection->output, 1, write_done);
-    if (status < 0) {
-        free(copy);
-        connection->output.base = NULL;
-    }
-    return status;
-}
-
 int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags) {
     (void)flags;
@@ -412,6 +382,7 @@ int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *p
         connection->phase = SCOPED;
         break;
     case STREAMING:
+    case FINISHING:
         if (connection->cancelled) return UV_ECANCELED;
         if (connection->plan) return UV_EBUSY;
         break;
@@ -474,21 +445,20 @@ static void finish_closed(void *context, int fired) {
     release_closed_connection(connection);
 }
 
-int32_t kable_tcp_finish(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms) {
+static int start_finish_timer(Connection *connection, uint64_t ms) {
+    uv_loop_t *loop = &connection->listener->loop;
+    uv_update_time(loop);
+    return kable_timer_start(loop, ms, finish_expired, finish_closed, connection, &connection->timer);
+}
+
+int32_t kable_tcp_finish_begin(uint8_t *raw, uint64_t ms) {
     Connection *connection = (Connection *)raw;
     int peer_eof = connection->phase == TERMINAL && connection->event == KABLE_TCP_END;
-    if ((!peer_eof && connection->phase != IDLE) || connection->listener->stopping) {
+    if ((!peer_eof && connection->phase != IDLE) || connection->listener->stopping || socket_closing(connection)) {
         return UV_ECANCELED;
     }
-    uv_update_time(&connection->listener->loop);
-    int status = kable_timer_start(&connection->listener->loop, ms, finish_expired,
-        finish_closed, connection, &connection->timer);
+    int status = start_finish_timer(connection, ms);
     if (status < 0) return status;
-    status = queue_write(connection, bytes, len);
-    if (status < 0) {
-        kable_timer_cancel(connection->timer);
-        return status;
-    }
     connection->phase = FINISHING;
     return 0;
 }
@@ -496,9 +466,7 @@ int32_t kable_tcp_finish(uint8_t *raw, uint8_t *bytes, size_t len, uint64_t ms) 
 int32_t kable_tcp_stream_begin(uint8_t *raw, uint64_t ms) {
     Connection *connection = (Connection *)raw;
     if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
-    uv_update_time(&connection->listener->loop);
-    int status = kable_timer_start(&connection->listener->loop, ms, finish_expired,
-        finish_closed, connection, &connection->timer);
+    int status = start_finish_timer(connection, ms);
     if (status < 0) return status;
     status = kable_tcp_park(raw, cancel_stream, connection);
     if (status < 0) {
@@ -512,7 +480,9 @@ int32_t kable_tcp_stream_begin(uint8_t *raw, uint64_t ms) {
 
 int32_t kable_tcp_stream_end(uint8_t *raw) {
     Connection *connection = (Connection *)raw;
-    if (connection->phase != STREAMING || connection->cancelled) return UV_ECANCELED;
+    if ((connection->phase != STREAMING && connection->phase != FINISHING) || connection->cancelled) {
+        return UV_ECANCELED;
+    }
     if (connection->plan) return UV_EBUSY;
     end_stream(connection, 1);
     return 0;
