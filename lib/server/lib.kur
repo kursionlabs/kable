@@ -12,7 +12,7 @@ use std::ptr::is_null;
 use std::raw::Span;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Stream, StreamOutcome, sleep};
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
 use thunk::Thunk!;

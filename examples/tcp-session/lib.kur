@@ -3,7 +3,7 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
-use task::{Completion, PlanOutput, Stream, StreamOutcome};
+use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
 use tcp::{Action!, Connection!, Listener!, timed_read_outcome};
 use thunk::{Resumable, Step};
 

@@ -21,13 +21,12 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
                 return false;
             },
         };
-        let write = destination.write(bytes);
-        let (file, bytes, outcome) = match deadline {
+        let write = destination.send(bytes);
+        let (file, outcome) = match deadline {
             Option::Some(duration) => &runner.run_with_deadline(write, duration),
             Option::None => &runner.run(write),
         };
         destination = file;
-        bytes.destroy();
         match outcome {
             Completion::Ready => (),
             Completion::Cancelled => {

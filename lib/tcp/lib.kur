@@ -95,23 +95,6 @@ fn finish_write(state: (Connection!, Buffer!), request: *u8, completion: Complet
     (connection, bytes, completion)
 }
 
-fn finish_send(state: (Connection!, Buffer!), request: *u8, completion: Completion[()])
-    -> (Connection!, Completion[()]) {
-    let (connection, bytes, completion) = finish_write(state, request, completion);
-    bytes.destroy();
-    (connection, completion)
-}
-
-forall Output.
-fn write_plan(connection: Connection!, bytes: Buffer!,
-    finish: fn((Connection!, Buffer!), *u8, Completion[()]) -> Output)
-    -> OperationPlan![(Connection!, Buffer!), Output] {
-    OperationPlan!.{
-        state: (connection, bytes), prepare: prepare_write, start: kable_tcp_start_scoped_write,
-        stop: kable_tcp_stop_scoped_write, finish, context: null(), id: Option::None,
-    }
-}
-
 unsafe fn read_result(raw: *u8) -> StreamOutcome[Buffer!] {
     let data = unsafe alloca[*u8]();
     let len = unsafe alloca[usize]();
@@ -162,11 +145,6 @@ impl Task {
 }
 
 impl Connection! {
-    /// Plans a write that releases the buffer after join on every outcome.
-    fn send(self, bytes: Buffer!) -> OperationPlan![(Connection!, Buffer!), (Connection!, Completion[()])] {
-        write_plan(self, bytes, finish_send)
-    }
-
     /// Takes the host's connection for one write, then half-closes and drains.
     /// The host lends a live connection with no other owner. The plan owns
     /// the buffer until the write joins.
@@ -241,7 +219,10 @@ instance Sink[Connection! -> Buffer!, OperationPlan![(Connection!, Buffer!), (Co
     /// in-flight write closes the socket. An interrupted write may be partial.
     fn write(connection: Connection!, bytes: Buffer!)
         -> OperationPlan![(Connection!, Buffer!), (Connection!, Buffer!, Completion[()])] {
-        write_plan(connection, bytes, finish_write)
+        OperationPlan!.{
+            state: (connection, bytes), prepare: prepare_write, start: kable_tcp_start_scoped_write,
+            stop: kable_tcp_stop_scoped_write, finish: finish_write, context: null(), id: Option::None,
+        }
     }
 }
 

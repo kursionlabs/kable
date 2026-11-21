@@ -2,7 +2,7 @@ use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Stream, StreamOutcome};
+use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome};
 use tcp::{Action!, Connection!, Listener!, timed_read_outcome};
 
 fn read_next(connection: Connection!) -> Action! {

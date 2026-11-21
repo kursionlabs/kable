@@ -55,8 +55,8 @@ each socket write completes. `file.chunks(offset, length)` creates an
 owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
 joins. Only a nonempty chunk advances the cursor. The server sends its
-headers and each chunk with `Connection!.send()`, then pulls the next chunk from
-the write continuation. The server closes the stream after the final
+headers and each chunk with `connection.send(bytes)`, then pulls the next
+chunk from the write continuation. The server closes the stream after the final
 write joins or when a read or write is interrupted. An early EOF
 ends the response with fewer bytes than its declared length. `HEAD`
 uses the file length without reading its body.
@@ -351,6 +351,10 @@ connection. The plan owns both values until it joins and returns
 accepted the full buffer. The caller can release or reuse the buffer on
 every path.
 
+For buffer sinks, `writer.send(bytes)` releases the buffer after join on
+every outcome and returns `(writer, status)`. File output advances its
+position by the bytes written, including during a partial write.
+
 ### Standalone sequencing
 
 Import `task::PlanOutput` to start a chain with `first.then(resume)` in the style
@@ -437,7 +441,8 @@ the destination contains the bytes written so far.
 `lib/tcp/` runs a loopback listener with one in-flight operation per
 connection. `Listener!::bind_connections(port, read_next)` calls
 `read_next(connection)` once per accepted connection. Import `task::PlanOutput`
-to use `.defer_tcp(...)` on a plan. The echo handler uses it to run both
+to use `.defer_tcp(...)` on a plan and `task::Sink` to use `.send(...)`. The
+echo handler uses them to run both
 `connection.next().within(Duration::from_secs(1))` and
 `connection.send(bytes).within(Duration::from_secs(1))` on the listener loop.
 `timed_read_outcome` folds the deadline into the joined `StreamOutcome`.

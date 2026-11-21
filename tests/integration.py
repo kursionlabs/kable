@@ -511,11 +511,25 @@ def check_file_copy(command, directory):
     finally:
         for fd in (started, notify, release, permit):
             os.close(fd)
+
+    truncated = directory / "large.bin"
+    truncated.write_bytes(payload)
+    truncated_copy = directory / "truncated copy"
+    read_gate = build_file_gate(directory)
+    with gated_file_process([*command, str(truncated), str(truncated_copy)], directory, read_gate,
+                            gates=8) as (process, started, permit):
+        wait_for_held_read(started, b"D")
+        prefix = payload[:4096]
+        truncated.write_bytes(prefix)
+        assert os.write(permit, b"R") == 1
+        assert process.wait(timeout=5) == 1
+        assert b"file-copy: source ended early" in process.stderr.read()
+        assert truncated_copy.read_bytes() == prefix
     print("Kable scoped file copy checks passed")
 
 
 @contextmanager
-def gated_file_server(command, directory, library, gates=1, reset_notify=None):
+def gated_file_process(command, directory, library, gates=1, reset_notify=None):
     started, notify = os.pipe()
     release, permit = os.pipe()
     env = os.environ | {
@@ -533,14 +547,20 @@ def gated_file_server(command, directory, library, gates=1, reset_notify=None):
         with subprocess.Popen(command, cwd=directory, env=env, pass_fds=fds,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
             try:
-                port = listening_port(process, b"Listening on http://127.0.0.1:")
-                yield process, port, started, permit
+                yield process, started, permit
             finally:
                 if process.poll() is None:
                     process.kill()
     finally:
         for fd in (started, notify, release, permit):
             os.close(fd)
+
+
+@contextmanager
+def gated_file_server(command, directory, library, gates=1, reset_notify=None):
+    with gated_file_process(command, directory, library, gates, reset_notify) as (process, started, permit):
+        port = listening_port(process, b"Listening on http://127.0.0.1:")
+        yield process, port, started, permit
 
 
 def wait_for_held_read(started, expected=b"A"):
