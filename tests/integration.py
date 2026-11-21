@@ -885,23 +885,25 @@ def check_tcp_write(command):
             assert client.recv(1) == b"\0", "scoped write did not start after read EOF"
             yield client
 
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
-        try:
-            port = listening_port(process, b"Listening on 127.0.0.1:")
-            size = b"16777216"
-            with pending_write(port):
-                read_log_until(process.stderr, b"timeout: cancelled " + size)
-            with pending_write(port) as client:
-                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-            read_log_until(process.stderr, b"completed: failed " + size)
-            with pending_write(port):
-                process.terminate()
-                read_log_until(process.stderr, b"shutdown: cancelled " + size)
-                assert process.wait(timeout=5) == 0, process.stderr.read()
-        finally:
-            if process.poll() is None:
-                process.kill()
-    print("Kable scoped TCP write checks passed")
+    for mode, args in (("write", []), ("send", ["--send"])):
+        prefix = mode.encode() + b" "
+        with subprocess.Popen([*command, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              bufsize=0) as process:
+            try:
+                port = listening_port(process, b"Listening on 127.0.0.1:")
+                with pending_write(port):
+                    read_log_until(process.stderr, prefix + b"timeout: cancelled\n")
+                with pending_write(port) as client:
+                    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                read_log_until(process.stderr, prefix + b"completed: failed\n")
+                with pending_write(port):
+                    process.terminate()
+                    read_log_until(process.stderr, prefix + b"shutdown: cancelled\n")
+                    assert process.wait(timeout=5) == 0, process.stderr.read()
+            finally:
+                if process.poll() is None:
+                    process.kill()
+        print(f"Kable scoped TCP {mode} checks passed")
 
 
 def check_tcp_session(command):

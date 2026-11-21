@@ -3,13 +3,15 @@ use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::mem::alloca;
 use std::option::{Option, Result};
-use std::process::trap;
+use std::process::{Args, trap};
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream};
 use tcp::{Action!, Connection!, Listener!};
 
-fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
-    let ((connection, bytes, completion), deadline) = result;
+const LARGE_WRITE: usize = 16 * 1024 * 1024;
+
+fn report_write(result: ((Connection!, Completion[()]), DeadlineStatus), consuming: bool) -> Action! {
+    let ((connection, completion), deadline) = result;
     let reason = match deadline {
         DeadlineStatus::Completed => "completed",
         DeadlineStatus::TimedOut => "timeout",
@@ -21,10 +23,17 @@ fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)
         Completion::Cancelled => "cancelled",
         Completion::Failed => "failed",
     };
+    let mode = if consuming { "send" } else { "write" };
+    eprint_buffer(f"{mode} {reason}: {status}\n");
+    connection.close()
+}
+
+fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
+    let ((connection, bytes, completion), deadline) = result;
     let length = &bytes.len();
     bytes.destroy();
-    eprint_buffer(f"{reason}: {status} {length}\n");
-    connection.close()
+    if length != LARGE_WRITE { trap(); }
+    report_write(((connection, completion), deadline), false)
 }
 
 fn discard_write(connection: Connection!) -> Connection! {
@@ -48,22 +57,26 @@ fn discard_write(connection: Connection!) -> Connection! {
     (unsafe *returned).unwrap()
 }
 
-fn send_after_eof(connection: Connection!) -> Action! {
+fn send_after_eof(connection: Connection!, consuming: bool) -> Action! {
     let connection = discard_write(connection);
     connection.send(Buffer!::new_with_cap(0)).defer_tcp(|outcome| {
         let (connection, status) = outcome;
         match status { Completion::Ready => (), _ => return connection.close() };
-        let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
+        let bytes = Buffer!::new_zeroed(LARGE_WRITE);
+        if consuming {
+            return connection.send(bytes).within(Duration::from_millis(1500))
+                .defer_tcp(|result| report_write(result, true));
+        }
         connection.write(bytes).within(Duration::from_millis(1500)).defer_tcp(|result| finish_write(result))
     })
 }
 
-fn serve(connection: Connection!) -> Action! {
+fn serve(connection: Connection!, consuming: bool) -> Action! {
     connection.next().defer_tcp(|result| {
         let (connection, outcome) = result;
         match outcome {
             Completion::Ready(chunk) => match chunk {
-                Option::None => send_after_eof(connection),
+                Option::None => send_after_eof(connection, consuming),
                 Option::Some(bytes) => { bytes.destroy(); connection.close() },
             },
             Completion::Cancelled | Completion::Failed => connection.close(),
@@ -71,8 +84,13 @@ fn serve(connection: Connection!) -> Action! {
     })
 }
 
-fn main() -> i32 {
-    let listener = match Listener!::bind_connections(0, serve) {
+fn serve_write(connection: Connection!) -> Action! { serve(connection, false) }
+
+fn serve_send(connection: Connection!) -> Action! { serve(connection, true) }
+
+fn main(args: Args) -> i32 {
+    let accept: fn(Connection!) -> Action! = if args.len() > 1 { serve_send } else { serve_write };
+    let listener = match Listener!::bind_connections(0, accept) {
         Result::Ok(listener) => listener,
         Result::Err(code) => return 1,
     };

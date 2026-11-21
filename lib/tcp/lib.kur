@@ -6,7 +6,7 @@ use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{Completion, Failure, PlanOutput, Sink, Stream};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream};
 use task::driver::Plan;
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -122,6 +122,43 @@ unsafe fn read_result(raw: *u8) -> Completion[Option[Buffer!]] {
         3u8 => Completion::Ready.(Option::None),
         _ => Completion::Failed.(Failure::Operation.(unsafe *status)),
     }
+}
+
+/// The result of a TCP read with a local deadline.
+exposed enum ReadOutcome! {
+    Chunk(Buffer!),
+    Eof,
+    TimedOut,
+    Cancelled,
+    Failed(Failure),
+}
+
+fn read_outcome(read: Completion[Option[Buffer!]]) -> ReadOutcome! {
+    match read {
+        Completion::Ready(chunk) => match chunk {
+            Option::Some(bytes) => ReadOutcome!::Chunk.(bytes),
+            Option::None => ReadOutcome!::Eof,
+        },
+        Completion::Cancelled => ReadOutcome!::Cancelled,
+        Completion::Failed(failure) => ReadOutcome!::Failed.(failure),
+    }
+}
+
+/// Combines a joined read and its deadline, releasing any chunk when interrupted.
+fn timed_read_outcome(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus))
+    -> (Connection!, ReadOutcome!) {
+    let ((connection, read), deadline) = result;
+    let interrupted = match deadline {
+        DeadlineStatus::Completed => return (connection, read_outcome(read)),
+        DeadlineStatus::TimedOut => ReadOutcome!::TimedOut,
+        DeadlineStatus::Cancelled => ReadOutcome!::Cancelled,
+        DeadlineStatus::Failed(failure) => ReadOutcome!::Failed.(failure),
+    };
+    match read_outcome(read) {
+        ReadOutcome!::Chunk(bytes) => bytes.destroy(),
+        _ => (),
+    };
+    (connection, interrupted)
 }
 
 enum Action! {

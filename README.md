@@ -438,6 +438,9 @@ connection. `Listener!::bind_connections(port, read_next)` calls
 to use `.defer_tcp(...)` on a plan. The echo handler uses it to run both
 `connection.next().within(Duration::from_secs(1))` and
 `connection.send(bytes).within(Duration::from_secs(1))` on the listener loop.
+`timed_read_outcome` combines a joined read and its deadline into a TCP
+`ReadOutcome!`. It releases any chunk if the deadline interrupts the read and
+reports timeout separately so the session can retry an idle read.
 `send` releases the buffer after the write joins and hands back the connection
 and completion. The echo resumes reading after a send succeeds within its deadline.
 
