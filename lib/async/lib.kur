@@ -1,13 +1,14 @@
 //! Structured waits, joins, and bounded file operations on libuv.
 use package::host;
 use package::file_request::{
-    FileRequest!, collect_descriptor, collect_read, kable_file_chunk, kable_file_new, kable_file_write_chunk,
+    FileRequest!, collect_chunk_count, collect_descriptor, collect_read, kable_file_chunk, kable_file_new,
+    kable_file_write_chunk,
 };
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::{Option, Result};
-use std::ptr::is_null;
+use std::ptr::{is_null, null};
 use std::slice::ReadBytes;
 use std::time::Duration;
 use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome};
@@ -69,7 +70,7 @@ struct FilePathPlan! {
 struct OpenedFile! { fd: i32, length: u64 }
 struct OutputFile! { fd: i32, position: u64 }
 struct WriteChunk! { file: OutputFile!, offset: u64, bytes: Buffer!, request: FileRequest! }
-struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, request: FileRequest! }
+struct ReadChunk! { file: OpenedFile!, offset: u64, limit: usize, bytes: Option[Buffer!], request: FileRequest! }
 struct FileChunks! { file: OpenedFile!, offset: u64, remaining: u64 }
 
 // Matches KableFileMode in native/file.h.
@@ -166,7 +167,7 @@ impl OpenedFile! {
         let length = &self.len();
         let remaining = if offset < length { length - offset } else { 0 };
         let limit = if remaining < limit as u64 { remaining as usize } else { limit };
-        ReadChunk!.{ file: self, offset, limit, request: FileRequest!::empty() }
+        ReadChunk!.{ file: self, offset, limit, bytes: Option::None, request: FileRequest!::empty() }
     }
 
     /// Owns the file and reads up to length bytes starting at offset.
@@ -411,17 +412,46 @@ instance PlanOutput[ReadChunk! -> (OpenedFile!, Completion[Buffer!])] {}
 
 instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     fn stage(&task: ReadChunk!, &scope: Scope!) -> Option[usize] {
-        let { file, offset, limit, request } = task;
+        let { file, offset, limit, bytes, request } = task;
         let { fd, length } = file;
-        let raw = unsafe kable_file_chunk(fd, offset, limit);
-        let id = unsafe &request.register(&scope, raw);
-        task = ReadChunk!.{ file: OpenedFile!.{ fd, length }, offset, limit, request };
+        let (id, bytes) = match bytes {
+            Option::Some(bytes) => (Option::None, Option::Some.(bytes)),
+            Option::None => {
+                let (bytes, dest) = if limit > isize::MAX as usize {
+                    (Option::None, null())
+                } else {
+                    match Buffer!::try_new_with_cap(limit) {
+                        Result::Ok(bytes) => {
+                            let dest = unsafe &bytes.tail_ptr();
+                            (Option::Some.(bytes), dest)
+                        },
+                        Result::Err(_) => (Option::None, null()),
+                    }
+                };
+                let raw = unsafe kable_file_chunk(fd, offset, dest, limit);
+                let id = unsafe &request.register(&scope, raw);
+                (id, bytes)
+            },
+        };
+        task = ReadChunk!.{ file: OpenedFile!.{ fd, length }, offset, limit, bytes, request };
         id
     }
 
     fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
-        let { file, offset, limit, request } = task;
-        (file, unsafe request.collect(&scope, collect_read))
+        let { file, offset, limit, bytes, request } = task;
+        let outcome = match unsafe request.collect(&scope, collect_chunk_count) {
+            Completion::Ready(count) => {
+                let outcome = match bytes {
+                    Option::Some(bytes) => Completion::Ready.(unsafe bytes.commit(count)),
+                    Option::None => Completion::Failed.(Failure::InvalidResult),
+                };
+                return (file, outcome);
+            },
+            Completion::Cancelled => Completion::Cancelled,
+            Completion::Failed(failure) => Completion::Failed.(failure),
+        };
+        bytes.map(|buffer| buffer.destroy());
+        (file, outcome)
     }
 }
 

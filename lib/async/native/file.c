@@ -24,7 +24,10 @@ typedef struct {
     uint8_t *context;
     const char *path;
     uint8_t *data;
-    const uint8_t *input;
+    union {
+        uint8_t *output;
+        const uint8_t *input;
+    };
     size_t len;
     size_t capacity;
     size_t limit;
@@ -57,11 +60,12 @@ uint8_t *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t m
     return (uint8_t *)file;
 }
 
-uint8_t *kable_file_chunk(int32_t fd, uint64_t offset, size_t limit) {
+uint8_t *kable_file_chunk(int32_t fd, uint64_t offset, uint8_t *bytes, size_t limit) {
     KableFile *file = new_file(limit, READ_CHUNK);
     if (file) {
         file->fd = fd;
         file->offset = offset;
+        file->output = bytes;
     }
     return (uint8_t *)file;
 }
@@ -135,14 +139,13 @@ static int open_file(KableFile *file) {
 #endif
 }
 
-/* The plan owns the descriptor until the worker retires. */
+/* The plan owns the descriptor and destination until the worker retires. */
 static int read_chunk(KableFile *file) {
-    if (!file->limit) return 0;
     if (file->limit > SSIZE_MAX) return UV_EINVAL;
-    file->data = malloc(file->limit);
-    if (!file->data) return UV_ENOMEM;
+    if (!file->output) return UV_ENOMEM;
+    if (!file->limit) return 0;
     do {
-        ssize_t count = pread(file->fd, file->data, file->limit, (off_t)file->offset);
+        ssize_t count = pread(file->fd, file->output, file->limit, (off_t)file->offset);
         if (count >= 0) {
             file->len = (size_t)count;
             return 0;
@@ -241,7 +244,7 @@ int32_t kable_file_result(uint8_t *raw, uint8_t **data, size_t *len) {
     KableFile *file = (KableFile *)raw;
     if (!file || file->request.data) return UV_EINVAL;
     if (file->status == 0) {
-        *data = file->data;
+        if (data) *data = file->data;
         *len = file->len;
     }
     return file->status;

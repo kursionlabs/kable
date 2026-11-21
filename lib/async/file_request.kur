@@ -7,7 +7,7 @@ use std::ptr::{is_null, null};
 use task::{Completion, Failure};
 
 extern "C" fn kable_file_new(path: *u8, len: usize, limit: usize, mode: u8) -> *u8;
-extern "C" fn kable_file_chunk(fd: i32, offset: u64, limit: usize) -> *u8;
+extern "C" fn kable_file_chunk(fd: i32, offset: u64, bytes: *u8, limit: usize) -> *u8;
 extern "C" fn kable_file_write_chunk(fd: i32, offset: u64, bytes: *u8, len: usize) -> *u8;
 extern "C" fn kable_file_start(request: *u8, loop: *u8,
     done: unsafe fn(*u8) -> (), context: *u8) -> i32;
@@ -78,6 +78,13 @@ unsafe fn collect_read(request: *u8) -> Completion[Buffer!] {
     let bytes = unsafe *data;
     let len = unsafe *size;
     Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+}
+
+unsafe fn collect_chunk_count(request: *u8) -> Completion[usize] {
+    let size = unsafe alloca[usize]();
+    let code = unsafe kable_file_result(request, null(), size);
+    if code < 0 { Completion::Failed.(Failure::Operation.(code)) }
+    else { Completion::Ready.(unsafe *size) }
 }
 
 forall File, Env where Copy[Env].
