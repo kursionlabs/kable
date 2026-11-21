@@ -16,7 +16,7 @@ fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
             eprint_buffer(f"async-read: first file failed ({failure})\n");
             return 1;
         },
-        Completion::Cancelled => { right.discard(Buffer!::destroy); return 1; },
+        Completion::TimedOut | Completion::Cancelled => { right.discard(Buffer!::destroy); return 1; },
     };
     match right {
         Completion::Ready(second) => {
@@ -27,7 +27,7 @@ fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
             eprint_buffer(f"async-read: second file failed ({failure})\n");
             1
         },
-        Completion::Cancelled => { first.destroy(); 1 },
+        Completion::TimedOut | Completion::Cancelled => { first.destroy(); 1 },
     }
 }
 
@@ -58,7 +58,7 @@ fn main(args: Args) -> i32 {
     let (left, right, status) = run_with_deadline(plan, deadline);
     match status {
         Completion::Ready => print_pair(left, right),
-        Completion::Cancelled => {
+        Completion::TimedOut | Completion::Cancelled => {
             left.discard(Buffer!::destroy);
             right.discard(Buffer!::destroy);
             eprint_buffer(f"async-read: deadline expired\n");

@@ -40,6 +40,7 @@ fn serve(request: Request!) -> Action! {
 fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, 'static]) -> Action! {
     let status = match outcome {
         Completion::Ready(file) => return file_reply(file, content_type),
+        Completion::TimedOut => 504,
         Completion::Cancelled => 408,
         Completion::Failed(failure) => match failure.file_error_kind() {
             FileErrorKind::NotFound | FileErrorKind::NotADirectory | FileErrorKind::SymlinkLoop

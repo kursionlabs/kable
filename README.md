@@ -272,7 +272,7 @@ runs and fails reports `Operation(code)`. Both preserve the backend code.
 a missing or unexpected driver result.
 
 `completion.and_then(next)` passes the owned value of `Ready` to `next`,
-which returns another `Completion`. Cancellation and failure pass through
+which returns another `Completion`. Timeout, cancellation, and failure pass through
 with the callback skipped, so its captures must be copyable.
 
 `outcome.discard(release)` consumes a `Completion` or `StreamOutcome` and
@@ -362,6 +362,9 @@ every path.
 For buffer sinks, `writer.send(bytes)` releases the buffer after join on
 every outcome and returns `(writer, status)`. File output advances its
 position by the bytes written, including during a partial write.
+`writer.send_within(bytes, duration)` uses the same result shape and reports
+`Completion::TimedOut` if its local timer wins. Enclosing cancellation still
+reports `Completion::Cancelled`.
 
 ### Standalone sequencing
 
@@ -442,8 +445,9 @@ includes any bytes accepted before cancellation or failure, and the
 sequential position stays the same. [Linux positioned I/O manual](https://man7.org/linux/man-pages/man2/pwrite.2.html)
 
 The destination must be a new path. Pass an optional third argument to set
-a deadline in milliseconds for each write. If a copy fails or is cancelled,
-the destination contains the bytes written so far.
+a parent deadline in milliseconds for each write. A zero budget expires before
+the write starts. If a copy fails or times out, the destination contains the
+bytes written so far.
 
 ## Scoped TCP reads and writes
 
@@ -453,13 +457,13 @@ connection. `Listener!::bind_connections(port, read_next)` calls
 to use `.defer_tcp(...)` on a plan and `task::Sink` to use `.send(...)`. The
 echo handler uses them to run both
 `connection.next_within(Duration::from_secs(1))` and
-`connection.send(bytes).within(Duration::from_secs(1))` on the listener loop.
+`connection.send_within(bytes, Duration::from_secs(1))` on the listener loop.
 `next_within` reports `StreamOutcome::TimedOut` so the session can retry an
 idle read.
 `send` releases the buffer after the write joins and hands back the connection
 and completion. The echo resumes reading after a send succeeds within its deadline.
 
-Omitting `.within(...)` gives the write the connection's lifetime. The
+Use `.send(bytes)` to give the write the connection's lifetime. The
 continuation can hand the connection back to `read_next` after the write joins.
 
 ```kursal

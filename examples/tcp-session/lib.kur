@@ -105,7 +105,7 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
         let (connection, status) = result;
         match status {
             Completion::Ready => read_line(connection, session),
-            Completion::Cancelled | Completion::Failed => close_session(connection, session),
+            _ => close_session(connection, session),
         }
     }, discard_send)
 }

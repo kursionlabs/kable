@@ -19,7 +19,7 @@ fn serve() -> Action! {
 fn read_footer(outcome: Completion[Buffer!]) -> Action! {
     let first = match outcome {
         Completion::Ready(first) => first,
-        Completion::Cancelled | Completion::Failed => return Response!::rejected(500).reply(),
+        _ => return Response!::rejected(500).reply(),
     };
     let path = footer_path(&first);
     let access = StaticRead::new();

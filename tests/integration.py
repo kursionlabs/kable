@@ -521,7 +521,7 @@ def check_file_copy(command, directory):
 
     cancelled = directory / "cancelled copy"
     result = copy(source, cancelled, "0")
-    assert result.returncode == 1 and b"write cancelled after 0 bytes" in result.stderr, result.stderr
+    assert result.returncode == 1 and b"write timed out after 0 bytes" in result.stderr, result.stderr
     assert cancelled.read_bytes() == b""
 
     started, notify = os.pipe()
@@ -538,7 +538,7 @@ def check_file_copy(command, directory):
                 assert partial.read_bytes() == payload[:4093]
                 assert os.write(permit, b"R") == 1
                 assert process.wait(timeout=5) == 1
-                assert b"write cancelled after 4093 bytes" in process.stderr.read()
+                assert b"write timed out after 4093 bytes" in process.stderr.read()
                 assert partial.read_bytes() == payload[:4093]
             finally:
                 if process.poll() is None:
@@ -956,20 +956,23 @@ def check_tcp_write(command):
             assert client.recv(1) == b"\0", "scoped write did not start after read EOF"
             yield client
 
-    for mode, args in (("write", []), ("send", ["--send"])):
-        prefix = mode.encode() + b" "
+    cases = (
+        ("write", [], b"write timeout: cancelled\n", b"write completed: failed\n", b"write shutdown: cancelled\n"),
+        ("send", ["--send"], b"send timed out\n", b"send failed\n", b"send cancelled\n"),
+    )
+    for mode, args, timed_out, failed, cancelled in cases:
         with subprocess.Popen([*command, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               bufsize=0) as process:
             try:
                 port = listening_port(process, b"Listening on 127.0.0.1:")
                 with pending_write(port):
-                    read_log_until(process.stderr, prefix + b"timeout: cancelled\n")
+                    read_log_until(process.stderr, timed_out)
                 with pending_write(port) as client:
                     client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-                read_log_until(process.stderr, prefix + b"completed: failed\n")
+                read_log_until(process.stderr, failed)
                 with pending_write(port):
                     process.terminate()
-                    read_log_until(process.stderr, prefix + b"shutdown: cancelled\n")
+                    read_log_until(process.stderr, cancelled)
                     assert process.wait(timeout=5) == 0, process.stderr.read()
             finally:
                 if process.poll() is None:

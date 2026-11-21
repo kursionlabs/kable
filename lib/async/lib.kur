@@ -221,6 +221,7 @@ instance Stream[FileChunks! ->
                     };
                     (item, count)
                 },
+                Completion::TimedOut => (StreamOutcome::TimedOut, 0),
                 Completion::Cancelled => (StreamOutcome::Cancelled, 0),
                 Completion::Failed(failure) => (StreamOutcome::Failed.(failure), 0),
             };
@@ -447,6 +448,7 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
                 };
                 return (file, outcome);
             },
+            Completion::TimedOut => Completion::TimedOut,
             Completion::Cancelled => Completion::Cancelled,
             Completion::Failed(failure) => Completion::Failed.(failure),
         };

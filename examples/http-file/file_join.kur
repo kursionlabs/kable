@@ -23,6 +23,7 @@ fn joined_response(files: (Completion[Buffer!], Completion[Buffer!], Completion[
     let (first, second, status) = files;
     match status {
         Completion::Ready => file_response(first, second),
+        Completion::TimedOut => reject_files(first, second, 504),
         Completion::Cancelled => reject_files(first, second, 408),
         Completion::Failed => reject_files(first, second, 500),
     }
@@ -31,6 +32,7 @@ fn joined_response(files: (Completion[Buffer!], Completion[Buffer!], Completion[
 fn file_response(first: Completion[Buffer!], second: Completion[Buffer!]) -> Response! {
     match first {
         Completion::Ready(left) => append_file(left, second),
+        Completion::TimedOut => { discard_file(second); Response!::rejected(504) },
         Completion::Cancelled => { discard_file(second); Response!::rejected(408) },
         Completion::Failed(code) => { discard_file(second); Response!::rejected(500) },
     }

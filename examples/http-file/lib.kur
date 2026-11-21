@@ -29,6 +29,7 @@ fn close_after_read() -> Action! {
 fn file_response(outcome: Completion[Buffer!]) -> Response! {
     match outcome {
         Completion::Ready(bytes) => Response!::ok(bytes),
+        Completion::TimedOut => Response!::rejected(504),
         Completion::Cancelled => {
             eprint_buffer(f"File request cancelled.\n");
             Response!::rejected(408)
@@ -45,13 +46,14 @@ fn discard_plain_file(outcome: Completion[Buffer!]) {
     match outcome {
         Completion::Ready(bytes) => bytes.destroy(),
         Completion::Cancelled => { eprint_buffer(f"File request cancelled.\n"); },
-        Completion::Failed => (),
+        Completion::TimedOut | Completion::Failed => (),
     }
 }
 
 fn append_file(first: Buffer!, second: Completion[Buffer!]) -> Response! {
     match second {
         Completion::Ready(bytes) => Response!::ok(first.push_buffer(bytes)),
+        Completion::TimedOut => { first.destroy(); Response!::rejected(504) },
         Completion::Cancelled => { first.destroy(); Response!::rejected(408) },
         Completion::Failed(code) => { first.destroy(); Response!::rejected(500) },
     }

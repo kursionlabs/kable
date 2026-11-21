@@ -129,7 +129,7 @@ fn check_one_shot_deadline(budget: Duration, init_time: Duration, should_finish:
     let expected = match status {
         Completion::Ready => should_finish,
         Completion::Cancelled => !should_finish,
-        Completion::Failed => false,
+        _ => false,
     };
     loop_matched && expected
 }
@@ -337,7 +337,7 @@ fn check_file_fault(fault: u8) -> bool {
             Failure::Startup(code) => code == expected,
             _ => false,
         },
-        Completion::Cancelled => false,
+        _ => false,
     };
     let released_once = (unsafe kable_test_file_fault_end()) != 0;
     correct && released_once
@@ -351,7 +351,7 @@ fn check_file_path() -> bool {
             _ => false,
         },
         Completion::Ready(file) => { file.close(); false },
-        Completion::Cancelled => false,
+        _ => false,
     };
 
     let plan = open_file(&access, "/proc/self/exe");
@@ -362,7 +362,7 @@ fn check_file_path() -> bool {
             _ => false,
         },
         Completion::Ready(file) => { file.close(); false },
-        Completion::Cancelled => false,
+        _ => false,
     };
     let released_once = (unsafe kable_test_file_fault_end()) != 0;
     rejected_nul && rejected_registration && released_once

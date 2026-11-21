@@ -80,7 +80,7 @@ fn check_chain(budget: Option[Duration], should_finish: bool) {
             let ready = match status {
                 Completion::Ready => true,
                 Completion::Cancelled => false,
-                Completion::Failed => trap(),
+                _ => trap(),
             };
             if length != 11usize || ready != should_finish { trap(); }
         },

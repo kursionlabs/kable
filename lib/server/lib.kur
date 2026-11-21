@@ -71,6 +71,7 @@ impl Response! {
         sleep(duration).respond_with_owned(self, |response, status| {
             let code = match status {
                 Completion::Ready => return response.reply(),
+                Completion::TimedOut => 504,
                 Completion::Cancelled => 408,
                 Completion::Failed => 500,
             };
@@ -228,7 +229,7 @@ unsafe fn receive(context: *u8, client: *u8) -> i32 {
         if (flags & host::PLAN_ACTIVE) == 0 { return -1; }
         let result = match completion {
             Completion::Ready => unsafe kable_parse_input(client),
-            Completion::Cancelled => 408,
+            Completion::TimedOut | Completion::Cancelled => 408,
             Completion::Failed => return -1,
         };
         if result == REQUEST_MORE { return unsafe receive(context, client); }

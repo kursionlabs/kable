@@ -10,8 +10,11 @@ use tcp::{Action!, Connection!, Listener!};
 
 const LARGE_WRITE: usize = 16 * 1024 * 1024;
 
-fn report_write(result: ((Connection!, Completion[()]), DeadlineStatus), consuming: bool) -> Action! {
-    let ((connection, completion), deadline) = result;
+fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
+    let ((connection, bytes, completion), deadline) = result;
+    let length = &bytes.len();
+    bytes.destroy();
+    if length != LARGE_WRITE { trap(); }
     let reason = match deadline {
         DeadlineStatus::Completed => "completed",
         DeadlineStatus::TimedOut => "timeout",
@@ -20,20 +23,24 @@ fn report_write(result: ((Connection!, Completion[()]), DeadlineStatus), consumi
     };
     let status = match completion {
         Completion::Ready => "written",
+        Completion::TimedOut => "timed out",
         Completion::Cancelled => "cancelled",
         Completion::Failed => "failed",
     };
-    let mode = if consuming { "send" } else { "write" };
-    eprint_buffer(f"{mode} {reason}: {status}\n");
+    eprint_buffer(f"write {reason}: {status}\n");
     connection.close()
 }
 
-fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
-    let ((connection, bytes, completion), deadline) = result;
-    let length = &bytes.len();
-    bytes.destroy();
-    if length != LARGE_WRITE { trap(); }
-    report_write(((connection, completion), deadline), false)
+fn finish_send(result: (Connection!, Completion[()])) -> Action! {
+    let (connection, completion) = result;
+    let status = match completion {
+        Completion::Ready => "written",
+        Completion::TimedOut => "timed out",
+        Completion::Cancelled => "cancelled",
+        Completion::Failed => "failed",
+    };
+    eprint_buffer(f"send {status}\n");
+    connection.close()
 }
 
 fn discard_write(connection: Connection!) -> Connection! {
@@ -64,8 +71,8 @@ fn send_after_eof(connection: Connection!, consuming: bool) -> Action! {
         match status { Completion::Ready => (), _ => return connection.close() };
         let bytes = Buffer!::new_zeroed(LARGE_WRITE);
         if consuming {
-            return connection.send(bytes).within(Duration::from_millis(1500))
-                .defer_tcp(|result| report_write(result, true));
+            return connection.send_within(bytes, Duration::from_millis(1500))
+                .defer_tcp(|result| finish_send(result));
         }
         connection.write(bytes).within(Duration::from_millis(1500)).defer_tcp(|result| finish_write(result))
     })

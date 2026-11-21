@@ -29,9 +29,9 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
         destination = file;
         match outcome {
             Completion::Ready => (),
-            Completion::Cancelled => {
+            Completion::TimedOut | Completion::Cancelled => {
                 let count = &destination.position();
-                eprint_buffer(f"file-copy: write cancelled after {count} bytes\n");
+                eprint_buffer(f"file-copy: write timed out after {count} bytes\n");
                 return false;
             },
             Completion::Failed(failure) => {
@@ -48,12 +48,12 @@ fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'st
     let access = StaticRead::new();
     let input = match &runner.run(open_file(&access, source)) {
         Completion::Ready(file) => file,
-        Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
+        Completion::TimedOut | Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
         Completion::Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
     };
     let destination = match &runner.run(create_file(&access, destination)) {
         Completion::Ready(file) => file,
-        Completion::Cancelled => {
+        Completion::TimedOut | Completion::Cancelled => {
             input.close();
             eprint_buffer(f"file-copy: destination creation cancelled\n");
             return 1;

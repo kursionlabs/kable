@@ -75,7 +75,7 @@ fn label(bytes: Buffer!, suffix: Buffer!, status: Completion[()]) -> (Buffer!, b
     match status {
         Completion::Ready => (bytes.push_buffer(suffix), true),
         Completion::Cancelled => (bytes.push_buffer(suffix), false),
-        Completion::Failed => { bytes.destroy(); suffix.destroy(); trap() },
+        _ => { bytes.destroy(); suffix.destroy(); trap() },
     }
 }
 
