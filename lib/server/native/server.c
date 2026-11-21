@@ -15,13 +15,11 @@ enum {
     READ_TIMEOUT = 10000
 };
 
-typedef int32_t (*respond_fn)(uint8_t *, uint8_t *, uint16_t, uint8_t,
-    uint8_t, uint8_t *, size_t, uint8_t *, size_t);
-typedef int32_t (*receive_fn)(uint8_t *);
+typedef int32_t (*receive_fn)(uint8_t *context, uint8_t *client);
 typedef uint16_t (*validate_head_fn)(uint8_t, uint8_t, uint32_t, uint8_t, uint8_t,
     uint64_t, uint64_t, uint8_t *, size_t, size_t);
 
-/* Values shared with respond in server.kur. */
+/* Method values returned by the request view. */
 enum { METHOD_OTHER, METHOD_GET, METHOD_HEAD, METHOD_POST };
 
 /* Read outcomes below the HTTP rejection codes returned to receive. */
@@ -37,7 +35,6 @@ typedef struct {
     uint8_t *listener;
     validate_head_fn validate_head;
     receive_fn receive;
-    respond_fn respond;
     uint8_t *context;
 } Server;
 
@@ -173,7 +170,8 @@ static const llhttp_settings_t settings = {
     .on_message_complete = on_complete,
 };
 
-static void release_request(Client *client) {
+void kable_release_request(uint8_t *raw) {
+    Client *client = (Client *)raw;
     free(client->head.data);
     free(client->body.data);
     client->head = (Bytes){0};
@@ -182,9 +180,8 @@ static void release_request(Client *client) {
 }
 
 static void destroy_client(uint8_t *attachment) {
-    Client *client = (Client *)attachment;
-    release_request(client);
-    free(client);
+    kable_release_request(attachment);
+    free(attachment);
 }
 
 /* Borrows the bounded Range value from the live client, or exposes zero bytes. */
@@ -217,21 +214,22 @@ int32_t kable_receive_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_
         scope, root, plan, finish, 0, raw, client->deadline);
 }
 
-int32_t kable_reply(uint8_t *raw, uint16_t status) {
+/* Lends the target and body until release. Range metadata stays on the client. */
+uint8_t kable_request_view(uint8_t *raw, uint8_t *http10,
+    uint8_t **target, size_t *target_len, uint8_t **body, size_t *body_len) {
     Client *client = (Client *)raw;
-    uint8_t method = METHOD_OTHER;
-    switch (llhttp_get_method(&client->parser)) {
-    case HTTP_GET: method = METHOD_GET; break;
-    case HTTP_HEAD: method = METHOD_HEAD; break;
-    case HTTP_POST: method = METHOD_POST; break;
-    }
-    uint8_t http10 = llhttp_get_http_major(&client->parser) == 1
+    *http10 = llhttp_get_http_major(&client->parser) == 1
         && llhttp_get_http_minor(&client->parser) == 0;
-    int result = client->server->respond(client->server->context, (uint8_t *)client,
-        status, method, http10, client->head.data, client->target_len,
-        client->body.data, client->body.len);
-    release_request(client);
-    return result;
+    *target = client->head.data;
+    *target_len = client->target_len;
+    *body = client->body.data;
+    *body_len = client->body.len;
+    switch (llhttp_get_method(&client->parser)) {
+    case HTTP_GET: return METHOD_GET;
+    case HTTP_HEAD: return METHOD_HEAD;
+    case HTTP_POST: return METHOD_POST;
+    default: return METHOD_OTHER;
+    }
 }
 
 static uint16_t consume_request(Client *client, const char *data, size_t remaining) {
@@ -270,7 +268,7 @@ static int32_t accept_request(uint8_t *context, uint8_t *connection) {
     client->parser.data = client;
     client->deadline = kable_now_millis() + READ_TIMEOUT;
     kable_tcp_attach(connection, (uint8_t *)client, destroy_client);
-    return client->server->receive((uint8_t *)client);
+    return client->server->receive(client->server->context, (uint8_t *)client);
 }
 
 uint16_t kable_parse_input(uint8_t *raw) {
@@ -283,7 +281,7 @@ uint16_t kable_parse_input(uint8_t *raw) {
 }
 
 uint8_t *kable_bind(uint16_t port, validate_head_fn validate_head, receive_fn receive,
-    respond_fn respond, uint8_t *context, int32_t *error) {
+    uint8_t *context, int32_t *error) {
     Server *server = calloc(1, sizeof *server);
     if (!server) {
         *error = UV_ENOMEM;
@@ -291,7 +289,6 @@ uint8_t *kable_bind(uint16_t port, validate_head_fn validate_head, receive_fn re
     }
     server->validate_head = validate_head;
     server->receive = receive;
-    server->respond = respond;
     server->context = context;
     server->listener = kable_tcp_bind(port, (uint8_t *)server, accept_request, error);
     if (!server->listener) {

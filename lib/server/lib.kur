@@ -20,8 +20,7 @@ use thunk::Thunk!;
 
 extern "C" fn kable_bind(port: u16,
     validate: unsafe fn(u8, u8, u32, u8, u8, u64, u64, *u8, usize, usize) -> u16,
-    receive: unsafe fn(*u8) -> i32,
-    callback: unsafe fn(*u8, *u8, u16, u8, u8, *u8, usize, *u8, usize) -> i32,
+    receive: unsafe fn(*u8, *u8) -> i32,
     context: *u8, error: *i32) -> *u8;
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_range_header(client: *u8, length: *usize) -> *u8;
@@ -31,7 +30,9 @@ extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
 extern "C" fn kable_receive_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_parse_input(client: *u8) -> u16;
-extern "C" fn kable_reply(client: *u8, status: u16) -> i32;
+extern "C" fn kable_request_view(client: *u8, http10: *u8,
+    target: *(*u8), target_len: *usize, body: *(*u8), body_len: *usize) -> u8;
+extern "C" fn kable_release_request(client: *u8) -> ();
 extern "C" fn kable_run(server: *u8) -> i32;
 extern "C" fn kable_stop(server: *u8) -> ();
 
@@ -221,7 +222,7 @@ unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connec
     status
 }
 
-unsafe fn receive(client: *u8) -> i32 {
+unsafe fn receive(context: *u8, client: *u8) -> i32 {
     let raw = unsafe kable_client_connection(client);
     let plan = prepare_hosted(unsafe host::read(raw), |completion, client, flags| {
         if (flags & host::PLAN_ACTIVE) == 0 { return -1; }
@@ -230,33 +231,42 @@ unsafe fn receive(client: *u8) -> i32 {
             Completion::Cancelled => 408,
             Completion::Failed => return -1,
         };
-        if result == REQUEST_MORE { return unsafe receive(client); }
+        if result == REQUEST_MORE { return unsafe receive(context, client); }
         if result == REQUEST_CLOSED { return -1; }
         let status = if result == REQUEST_TRUNCATED { 400 } else { result };
-        unsafe kable_reply(client, status)
+        unsafe respond(context, client, status)
     });
     let submission = unsafe plan.submit(client, 0, kable_receive_schedule);
     submission.unwrap_or_else(|rejection| rejection.scheduler_error)
 }
 
-unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8,
-    target: *u8, target_len: usize, body: *u8, body_len: usize) -> i32 {
-    let head = method == 2u8;
-    let http10 = http10 != 0u8;
-    if status != 0u16 {
+unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
+    let version = unsafe alloca[u8]();
+    let target = unsafe alloca[*u8]();
+    let target_len = unsafe alloca[usize]();
+    let body = unsafe alloca[*u8]();
+    let body_len = unsafe alloca[usize]();
+    let method = unsafe kable_request_view(client, version, target, target_len, body, body_len);
+    let head = method == 2;
+    let http10 = (unsafe *version) != 0;
+    if status != 0 {
+        unsafe kable_release_request(client);
         return unsafe write_wire(client, Response!::rejected(status).encode(head, http10));
     }
     let method = match method {
-        1u8 => Method::Get,
-        2u8 => Method::Head,
-        3u8 => Method::Post,
+        1 => Method::Get,
+        2 => Method::Head,
+        3 => Method::Post,
         _ => Method::Other,
     };
+    let target_len = unsafe *target_len;
+    let body_len = unsafe *body_len;
     let request = Request!.{
         method,
-        target: unsafe Buffer!::new_with_cap(target_len).push_n(target, target_len),
-        body: unsafe Buffer!::new_with_cap(body_len).push_n(body, body_len),
+        target: unsafe Buffer!::new_with_cap(target_len).push_n(unsafe *target, target_len),
+        body: unsafe Buffer!::new_with_cap(body_len).push_n(unsafe *body, body_len),
     };
+    unsafe kable_release_request(client);
     let { call } = unsafe *(unsafe (context as *Handler));
     unsafe apply(client, call(request), head, http10)
 }
@@ -270,7 +280,7 @@ impl Server! {
         unsafe *(unsafe (context as *Handler)) = Handler.{ call };
 
         let error = unsafe alloca[i32]();
-        let raw = unsafe kable_bind(port, validate_head, receive, respond, context, error);
+        let raw = unsafe kable_bind(port, validate_head, receive, context, error);
         if is_null(raw) {
             HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
             Result::Err.(unsafe *error)
