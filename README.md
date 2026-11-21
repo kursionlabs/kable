@@ -173,13 +173,12 @@ the footer read joins, the builder hands the first buffer and the footer outcome
 to `respond` or to `discard` if the request ends or a local deadline wins.
 [Dependent file handler](examples/http-file/file_sequence.kur)
 
-### Custom request continuations
+### Close without a reply
 
-Use `plan.defer(|outcome, state| ...)` to act directly on `RequestState`.
-The continuation receives the owned outcome after the plan joins.
-An active request can return `Some(action)` to continue or `None` to close
-the connection without a reply. On cancellation, release the owned values
-and return `None`.
+Return `Action!::Close` from a handler or a reply callback to close the
+connection without sending an HTTP response. In the file example, `/close`
+closes immediately and `/close-after-read` closes after the read joins and
+the callback releases its outcome.
 
 ## Delayed and suspended computations
 

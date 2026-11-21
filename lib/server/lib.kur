@@ -24,6 +24,7 @@ extern "C" fn kable_bind(port: u16,
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_range_header(client: *u8, length: *usize) -> *u8;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
+extern "C" fn kable_tcp_close(connection: *u8) -> ();
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_run(server: *u8) -> i32;
@@ -33,6 +34,8 @@ exposed enum Action! {
     Reply(Response!),
     Deferred(HostedPlan!),
     File(FileReply!),
+    /// Closes the connection without sending an HTTP response.
+    Close,
 }
 
 struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
@@ -72,8 +75,6 @@ fn discard_delayed_response(response: Response!, status: Completion[()]) { respo
 
 struct Handler { call: fn(Request!) -> Action! }
 
-exposed enum RequestState { Active, Cancelled }
-
 forall Task, State, Output, Env.
 struct ReplyBuilder! {
     task: Task,
@@ -99,28 +100,6 @@ impl Task {
         discard: fn(State, Output) -> ()) -> ReplyBuilder![Task, State, Output, Env] {
         ReplyBuilder!.{ task: self, handoff: thunk::defer(state, respond, discard), timeout: Option::None }
     }
-
-    /// Runs once after the plan joins, including when the request has ended.
-    /// Return None when the request is cancelled or should close without a reply.
-    forall Env where Plan[Task, Scope! -> Output].
-    fn defer(self, finish: closure[Env](Output, RequestState) -> Option[Action!]) -> Action! {
-        let hosted = prepare_hosted(self, |outcome, client, flags| {
-            let active = (flags & RESPONSE_ACTIVE) != 0;
-            let state = if active { RequestState::Active } else { RequestState::Cancelled };
-            match finish(outcome, state) {
-                Option::Some(action) => {
-                    if active {
-                        unsafe apply(client, action, (flags & RESPONSE_HEAD) != 0, (flags & RESPONSE_HTTP10) != 0)
-                    } else {
-                        unsafe discard_action(client, action);
-                        0
-                    }
-                },
-                Option::None => -1,
-            }
-        });
-        Action!::Deferred.(hosted)
-    }
 }
 
 forall Output.
@@ -134,51 +113,48 @@ impl ReplyBuilder![Task, State, Output, Env] {
         ReplyBuilder!.{ timeout: Option::Some.(duration), ..rest }
     }
 
-    /// Returns an action that replies after the plan joins.
+    /// Returns a deferred action that runs after the plan joins.
     fn reply(self) -> Action! {
         let { task, handoff, timeout } = self;
-        match timeout {
-            Option::Some(duration) => task.within(duration).defer(|result, state| {
+        let hosted = match timeout {
+            Option::Some(duration) => prepare_hosted(task.within(duration), |result, client, flags| {
                 let (outcome, deadline) = result;
-                finish_reply(handoff, outcome, state, deadline)
+                unsafe finish_reply(handoff, outcome, deadline, client, flags)
             }),
-            Option::None => task.defer(|outcome, state| {
-                finish_reply(handoff, outcome, state, DeadlineStatus::Completed)
+            Option::None => prepare_hosted(task, |outcome, client, flags| {
+                unsafe finish_reply(handoff, outcome, DeadlineStatus::Completed, client, flags)
             }),
-        }
+        };
+        Action!::Deferred.(hosted)
     }
 }
 
 forall State, Output, Env where Copy[Env].
-fn finish_reply(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
-    outcome: Output, state: RequestState, deadline: DeadlineStatus) -> Option[Action!] {
-    match state {
-        RequestState::Cancelled => { handoff.discard_with(outcome); return Option::None; },
-        RequestState::Active => (),
+unsafe fn finish_reply(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
+    outcome: Output, deadline: DeadlineStatus, client: *u8, flags: u8) -> i32 {
+    if (flags & RESPONSE_ACTIVE) == 0 {
+        handoff.discard_with(outcome);
+        return -1;
     }
+    let action = reply_action(handoff, outcome, deadline);
+    unsafe apply(client, action, (flags & RESPONSE_HEAD) != 0, (flags & RESPONSE_HTTP10) != 0)
+}
+
+forall State, Output, Env where Copy[Env].
+fn reply_action(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
+    outcome: Output, deadline: DeadlineStatus) -> Action! {
     let status = match deadline {
-        DeadlineStatus::Completed => return Option::Some.(handoff.resume(outcome)),
+        DeadlineStatus::Completed => return handoff.resume(outcome),
         DeadlineStatus::TimedOut => 504,
         DeadlineStatus::Cancelled => 408,
         DeadlineStatus::Failed => 500,
     };
     handoff.discard_with(outcome);
-    Option::Some.(Response!::rejected(status).reply())
+    Response!::rejected(status).reply()
 }
 
 unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
     unsafe Connection!::write_final(unsafe kable_client_connection(client), wire, WRITE_TIMEOUT)
-}
-
-unsafe fn discard_action(client: *u8, action: Action!) {
-    match action {
-        Action!::Reply(response) => response.destroy(),
-        Action!::File(reply) => {
-            let { file, content_type } = reply;
-            file.close();
-        },
-        Action!::Deferred(plan) => unsafe plan.discard(client),
-    }
 }
 
 unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
@@ -190,6 +166,7 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
             submission.unwrap_or_else(|rejection| rejection.scheduler_error)
         },
         Action!::File(reply) => unsafe write_file(client, reply, head, http10),
+        Action!::Close => { unsafe kable_tcp_close(unsafe kable_client_connection(client)); 0 },
     }
 }
 
@@ -303,7 +280,7 @@ unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8
 struct Server! { raw: *u8, context: *u8 }
 
 impl Server! {
-    /// Binds handlers that can reply immediately or defer to a scoped plan.
+    /// Binds a handler that returns the action for each request.
     fn bind(port: u16, call: fn(Request!) -> Action!) -> Result[Server!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
         unsafe *(unsafe (context as *Handler)) = Handler.{ call };

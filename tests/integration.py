@@ -639,10 +639,27 @@ def check_http_file(command, directory, check_request_timeout=False):
                 read_log_until(process.stderr, b"File request cancelled.")
             process.terminate()
             assert process.wait(timeout=5) == 0, process.stderr.read()
+    check_http_close(command, directory, library)
     check_http_join(command, directory, library, payload)
     check_http_sequence(command, directory, library, payload, check_request_timeout)
     check_http_reset(command, directory, library)
     print("Kable HTTP file checks passed")
+
+
+def check_http_close(command, directory, library):
+    with gated_file_server(command, directory, library) as (process, port, started, permit):
+        with connect(port) as client:
+            client.sendall(b"GET /close HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            assert client.recv(1) == b"", "immediate close sent an HTTP response"
+        with connect(port) as client:
+            request = b"GET /close-after-read HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            start_held_read(client, request, started)
+            assert not select.select([client], [], [], 0.05)[0], "deferred close ran before the read joined"
+            assert_response(exchange(port, HEALTH), 200, b"ok\n")
+            assert os.write(permit, b"R") == 1
+            assert client.recv(1) == b"", "deferred close sent an HTTP response"
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
 
 
 def check_http_join(command, directory, library, payload):

@@ -19,6 +19,13 @@ fn serve_file(timed: bool) -> Action! {
     if timed { reply.within(Duration::from_secs(1)).reply() } else { reply.reply() }
 }
 
+fn close_after_read() -> Action! {
+    let access = StaticRead::new();
+    read_file(&access, "example.txt", FILE_LIMIT)
+        .respond_with(|outcome| { discard_file(outcome); Action!::Close }, discard_file)
+        .reply()
+}
+
 fn file_response(outcome: Completion[Buffer!]) -> Response! {
     match outcome {
         Completion::Ready(bytes) => Response!::ok(bytes),
@@ -56,13 +63,15 @@ fn append_file(first: Buffer!, second: Completion[Buffer!]) -> Response! {
     }
 }
 
-enum Route { File, TimedFile, FileJoin, FileSequence, Health, Missing }
+enum Route { File, TimedFile, FileJoin, FileSequence, Close, CloseAfterRead, Health, Missing }
 
 fn route(&request: Request!) -> Route {
     if &request.path_is("/file") { return Route::File; }
     if &request.path_is("/file-with-timeout") { return Route::TimedFile; }
     if &request.path_is("/file-join") { return Route::FileJoin; }
     if &request.path_is("/file-sequence") { return Route::FileSequence; }
+    if &request.path_is("/close") { return Route::Close; }
+    if &request.path_is("/close-after-read") { return Route::CloseAfterRead; }
     if &request.path_is("/health") { return Route::Health; }
     Route::Missing
 }
@@ -82,6 +91,8 @@ fn handle(request: Request!) -> Action! {
         Route::TimedFile => serve_file(true),
         Route::FileJoin => file_join::serve(),
         Route::FileSequence => file_sequence::serve(),
+        Route::Close => Action!::Close,
+        Route::CloseAfterRead => close_after_read(),
         Route::Health => Response!::text(200, "ok\n").reply(),
         Route::Missing => Response!::rejected(404).reply(),
     }
