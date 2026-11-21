@@ -15,6 +15,7 @@ use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
+use thunk::Thunk!;
 
 extern "C" fn kable_bind(port: u16,
     validate: unsafe fn(u8, u8, u32, u8, u8, u64, u64, *u8, usize, usize) -> u16,
@@ -78,11 +79,10 @@ enum Handler {
 
 exposed enum RequestState { Active, Cancelled }
 
-forall Task, Output, Env.
+forall Task, State, Output, Env.
 struct ReplyBuilder! {
     task: Task,
-    respond: closure[Env](Output) -> Action!,
-    discard: fn(Output) -> (),
+    handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
     timeout: Option[Duration],
 }
 
@@ -93,8 +93,16 @@ impl Task {
     /// The reply callback can capture copyable values, since it can be skipped.
     forall Env where Copy[Env].
     fn respond_with(self, respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ())
-        -> ReplyBuilder![Task, Output, Env] {
-        ReplyBuilder!.{ task: self, respond, discard, timeout: Option::None }
+        -> ReplyBuilder![Task, fn(Output) -> (), Output, (closure[Env](Output) -> Action!,)] {
+        self.respond_with_owned(discard, |cleanup, outcome| respond(outcome), discard_reply[Output])
+    }
+
+    /// Transfers state and the joined outcome to `respond` or `discard`.
+    /// Put owned values in `state` and capture copyable configuration in `respond`.
+    forall State, Env where Copy[Env].
+    fn respond_with_owned(self, state: State, respond: closure[Env](State, Output) -> Action!,
+        discard: fn(State, Output) -> ()) -> ReplyBuilder![Task, State, Output, Env] {
+        ReplyBuilder!.{ task: self, handoff: thunk::defer(state, respond, discard), timeout: Option::None }
     }
 
     /// Runs once after the plan joins, including when the request has ended.
@@ -120,43 +128,46 @@ impl Task {
     }
 }
 
-forall Task, Output, Env where Copy[Env], PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-impl ReplyBuilder![Task, Output, Env] {
+forall Output.
+fn discard_reply(discard: fn(Output) -> (), outcome: Output) { discard(outcome); }
+
+forall Task, State, Output, Env where Copy[Env], PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
+impl ReplyBuilder![Task, State, Output, Env] {
     /// Sets a local deadline for the plan.
-    fn within(self, duration: Duration) -> ReplyBuilder![Task, Output, Env] {
+    fn within(self, duration: Duration) -> ReplyBuilder![Task, State, Output, Env] {
         let { timeout: previous, ..rest } = self;
         ReplyBuilder!.{ timeout: Option::Some.(duration), ..rest }
     }
 
     /// Returns an action that replies after the plan joins.
     fn reply(self) -> Action! {
-        let { task, respond, discard, timeout } = self;
+        let { task, handoff, timeout } = self;
         match timeout {
             Option::Some(duration) => task.within(duration).defer(|result, state| {
                 let (outcome, deadline) = result;
-                finish_reply(outcome, state, deadline, respond, discard)
+                finish_reply(handoff, outcome, state, deadline)
             }),
             Option::None => task.defer(|outcome, state| {
-                finish_reply(outcome, state, DeadlineStatus::Completed, respond, discard)
+                finish_reply(handoff, outcome, state, DeadlineStatus::Completed)
             }),
         }
     }
 }
 
-forall Output, Env where Copy[Env].
-fn finish_reply(outcome: Output, state: RequestState, deadline: DeadlineStatus,
-    respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ()) -> Option[Action!] {
+forall State, Output, Env where Copy[Env].
+fn finish_reply(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
+    outcome: Output, state: RequestState, deadline: DeadlineStatus) -> Option[Action!] {
     match state {
-        RequestState::Cancelled => { discard(outcome); return Option::None; },
+        RequestState::Cancelled => { handoff.discard_with(outcome); return Option::None; },
         RequestState::Active => (),
     }
     let status = match deadline {
-        DeadlineStatus::Completed => return Option::Some.(respond(outcome)),
+        DeadlineStatus::Completed => return Option::Some.(handoff.resume(outcome)),
         DeadlineStatus::TimedOut => 504,
         DeadlineStatus::Cancelled => 408,
         DeadlineStatus::Failed => 500,
     };
-    discard(outcome);
+    handoff.discard_with(outcome);
     Option::Some.(Response!::rejected(status).reply())
 }
 

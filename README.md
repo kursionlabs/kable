@@ -171,11 +171,12 @@ any buffer it received. [Parallel file handler](examples/http-file/file_join.kur
 
 ### Dependent file reads
 
-`/file-sequence` defers the first read of `example.txt`. Its continuation
-chooses the footer and returns a deferred action for the second read under
-the original request deadline. The second continuation captures the first
-buffer and either appends the footer or destroys the buffer if the request
-has ended. [Dependent file handler](examples/http-file/file_sequence.kur)
+`/file-sequence` reads `example.txt`, then chooses the footer from its contents.
+The second read runs under the original request deadline. The handler passes the
+first buffer as state to `respond_with_owned(state, respond, discard)`. After
+the footer read joins, the builder hands the first buffer and the footer outcome
+to `respond` or to `discard` if the request ends or a local deadline wins.
+[Dependent file handler](examples/http-file/file_sequence.kur)
 
 ## Delayed and suspended computations
 
