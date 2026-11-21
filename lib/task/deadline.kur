@@ -1,0 +1,28 @@
+use std::time::Duration;
+use package::{Completion, DeadlineStatus, Failure, PairPlan!, Side, Sleep!, select, sleep};
+
+forall Task.
+fn race(task: Task, duration: Duration) -> PairPlan![Sleep!, Task, Side] {
+    select(sleep(duration), task)
+}
+
+forall Output.
+fn resolve(result: (Completion[()], Output, Completion[Side])) -> (Output, DeadlineStatus) {
+    let (timer, outcome, race) = result;
+    (outcome, status(timer, race))
+}
+
+fn status(timer: Completion[()], race: Completion[Side]) -> DeadlineStatus {
+    match race {
+        Completion::Ready(side) => match side {
+            Side::First => match timer {
+                Completion::Ready => DeadlineStatus::TimedOut,
+                Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
+                Completion::Cancelled => DeadlineStatus::Failed.(Failure::InvalidResult),
+            },
+            Side::Second => DeadlineStatus::Completed,
+        },
+        Completion::Cancelled => DeadlineStatus::Cancelled,
+        Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
+    }
+}

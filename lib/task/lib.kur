@@ -3,7 +3,8 @@ use std::buffer::Buffer!;
 use std::fmt::{Format, Writable, write_i64};
 use std::option::Option;
 use std::time::Duration;
-use package::{driver, sequence};
+use package::{deadline, driver, sequence};
+export deadline::status as deadline_status;
 export driver;
 export sequence;
 use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
@@ -99,9 +100,9 @@ impl Source {
     /// An interrupted read releases any buffer it produced.
     fn next_within(self, duration: Duration) -> Map![PairPlan![Sleep!, Next, Side],
         (Completion[()], (Source, StreamOutcome[Buffer!]), Completion[Side]), (Source, StreamOutcome[Buffer!]), ()] {
-        select(sleep(duration), self.next()).map(|result| {
-            let (timer, (source, read), status) = result;
-            let interrupted = match deadline_status(timer, status) {
+        deadline::race(self.next(), duration).map(|result| {
+            let ((source, read), status) = deadline::resolve(result);
+            let interrupted = match status {
                 DeadlineStatus::Completed => return (source, read),
                 DeadlineStatus::TimedOut => StreamOutcome::TimedOut,
                 DeadlineStatus::Cancelled => StreamOutcome::Cancelled,
@@ -240,10 +241,7 @@ impl Task {
     /// Races this plan against a local timer and returns the outcome after both join.
     fn within(self, duration: Duration)
         -> Map![PairPlan![Sleep!, Task, Side], (Completion[()], Input, Completion[Side]), (Input, DeadlineStatus), ()] {
-        select(sleep(duration), self).map(|result| {
-            let (timer, outcome, status) = result;
-            (outcome, deadline_status(timer, status))
-        })
+        deadline::race(self, duration).map(|result| deadline::resolve(result))
     }
 }
 
@@ -268,19 +266,4 @@ exposed enum DeadlineStatus {
     TimedOut,
     Cancelled,
     Failed(Failure),
-}
-
-fn deadline_status(timer: Completion[()], race: Completion[Side]) -> DeadlineStatus {
-    match race {
-        Completion::Ready(side) => match side {
-            Side::First => match timer {
-                Completion::Ready => DeadlineStatus::TimedOut,
-                Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
-                Completion::Cancelled => DeadlineStatus::Failed.(Failure::InvalidResult),
-            },
-            Side::Second => DeadlineStatus::Completed,
-        },
-        Completion::Cancelled => DeadlineStatus::Cancelled,
-        Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
-    }
 }

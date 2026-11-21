@@ -52,10 +52,7 @@ fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, '
 }
 
 fn discard_file(outcome: Completion[OpenedFile!]) {
-    match outcome {
-        Completion::Ready(file) => file.close(),
-        Completion::Cancelled | Completion::Failed => (),
-    }
+    outcome.discard(OpenedFile!::close);
 }
 
 fn hex(byte: u8) -> Option[u8] {
