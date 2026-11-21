@@ -24,9 +24,6 @@ void kable_tcp_stop(uint8_t *listener);
 
 /* The connection owns one attachment through socket, timer, and plan cleanup. */
 void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(uint8_t *));
-uint8_t *kable_tcp_attachment(uint8_t *connection);
-/* Delivers the next read or deadline through the native event callback. */
-int32_t kable_tcp_read(uint8_t *connection, uint64_t ms);
 int32_t kable_tcp_start_scoped_read(uint8_t *connection, uint8_t *loop,
     void (*ready)(uint8_t *), uint8_t *context);
 uint8_t kable_tcp_stop_scoped_read(uint8_t *connection);
@@ -45,6 +42,10 @@ int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uin
    callback borrows host and receives the supplied flags, plus ACTIVE when
    the socket can still reply. */
 enum { KABLE_TCP_PLAN_ACTIVE = 1 };
+/* Schedules one ingress read under the original request deadline. ACTIVE
+   allows a reply when the socket is open, including after a deadline fires. */
+int32_t kable_tcp_schedule_receive(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
+    KablePlanFinish finish, uint8_t *host, uint64_t deadline);
 int32_t kable_tcp_schedule_until(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
 /* Starts the fixed deadline for a final write, half-close, and drain.

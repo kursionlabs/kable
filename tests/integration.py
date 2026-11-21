@@ -94,6 +94,11 @@ def check_http(port):
                     400, b"Bad Request\n")
     assert_response(exchange(port, b"POST /echo HTTP/1.1\r\n", host,
                              b"Content-Length: 2\r\n\r\na", eof=True), 400, b"Bad Request\n")
+    assert_response(exchange(port, b"GET /health HTTP/1.1\r\nHost: local", eof=True),
+                    400, b"Bad Request\n")
+    with connect(port) as client:
+        client.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b""
     assert_response(exchange(port, b"POST /echo HTTP/1.1\r\n", host,
                              b"Content-Length: 1048577\r\n\r\n"), 413, b"Content Too Large\n")
     assert_response(exchange(port, b"POST /echo HTTP/1.1\r\n", host,

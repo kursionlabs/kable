@@ -3,7 +3,7 @@ use std::buffer::Buffer!;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, select, sleep};
+use task::{Completion, DeadlineStatus, Failure, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, join, select, sleep};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
 use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
@@ -273,9 +273,71 @@ fn check_local_timeout_handoff() -> bool {
     }
 }
 
+struct TestStream! { marker: Buffer!, delay: Duration }
+
+instance Stream[TestStream! -> Map![Sleep!, Completion[()], (TestStream!, StreamOutcome[Buffer!]), (TestStream!,)]] {
+    fn next(source: TestStream!)
+        -> Map![Sleep!, Completion[()], (TestStream!, StreamOutcome[Buffer!]), (TestStream!,)] {
+        let { marker, delay } = source;
+        let source = TestStream!.{ marker, delay };
+        sleep(delay).map(|status| {
+            let outcome = match status {
+                Completion::Ready => StreamOutcome::Item.(Buffer!::new().push_static("item")),
+                Completion::Cancelled => StreamOutcome::Cancelled,
+                Completion::Failed(failure) => StreamOutcome::Failed.(failure),
+            };
+            (source, outcome)
+        })
+    }
+}
+
+fn test_stream(delay: Duration) -> TestStream! {
+    TestStream!.{ marker: Buffer!::new().push_static("source"), delay }
+}
+
+fn check_returned_stream(source: TestStream!) -> bool {
+    let { marker, delay } = source;
+    let valid = &marker.len() == 6;
+    marker.destroy();
+    valid
+}
+
+fn check_timed_stream() -> bool {
+    let immediate = Duration::from_millis(0);
+    let pending = Duration::from_secs(30);
+    let (source, outcome) = run(test_stream(immediate).next_within(pending));
+    let ready = match outcome {
+        StreamOutcome::Item(bytes) => {
+            let valid = &bytes.len() == 4;
+            bytes.destroy();
+            valid
+        },
+        _ => false,
+    };
+    let ready_source = check_returned_stream(source);
+
+    let (source, outcome) = run(test_stream(pending).next_within(immediate));
+    let timed_out = match outcome {
+        StreamOutcome::TimedOut => true,
+        StreamOutcome::Item(bytes) => { bytes.destroy(); false },
+        _ => false,
+    };
+    let timed_out_source = check_returned_stream(source);
+
+    let (source, outcome) = run_with_deadline(test_stream(pending).next_within(pending), immediate);
+    let cancelled = match outcome {
+        StreamOutcome::Cancelled => true,
+        StreamOutcome::Item(bytes) => { bytes.destroy(); false },
+        _ => false,
+    };
+    let cancelled_source = check_returned_stream(source);
+    ready && ready_source && timed_out && timed_out_source && cancelled && cancelled_source
+}
+
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0)), second: sleep(Duration::from_secs(30)), id: Option::None };
     let rejected_pair = RejectedPair.{ root: Option::None, rejected: false };
     if run(plan) && check_invalid_root(true) && check_invalid_root(false) && run(rejected_pair) && check_cancelled_join() &&
-        check_deadline_timer_results() && check_reported_deadline() && check_local_timeout_handoff() { 0 } else { 1 }
+        check_deadline_timer_results() && check_reported_deadline() && check_local_timeout_handoff() &&
+        check_timed_stream() { 0 } else { 1 }
 }

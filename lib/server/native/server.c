@@ -17,6 +17,7 @@ enum {
 
 typedef int32_t (*respond_fn)(uint8_t *, uint8_t *, uint16_t, uint8_t,
     uint8_t, uint8_t *, size_t, uint8_t *, size_t);
+typedef int32_t (*receive_fn)(uint8_t *);
 typedef uint16_t (*validate_head_fn)(uint8_t, uint8_t, uint32_t, uint8_t, uint8_t,
     uint64_t, uint64_t, uint8_t *, size_t, size_t);
 
@@ -32,6 +33,7 @@ typedef struct {
 typedef struct {
     uint8_t *listener;
     validate_head_fn validate_head;
+    receive_fn receive;
     respond_fn respond;
     uint8_t *context;
 } Server;
@@ -197,15 +199,17 @@ uint8_t *kable_client_connection(uint8_t *raw) {
     return ((Client *)raw)->connection;
 }
 
-static uint64_t time_left(const Client *client) {
-    uint64_t now = kable_now_millis();
-    return now < client->deadline ? client->deadline - now : 0;
-}
-
 int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags) {
     Client *client = (Client *)raw;
     return kable_tcp_schedule_until(client->connection, scope, root, plan, finish, flags, raw, client->deadline);
+}
+
+int32_t kable_receive_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
+    KablePlanFinish finish, uint8_t flags) {
+    (void)flags;
+    Client *client = (Client *)raw;
+    return kable_tcp_schedule_receive(client->connection, scope, root, plan, finish, raw, client->deadline);
 }
 
 static int reply(Client *client, uint16_t status) {
@@ -225,8 +229,7 @@ static int reply(Client *client, uint16_t status) {
 }
 
 static int read_request(Client *client) {
-    uint64_t remaining = time_left(client);
-    return remaining ? kable_tcp_read(client->connection, remaining) : reply(client, 408);
+    return client->server->receive((uint8_t *)client);
 }
 
 static int consume_request(Client *client, const char *data, size_t remaining) {
@@ -271,29 +274,38 @@ static int start_request(Server *server, uint8_t *connection) {
 
 static int32_t on_event(uint8_t *context, uint8_t *connection, uint8_t event,
     uint8_t *bytes, size_t len, int32_t error) {
+    (void)bytes;
+    (void)len;
     (void)error;
-    if (event == KABLE_TCP_CONNECTED) return start_request((Server *)context, connection);
+    return event == KABLE_TCP_CONNECTED ? start_request((Server *)context, connection) : -1;
+}
 
-    Client *client = (Client *)kable_tcp_attachment(connection);
+int32_t kable_receive_joined(uint8_t *raw, uint8_t timed_out) {
+    Client *client = (Client *)raw;
+    if (timed_out) return reply(client, 408);
+    uint8_t *bytes;
+    size_t len;
+    int32_t error;
+    uint8_t event = kable_tcp_read_result(client->connection, &bytes, &len, &error);
     switch (event) {
     case KABLE_TCP_BYTES:
         return consume_request(client, (const char *)bytes, len);
-    case KABLE_TCP_TIMED_OUT:
-        return reply(client, 408);
     case KABLE_TCP_END:
-        return client->wire_bytes ? reply(client, 400) : 0;
+        return client->wire_bytes ? reply(client, 400) : -1;
     default:
-        return 0;
+        return -1;
     }
 }
 
-uint8_t *kable_bind(uint16_t port, validate_head_fn validate_head, respond_fn respond, uint8_t *context, int32_t *error) {
+uint8_t *kable_bind(uint16_t port, validate_head_fn validate_head, receive_fn receive,
+    respond_fn respond, uint8_t *context, int32_t *error) {
     Server *server = calloc(1, sizeof *server);
     if (!server) {
         *error = UV_ENOMEM;
         return NULL;
     }
     server->validate_head = validate_head;
+    server->receive = receive;
     server->respond = respond;
     server->context = context;
     server->listener = kable_tcp_bind(port, (uint8_t *)server, on_event, error);

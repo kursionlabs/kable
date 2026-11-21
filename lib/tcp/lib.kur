@@ -77,6 +77,20 @@ fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]
     (connection, outcome)
 }
 
+fn finish_host_read(connection: Connection!, context: *u8, completion: Completion[()]) -> Completion[()] {
+    let { raw } = connection;
+    completion
+}
+
+forall Output.
+fn read_plan(connection: Connection!, finish: fn(Connection!, *u8, Completion[()]) -> Output)
+    -> OperationPlan![Connection!, Output] {
+    OperationPlan!.{
+        state: connection, prepare: prepare_read, start: kable_tcp_start_scoped_read,
+        stop: kable_tcp_stop_scoped_read, finish, context: null(), id: Option::None,
+    }
+}
+
 fn prepare_write(&state: (Connection!, Buffer!)) -> *u8 {
     let ({ raw }, bytes) = state;
     let request = unsafe kable_tcp_new_scoped_write(raw, unsafe &bytes.as_ptr(), &bytes.len());
@@ -128,6 +142,12 @@ impl Task {
 }
 
 impl Connection! {
+    /// Runs a read for the host, which borrows the native bytes on join.
+    /// The host keeps the connection valid and owns it through collection.
+    unsafe fn read_for_host(raw: *u8) -> OperationPlan![Connection!, Completion[()]] {
+        read_plan(Connection!.{ raw }, finish_host_read)
+    }
+
     /// Takes the host's connection for one write, then half-closes and drains.
     /// The host lends a live connection with no other owner. The plan owns
     /// the buffer until the write joins.
@@ -190,10 +210,7 @@ impl Connection! {
 instance Stream[Connection! -> OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])]] {
     /// Plans one read. EOF hands back the connection with its write side available.
     fn next(source: Connection!) -> OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])] {
-        OperationPlan!.{
-            state: source, prepare: prepare_read, start: kable_tcp_start_scoped_read,
-            stop: kable_tcp_stop_scoped_read, finish: finish_read, context: null(), id: Option::None,
-        }
+        read_plan(source, finish_read)
     }
 }
 
