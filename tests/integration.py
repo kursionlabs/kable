@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path
 import select
@@ -467,6 +468,25 @@ def check_async_read(command, directory):
     for args, expected in failures:
         result = run(*args)
         assert result.returncode == 1 and result.stdout == b"" and expected in result.stderr, result
+
+    library = build_file_gate(directory)
+    growing = directory / "example.txt"
+    too_large = f"async-read: first file failed (operation error {-errno.EFBIG})\n".encode()
+    for prefix, tail, expected in ((payload[:6], payload[6:], 0), (payload, b"!", 1)):
+        growing.write_bytes(prefix)
+        with gated_file_process([*command, str(growing), str(empty)], directory, library) as (
+            process, started, permit
+        ):
+            wait_for_held_read(started)
+            with growing.open("ab") as output:
+                output.write(tail)
+            assert os.write(permit, b"R") == 1
+            stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode == expected, stderr
+            if expected == 0:
+                assert stdout == payload, stderr
+            else:
+                assert stdout == b"" and stderr == too_large, stderr
     print("Kable async file checks passed")
 
 
@@ -1036,9 +1056,7 @@ def main():
     if args.async_read or args.http_file:
         if not args.command:
             parser.error("file checks require an example command")
-        command = args.command
-        if args.http_file:
-            command = [str(Path(arg).resolve()) if Path(arg).is_file() else arg for arg in command]
+        command = [str(Path(arg).resolve()) if Path(arg).is_file() else arg for arg in args.command]
         with tempfile.TemporaryDirectory() as directory:
             if args.http_file:
                 check_http_file(command, Path(directory), args.check_timeout)

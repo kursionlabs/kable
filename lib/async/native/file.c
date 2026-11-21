@@ -16,6 +16,7 @@
 #endif
 
 enum { READ_CHUNK = KABLE_CREATE_FILE + 1, WRITE_CHUNK };
+enum { READ_BATCH = 16384 };
 
 typedef struct {
     uv_work_t request;
@@ -75,36 +76,42 @@ uint8_t *kable_file_write_chunk(int32_t fd, uint64_t offset, const uint8_t *byte
     return (uint8_t *)file;
 }
 
-static int append(KableFile *file, uint8_t *bytes, size_t count) {
-    if (count > file->limit - file->len) return UV_EFBIG;
-    size_t need = file->len + count;
-    if (need > file->capacity) {
-        size_t capacity = file->limit - file->capacity < file->capacity
-            ? file->limit : file->capacity * 2;
-        if (capacity < need) capacity = need;
-        uint8_t *data = realloc(file->data, capacity);
-        if (!data) return UV_ENOMEM;
-        file->data = data;
-        file->capacity = capacity;
+static int grow_read_buffer(KableFile *file) {
+    size_t capacity = file->limit - file->capacity < file->capacity
+        ? file->limit : file->capacity * 2;
+    if (!capacity) {
+        capacity = file->size && file->size < READ_BATCH ? (size_t)file->size : READ_BATCH;
+        if (capacity > file->limit) capacity = file->limit;
     }
-    memcpy(file->data + file->len, bytes, count);
-    file->len = need;
+    uint8_t *data = realloc(file->data, capacity);
+    if (!data) return UV_ENOMEM;
+    file->data = data;
+    file->capacity = capacity;
     return 0;
 }
 
 static int read_contents(KableFile *file, int fd) {
     if (file->size > file->limit) return UV_EFBIG;
 
-    uint8_t bytes[16384];
     while (!atomic_load_explicit(&file->cancelled, memory_order_relaxed)) {
-        size_t remaining = file->limit - file->len;
-        size_t wanted = remaining < sizeof bytes ? remaining + 1 : sizeof bytes;
-        ssize_t count = read(fd, bytes, wanted);
+        /* If the size hint cannot be reserved, probe before requiring memory. */
+        if (!file->capacity && file->size) (void)grow_read_buffer(file);
+        size_t room = file->capacity - file->len;
+        size_t wanted = room < READ_BATCH ? room : READ_BATCH;
+        uint8_t probe;
+        uint8_t *target = room ? file->data + file->len : &probe;
+        ssize_t count = read(fd, target, room ? wanted : 1);
         if (count < 0 && errno == EINTR) continue;
         if (count < 0) return uv_translate_sys_error(errno);
         if (count == 0) return 0;
-        int status = append(file, bytes, (size_t)count);
-        if (status < 0) return status;
+        if (!room) {
+            /* A byte beyond the current capacity distinguishes growth from EOF. */
+            if (file->len == file->limit) return UV_EFBIG;
+            int status = grow_read_buffer(file);
+            if (status < 0) return status;
+            file->data[file->len] = probe;
+        }
+        file->len += (size_t)count;
     }
     return UV_ECANCELED;
 }
