@@ -185,10 +185,8 @@ impl Connection! {
             |connection| connection.send(bytes),
             |result| {
                 let (connection, completion) = result;
-                match completion {
-                    Completion::Ready => unsafe connection.finish_stream(),
-                    Completion::Cancelled | Completion::Failed => unsafe connection.abort_stream(),
-                }
+                let complete = match completion { Completion::Ready => true, _ => false };
+                unsafe connection.end_stream(complete)
             },
         )
     }
@@ -213,17 +211,12 @@ impl Connection! {
         submission.unwrap_or_else(|rejection| rejection.scheduler_error)
     }
 
-    /// Returns the connection to the host for half-close and drain.
-    unsafe fn finish_stream(self) -> i32 {
+    /// Returns ownership after the last stage joins. A complete response
+    /// half-closes and drains. Return the status to the host so it can close
+    /// the connection on failure.
+    unsafe fn end_stream(self, complete: bool) -> i32 {
         let { raw } = self;
-        unsafe kable_tcp_stream_end(raw)
-    }
-
-    /// Returns ownership to the host. The caller must return the failure
-    /// status to that host so it closes the response.
-    unsafe fn abort_stream(self) -> i32 {
-        let { raw } = self;
-        -1
+        if complete { unsafe kable_tcp_stream_end(raw) } else { -1 }
     }
 
     /// Closes the connection when the listener handles the returned action.

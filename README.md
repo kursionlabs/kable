@@ -433,12 +433,13 @@ open, create, read, and write operations. Inside the callback,
 `&runner.run_with_deadline(plan, duration)` to set a parent deadline for that operation.
 
 The copy pulls one chunk from `FileChunks!` and waits for
-`destination.write(bytes)` to join before pulling the next. Each sequential
-write starts at the file's current position. The worker continues through
-short writes, and `&destination.position()` reports the total accepted even
-after cancellation or failure. For random access, `write_chunk(offset, bytes)`
-returns `(file, bytes, count, status)`. The count includes any bytes accepted
-before cancellation or failure, and the sequential position stays the same. [Linux positioned I/O manual](https://man7.org/linux/man-pages/man2/pwrite.2.html)
+`destination.send(bytes)` to join and release the buffer before pulling
+the next chunk. Each sequential write starts at the file's current position.
+The worker continues through short writes. `&destination.position()` reports
+the total accepted even after cancellation or failure. For random access,
+`write_chunk(offset, bytes)` returns `(file, bytes, count, status)`. The count
+includes any bytes accepted before cancellation or failure, and the
+sequential position stays the same. [Linux positioned I/O manual](https://man7.org/linux/man-pages/man2/pwrite.2.html)
 
 The destination must be a new path. Pass an optional third argument to set
 a deadline in milliseconds for each write. If a copy fails or is cancelled,

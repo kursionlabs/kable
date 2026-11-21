@@ -48,7 +48,6 @@ impl FileTransfer! {
     unsafe fn finish(self, complete: bool) -> i32 {
         let { connection, chunks } = self;
         chunks.close();
-        if complete { unsafe connection.finish_stream() }
-        else { unsafe connection.abort_stream() }
+        unsafe connection.end_stream(complete)
     }
 }
