@@ -2,7 +2,7 @@
 use async::FileChunks!;
 use std::buffer::Buffer!;
 use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
-use tcp::Connection!;
+use tcp::{Connection!, host};
 
 struct FileTransfer! { connection: Connection!, chunks: FileChunks! }
 
@@ -14,7 +14,8 @@ unsafe fn start(connection: Connection!, chunks: FileChunks!, headers: Buffer!) 
 impl FileTransfer! {
     unsafe fn write(self, bytes: Buffer!) -> i32 {
         let { connection, chunks } = self;
-        unsafe connection.submit_stream(
+        unsafe host::submit_stream(
+            connection,
             |connection| connection.send(bytes),
             |result| {
                 let (connection, completion) = result;
@@ -30,7 +31,8 @@ impl FileTransfer! {
     unsafe fn read_next(self) -> i32 {
         if &self.chunks.remaining() == 0 { return unsafe self.finish(true); }
         let { connection, chunks } = self;
-        unsafe connection.submit_stream(
+        unsafe host::submit_stream(
+            connection,
             |connection| chunks.next().map(|result| {
                 let (chunks, outcome) = result;
                 (FileTransfer!.{ connection, chunks }, outcome)
@@ -48,6 +50,6 @@ impl FileTransfer! {
     unsafe fn finish(self, complete: bool) -> i32 {
         let { connection, chunks } = self;
         chunks.close();
-        unsafe connection.end_stream(complete)
+        unsafe host::end_stream(connection, complete)
     }
 }

@@ -1,0 +1,20 @@
+extern "C" fn kable_tcp_bind(port: u16, context: *u8,
+    accept: unsafe fn(*u8, *u8) -> i32, error: *i32) -> *u8;
+extern "C" fn kable_tcp_port(listener: *u8) -> u16;
+extern "C" fn kable_tcp_run(listener: *u8) -> i32;
+extern "C" fn kable_tcp_stop(listener: *u8) -> ();
+extern "C" fn kable_tcp_close(connection: *u8) -> ();
+extern "C" fn kable_tcp_start_scoped_read(connection: *u8, loop: *u8,
+    ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
+extern "C" fn kable_tcp_stop_scoped_read(connection: *u8) -> u8;
+extern "C" fn kable_tcp_read_result(connection: *u8, bytes: *(*u8)) -> i32;
+extern "C" fn kable_tcp_new_scoped_write(connection: *u8, bytes: *u8, len: usize) -> *u8;
+extern "C" fn kable_tcp_start_scoped_write(request: *u8, loop: *u8,
+    ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
+extern "C" fn kable_tcp_stop_scoped_write(request: *u8) -> u8;
+extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
+extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
+extern "C" fn kable_tcp_finish_begin(connection: *u8, write_ms: u64) -> i32;
+extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
+extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;

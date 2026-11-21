@@ -1,0 +1,76 @@
+//! TCP integration for native hosts that own a listener and event loop.
+use async::Scope!;
+use async::host::prepare_hosted;
+use package::{Connection!, OperationPlan!, read_plan};
+use package::native::{
+    kable_tcp_close, kable_tcp_schedule, kable_tcp_finish_begin, kable_tcp_stream_begin, kable_tcp_stream_end,
+};
+use std::buffer::Buffer!;
+use std::option::Result;
+use task::{Completion, Sink};
+use task::driver::Plan;
+
+/// Set by the native scheduler at join when the connection can still reply.
+const PLAN_ACTIVE: u8 = 1;
+
+/// Runs a read for the host, which borrows the native bytes on join.
+/// The host keeps the connection valid and owns it through collection.
+unsafe fn read(raw: *u8) -> OperationPlan![Connection!, Completion[()]] {
+    read_plan(Connection!.{ raw }, finish_read)
+}
+
+fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> Completion[()] {
+    let { raw } = connection;
+    completion
+}
+
+/// Closes the host's live connection.
+unsafe fn close(raw: *u8) { unsafe kable_tcp_close(raw); }
+
+/// Takes the host's connection for one write, then half-closes and drains.
+/// The host lends a live connection with no other owner. The plan owns
+/// the buffer until the write joins.
+unsafe fn write_final(raw: *u8, bytes: Buffer!, write_ms: u64) -> i32 {
+    let status = unsafe kable_tcp_finish_begin(raw, write_ms);
+    if status < 0 {
+        bytes.destroy();
+        return status;
+    }
+    unsafe submit_stream(
+        Connection!.{ raw },
+        |connection| connection.send(bytes),
+        |result| {
+            let (connection, completion) = result;
+            let complete = match completion { Completion::Ready => true, _ => false };
+            unsafe end_stream(connection, complete)
+        },
+    )
+}
+
+/// Begins a response on the host's idle connection. The host keeps the
+/// pointer valid until the response finishes and gives it one owner.
+unsafe fn begin_stream(raw: *u8, idle_ms: u64) -> Result[Connection!, i32] {
+    let status = unsafe kable_tcp_stream_begin(raw, idle_ms);
+    if status < 0 { Result::Err.(status) }
+    else { Result::Ok.(Connection!.{ raw }) }
+}
+
+/// Submits one stage of a response. The builder transfers ownership of the
+/// connection into the plan. The callback also receives rejected outcomes.
+forall Task, Output, BuildEnv, ResumeEnv where Plan[Task, Scope! -> Output].
+unsafe fn submit_stream(connection: Connection!, build: closure[BuildEnv](Connection!) -> Task,
+    resume: closure[ResumeEnv](Output) -> i32) -> i32 {
+    let { raw } = connection;
+    let task = build(Connection!.{ raw });
+    let plan = prepare_hosted(task, |outcome, host, flags| resume(outcome));
+    let submission = unsafe plan.submit(raw, 0, kable_tcp_schedule);
+    submission.unwrap_or_else(|rejection| rejection.scheduler_error)
+}
+
+/// Returns ownership after the last stage joins. A complete response
+/// half-closes and drains. Return the status to the host so it can close
+/// the connection on failure.
+unsafe fn end_stream(connection: Connection!, complete: bool) -> i32 {
+    let { raw } = connection;
+    if complete { unsafe kable_tcp_stream_end(raw) } else { -1 }
+}

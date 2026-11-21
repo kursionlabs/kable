@@ -15,7 +15,7 @@ use std::slice::Slice;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, sleep};
 use task::driver::Plan;
-use tcp::Connection!;
+use tcp::host;
 use thunk::Thunk!;
 
 extern "C" fn kable_bind(port: u16,
@@ -26,7 +26,6 @@ extern "C" fn kable_bind(port: u16,
 extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_range_header(client: *u8, length: *usize) -> *u8;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
-extern "C" fn kable_tcp_close(connection: *u8) -> ();
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_receive_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
@@ -48,8 +47,6 @@ struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
 const WRITE_TIMEOUT: u64 = 5000;
 const STREAM_IDLE: u64 = 5000;
 
-// The native HTTP host adds RESPONSE_ACTIVE when it can still send a reply.
-const RESPONSE_ACTIVE: u8 = 1;
 const RESPONSE_HEAD: u8 = 2;
 const RESPONSE_HTTP10: u8 = 4;
 
@@ -137,7 +134,7 @@ impl ReplyBuilder![Task, State, Output, Env] {
 forall State, Output, Env where Copy[Env].
 unsafe fn finish_reply(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
     outcome: Output, deadline: DeadlineStatus, client: *u8, flags: u8) -> i32 {
-    if (flags & RESPONSE_ACTIVE) == 0 {
+    if (flags & host::PLAN_ACTIVE) == 0 {
         handoff.discard_with(outcome);
         return -1;
     }
@@ -159,7 +156,7 @@ fn reply_action(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -
 }
 
 unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
-    unsafe Connection!::write_final(unsafe kable_client_connection(client), wire, WRITE_TIMEOUT)
+    unsafe host::write_final(unsafe kable_client_connection(client), wire, WRITE_TIMEOUT)
 }
 
 unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
@@ -171,7 +168,7 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
             submission.unwrap_or_else(|rejection| rejection.scheduler_error)
         },
         Action!::File(reply) => unsafe write_file(client, reply, head, http10),
-        Action!::Close => { unsafe kable_tcp_close(unsafe kable_client_connection(client)); 0 },
+        Action!::Close => { unsafe host::close(unsafe kable_client_connection(client)); 0 },
     }
 }
 
@@ -191,7 +188,7 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
         return unsafe write_wire(client, headers);
     }
     let raw = unsafe kable_client_connection(client);
-    let connection = match unsafe Connection!::begin_stream(raw, STREAM_IDLE) {
+    let connection = match unsafe host::begin_stream(raw, STREAM_IDLE) {
         Result::Ok(connection) => connection,
         Result::Err(error) => {
             headers.destroy();
@@ -220,8 +217,8 @@ unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connec
 
 unsafe fn receive(client: *u8) -> i32 {
     let raw = unsafe kable_client_connection(client);
-    let plan = prepare_hosted(unsafe Connection!::read_for_host(raw), |completion, client, flags| {
-        if (flags & RESPONSE_ACTIVE) == 0 { return -1; }
+    let plan = prepare_hosted(unsafe host::read(raw), |completion, client, flags| {
+        if (flags & host::PLAN_ACTIVE) == 0 { return -1; }
         match completion {
             Completion::Ready => unsafe kable_receive_joined(client, 0),
             Completion::Cancelled => unsafe kable_receive_joined(client, 1),

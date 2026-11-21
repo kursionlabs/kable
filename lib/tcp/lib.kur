@@ -1,6 +1,13 @@
 //! Scoped TCP reads and writes on a listener's event loop.
 use async::Scope!;
 use async::host::{HostedPlan!, prepare_hosted};
+use package::host;
+use package::native::{
+    kable_tcp_bind, kable_tcp_port, kable_tcp_run, kable_tcp_stop, kable_tcp_close,
+    kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read, kable_tcp_read_result,
+    kable_tcp_new_scoped_write, kable_tcp_start_scoped_write, kable_tcp_stop_scoped_write,
+    kable_tcp_collect_scoped_write, kable_tcp_schedule,
+};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
@@ -9,30 +16,9 @@ use std::ptr::{is_null, null};
 use task::{Completion, Failure, PlanOutput, Sink, Stream, StreamOutcome};
 use task::driver::Plan;
 
-const PLAN_ACTIVE: u8 = 1;
+export host;
 
-extern "C" fn kable_tcp_bind(port: u16, context: *u8,
-    accept: unsafe fn(*u8, *u8) -> i32, error: *i32) -> *u8;
-extern "C" fn kable_tcp_port(listener: *u8) -> u16;
-extern "C" fn kable_tcp_run(listener: *u8) -> i32;
-extern "C" fn kable_tcp_stop(listener: *u8) -> ();
-extern "C" fn kable_tcp_close(connection: *u8) -> ();
-extern "C" fn kable_tcp_start_scoped_read(connection: *u8, loop: *u8,
-    ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
-extern "C" fn kable_tcp_stop_scoped_read(connection: *u8) -> u8;
-extern "C" fn kable_tcp_read_result(connection: *u8, bytes: *(*u8)) -> i32;
-extern "C" fn kable_tcp_new_scoped_write(connection: *u8, bytes: *u8, len: usize) -> *u8;
-extern "C" fn kable_tcp_start_scoped_write(request: *u8, loop: *u8,
-    ready: unsafe fn(*u8) -> (), context: *u8) -> i32;
-extern "C" fn kable_tcp_stop_scoped_write(request: *u8) -> u8;
-extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
-extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
-extern "C" fn kable_tcp_finish_begin(connection: *u8, write_ms: u64) -> i32;
-extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
-extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;
-
-struct Connection! { raw: *u8 }
+exposed(package) struct Connection! { raw: *u8 }
 
 forall State, Output.
 struct OperationPlan! {
@@ -77,11 +63,6 @@ fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]
         Completion::Failed(failure) => StreamOutcome::Failed.(failure),
     };
     (connection, outcome)
-}
-
-fn finish_host_read(connection: Connection!, context: *u8, completion: Completion[()]) -> Completion[()] {
-    let { raw } = connection;
-    completion
 }
 
 forall Output.
@@ -152,7 +133,7 @@ impl Task {
         discard: fn(State, Output) -> ()) -> Action! {
         let handoff = thunk::defer(state, resume, discard);
         let hosted = prepare_hosted(self, |result, connection, flags| {
-            if (flags & PLAN_ACTIVE) != 0 {
+            if (flags & host::PLAN_ACTIVE) != 0 {
                 return unsafe apply(connection, handoff.resume(result));
             }
             let (connection, outcome) = result;
@@ -165,60 +146,6 @@ impl Task {
 }
 
 impl Connection! {
-    /// Runs a read for the host, which borrows the native bytes on join.
-    /// The host keeps the connection valid and owns it through collection.
-    unsafe fn read_for_host(raw: *u8) -> OperationPlan![Connection!, Completion[()]] {
-        read_plan(Connection!.{ raw }, finish_host_read)
-    }
-
-    /// Takes the host's connection for one write, then half-closes and drains.
-    /// The host lends a live connection with no other owner. The plan owns
-    /// the buffer until the write joins.
-    unsafe fn write_final(raw: *u8, bytes: Buffer!, write_ms: u64) -> i32 {
-        let status = unsafe kable_tcp_finish_begin(raw, write_ms);
-        if status < 0 {
-            bytes.destroy();
-            return status;
-        }
-        let connection = Connection!.{ raw };
-        unsafe connection.submit_stream(
-            |connection| connection.send(bytes),
-            |result| {
-                let (connection, completion) = result;
-                let complete = match completion { Completion::Ready => true, _ => false };
-                unsafe connection.end_stream(complete)
-            },
-        )
-    }
-
-    /// Begins a response on the host's idle connection. The host must keep
-    /// the pointer valid until the response finishes and give it one owner.
-    unsafe fn begin_stream(raw: *u8, idle_ms: u64) -> Result[Connection!, i32] {
-        let status = unsafe kable_tcp_stream_begin(raw, idle_ms);
-        if status < 0 { Result::Err.(status) }
-        else { Result::Ok.(Connection!.{ raw }) }
-    }
-
-    /// Submits one stage of a response. The builder transfers ownership of the
-    /// connection into the plan. The callback also receives rejected outcomes.
-    forall Task, Output, BuildEnv, ResumeEnv where Plan[Task, Scope! -> Output].
-    unsafe fn submit_stream(self, build: closure[BuildEnv](Connection!) -> Task,
-        resume: closure[ResumeEnv](Output) -> i32) -> i32 {
-        let { raw } = self;
-        let task = build(Connection!.{ raw });
-        let plan = prepare_hosted(task, |outcome, host, flags| resume(outcome));
-        let submission = unsafe plan.submit(raw, 0, kable_tcp_schedule);
-        submission.unwrap_or_else(|rejection| rejection.scheduler_error)
-    }
-
-    /// Returns ownership after the last stage joins. A complete response
-    /// half-closes and drains. Return the status to the host so it can close
-    /// the connection on failure.
-    unsafe fn end_stream(self, complete: bool) -> i32 {
-        let { raw } = self;
-        if complete { unsafe kable_tcp_stream_end(raw) } else { -1 }
-    }
-
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { Action!::Close.(self) }
 }
