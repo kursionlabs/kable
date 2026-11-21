@@ -3,7 +3,7 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream};
+use task::{Completion, DeadlineStatus, PlanOutput, Stream};
 use tcp::{Action!, Connection!, Listener!};
 use thunk::{Resumable, Step};
 
@@ -65,29 +65,33 @@ fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Act
 fn read_finished(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus),
     reader: LineReader!, retried: bool) -> Action! {
     let ((connection, outcome), deadline) = result;
-    match outcome {
-        Completion::Ready(chunk) => match chunk {
-            Option::Some(bytes) => match deadline {
-                DeadlineStatus::Completed => return match reader.resume(bytes) {
-                    Step::Suspended(next) => read_line(connection, next, false),
-                    Step::Done(lines) => write_lines(connection, lines),
-                },
-                _ => bytes.destroy(),
-            },
-            Option::None => (),
+    let chunk = match outcome {
+        Completion::Ready(chunk) => chunk,
+        Completion::Cancelled => {
+            let retry = match deadline { DeadlineStatus::TimedOut => !retried, _ => false };
+            if retry {
+                eprint_buffer(f"Retrying idle read.\n");
+                return read_line(connection, reader, true);
+            }
+            Option::None
         },
-        Completion::Cancelled => match deadline {
-            DeadlineStatus::TimedOut => {
-                if !retried {
-                    eprint_buffer(f"Retrying idle read.\n");
-                    return read_line(connection, reader, true);
-                }
-            },
-            _ => (),
-        },
-        Completion::Failed => (),
+        Completion::Failed => Option::None,
     };
-    close_session(connection, reader)
+    let bytes = match chunk {
+        Option::Some(bytes) => bytes,
+        Option::None => return close_session(connection, reader),
+    };
+    match deadline {
+        DeadlineStatus::Completed => (),
+        _ => {
+            bytes.destroy();
+            return close_session(connection, reader);
+        },
+    }
+    match reader.resume(bytes) {
+        Step::Suspended(next) => read_line(connection, next, false),
+        Step::Done(lines) => write_lines(connection, lines),
+    }
 }
 
 fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
@@ -99,9 +103,8 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
         },
     };
     let reader = LineReader!.{ pending: tail };
-    connection.write(complete).defer_tcp(|result| {
-        let (connection, bytes, status) = result;
-        bytes.destroy();
+    connection.send(complete).defer_tcp(|result| {
+        let (connection, status) = result;
         match status {
             Completion::Ready => read_line(connection, reader, false),
             Completion::Cancelled | Completion::Failed => close_session(connection, reader),

@@ -50,9 +50,8 @@ fn discard_write(connection: Connection!) -> Connection! {
 
 fn send_after_eof(connection: Connection!) -> Action! {
     let connection = discard_write(connection);
-    connection.write(Buffer!::new_with_cap(0)).defer_tcp(|outcome| {
-        let (connection, bytes, status) = outcome;
-        bytes.destroy();
+    connection.send(Buffer!::new_with_cap(0)).defer_tcp(|outcome| {
+        let (connection, status) = outcome;
         match status { Completion::Ready => (), _ => return connection.close() };
         let bytes = Buffer!::new_zeroed(16 * 1024 * 1024);
         connection.write(bytes).within(Duration::from_millis(1500)).defer_tcp(|result| finish_write(result))

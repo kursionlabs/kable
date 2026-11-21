@@ -12,7 +12,7 @@ use std::ptr::is_null;
 use std::raw::Span;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, sleep};
+use task::{Completion, DeadlineStatus, PlanOutput, Stream, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
 use thunk::Thunk!;
@@ -199,14 +199,13 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
 
 unsafe fn write_then_next(connection: Connection!, bytes: Buffer!, stream: FileChunks!) -> i32 {
     unsafe connection.submit_stream(
-        |connection| connection.write(bytes),
+        |connection| connection.send(bytes),
         |result| unsafe write_joined(result, stream),
     )
 }
 
-unsafe fn write_joined(result: (Connection!, Buffer!, Completion[()]), stream: FileChunks!) -> i32 {
-    let (connection, bytes, completion) = result;
-    bytes.destroy();
+unsafe fn write_joined(result: (Connection!, Completion[()]), stream: FileChunks!) -> i32 {
+    let (connection, completion) = result;
     match completion {
         Completion::Ready => (),
         Completion::Cancelled | Completion::Failed => {

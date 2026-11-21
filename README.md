@@ -437,17 +437,16 @@ connection. `Listener!::bind_connections(port, read_next)` calls
 `read_next(connection)` once per accepted connection. Import `task::PlanOutput`
 to use `.defer_tcp(...)` on a plan. The echo handler uses it to run both
 `connection.next().within(Duration::from_secs(1))` and
-`connection.write(bytes).within(Duration::from_secs(1))` on the listener loop.
-The write continuation releases the buffer and starts the next read only if
-the write succeeded within the deadline.
+`connection.send(bytes).within(Duration::from_secs(1))` on the listener loop.
+`send` releases the buffer after the write joins and hands back the connection
+and completion. The echo resumes reading after a send succeeds within its deadline.
 
 Omitting `.within(...)` gives the write the connection's lifetime. The
 continuation can hand the connection back to `read_next` after the write joins.
 
 ```kursal
-connection.write(bytes).defer_tcp(|result| {
-    let (connection, bytes, status) = result;
-    bytes.destroy();
+connection.send(bytes).defer_tcp(|result| {
+    let (connection, status) = result;
     match status {
         Completion::Ready => read_next(connection),
         Completion::Cancelled | Completion::Failed => connection.close(),
@@ -455,11 +454,11 @@ connection.write(bytes).defer_tcp(|result| {
 })
 ```
 
-The write plan owns the connection and buffer until completion and returns
-both on every outcome. Cancelling an in-flight write closes the socket and
-waits for the write callback. On failure or cancellation, the buffer is
-available for cleanup and delivery progress is unspecified. On SIGINT or
-SIGTERM the listener stops accepting and waits for pending scopes to join.
+Use `connection.write(bytes)` when the continuation needs ownership of the
+buffer back along with the connection and completion. Cancelling an in-flight
+write closes the socket and waits for the write callback. Delivery progress
+is unspecified on failure or cancellation. On SIGINT or SIGTERM the listener
+stops accepting and waits for pending scopes to join.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-echo -o bin/tcp-echo
