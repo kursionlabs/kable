@@ -21,7 +21,7 @@ typedef struct {
     uv_work_t request;
     void (*done)(uint8_t *);
     uint8_t *context;
-    char *path;
+    const char *path;
     uint8_t *data;
     const uint8_t *input;
     size_t len;
@@ -48,18 +48,11 @@ static KableFile *new_file(size_t limit, uint8_t mode) {
 uint8_t *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t mode) {
     KableFile *file = new_file(limit, mode);
     if (!file) return NULL;
-    if (mode > KABLE_CREATE_FILE || len == SIZE_MAX || (len && memchr(path, 0, len))) {
+    if (mode > KABLE_CREATE_FILE || !len || path[len - 1] != 0 || memchr(path, 0, len - 1)) {
         file->status = UV_EINVAL;
-        return (uint8_t *)file;
+    } else {
+        file->path = (const char *)path;
     }
-
-    file->path = malloc(len + 1);
-    if (!file->path) {
-        free(file);
-        return NULL;
-    }
-    if (len) memcpy(file->path, path, len);
-    file->path[len] = '\0';
     return (uint8_t *)file;
 }
 
@@ -289,7 +282,6 @@ void kable_file_free(uint8_t *raw) {
     if (!file) return;
     if (file->request.data) abort();
     if (retains_descriptor(file) && file->fd >= 0) close(file->fd);
-    free(file->path);
     free(file->data);
     free(file);
 }

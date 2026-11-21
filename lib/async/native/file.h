@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 enum KableFileMode { KABLE_READ_FILE, KABLE_READ_BENEATH, KABLE_OPEN_BENEATH, KABLE_OPEN_FILE, KABLE_CREATE_FILE };
+/* The path remains borrowed until the request is freed. Its length includes the final NUL. */
 uint8_t *kable_file_new(const uint8_t *path, size_t len, size_t limit, uint8_t mode);
 uint8_t *kable_file_chunk(int32_t fd, uint64_t offset, size_t limit);
 uint8_t *kable_file_write_chunk(int32_t fd, uint64_t offset, const uint8_t *bytes, size_t len);

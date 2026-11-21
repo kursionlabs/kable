@@ -83,7 +83,8 @@ const FILE_CHUNK: u64 = 64 * 1024;
 forall C, S, Item where ReadBytes[C, S], Copy[S].
 unsafe fn file_path_plan(&cx: C, path: S, limit: usize, mode: u8,
     result: unsafe fn(*u8) -> Completion[Item]) -> FilePathPlan![Item] {
-    FilePathPlan!.{ path: Buffer!::new().push_bytes(&cx, path), limit, mode, request: FileRequest!::empty(), result }
+    let path = Buffer!::new().push_bytes(&cx, path).push_byte(0);
+    FilePathPlan!.{ path, limit, mode, request: FileRequest!::empty(), result }
 }
 
 /// Plans a read of a regular file. A file larger than limit fails.
@@ -400,8 +401,9 @@ instance Plan[FilePathPlan![Item], Scope! -> Completion[Item]] {
 
     fn collect(task: FilePathPlan![Item], &scope: Scope!) -> Completion[Item] {
         let { path, limit, mode, request, result } = task;
+        let outcome = unsafe request.collect(&scope, result);
         path.destroy();
-        unsafe request.collect(&scope, result)
+        outcome
     }
 }
 

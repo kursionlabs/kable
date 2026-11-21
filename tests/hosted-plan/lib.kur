@@ -1,4 +1,4 @@
-use async::{Scope!, open_file, run, run_sequence, run_with_deadline, with_runner};
+use async::{FileErrorKind, Scope!, open_file, run, run_sequence, run_with_deadline, with_runner};
 use async::host::{HostedPlan!, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
@@ -343,8 +343,33 @@ fn check_file_fault(fault: u8) -> bool {
     correct && released_once
 }
 
+fn check_file_path() -> bool {
+    let access = StaticRead::new();
+    let rejected_nul = match run(open_file(&access, "/proc/self/exe\x00ignored")) {
+        Completion::Failed(failure) => match failure.file_error_kind() {
+            FileErrorKind::InvalidInput => true,
+            _ => false,
+        },
+        Completion::Ready(file) => { file.close(); false },
+        Completion::Cancelled => false,
+    };
+
+    let plan = open_file(&access, "/proc/self/exe");
+    let expected = unsafe kable_test_file_fault_begin(2);
+    let rejected_registration = match run(plan) {
+        Completion::Failed(failure) => match failure {
+            Failure::Startup(code) => code == expected,
+            _ => false,
+        },
+        Completion::Ready(file) => { file.close(); false },
+        Completion::Cancelled => false,
+    };
+    let released_once = (unsafe kable_test_file_fault_end()) != 0;
+    rejected_nul && rejected_registration && released_once
+}
+
 fn main() -> i32 {
-    if !check_file_fault(1) || !check_file_fault(2) || !check_file_fault(3) { return 1; }
+    if !check_file_fault(1) || !check_file_fault(2) || !check_file_fault(3) || !check_file_path() { return 1; }
     let zero = Duration::from_nanos(0);
     let tiny = Duration::from_nanos(1);
     let setup_time = Duration::from_millis(10);
