@@ -75,9 +75,8 @@ This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://ma
 
 ## A small async server
 
-The hello server uses one handler for immediate replies and replies that
-wait one second. `Server!::bind_async` takes a handler that returns either
-action.
+`Server!::bind` takes a handler that returns an `Action!`. The hello server
+uses `.reply()` to send one response immediately and `.after(...)` to delay another.
 
 ```kursal
 use std::time::Duration;
@@ -118,15 +117,11 @@ finish within their existing deadlines. Shutdown releases any response held
 by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
-Handlers run on the event loop and should return promptly. A handler bound with
-`Server!::bind_async` can import `task::PlanOutput` and return
-`plan.defer(|outcome, state| ...)`. The continuation runs once after the
-plan joins and receives its owned outcome. With `RequestState::Active`, it
-can return `Some(action)` to reply or defer another plan. With
-`RequestState::Cancelled`, it releases the values it owns and returns
-`None`. Returning `None` closes the connection. A transport error, the
-request deadline, or shutdown cancels unfinished plans. A client can
-half-close its sending side and still receive the response.
+Handlers run on the event loop and should return promptly. Import
+`task::PlanOutput` and build a deferred reply with `plan.respond_with(...)`
+or `plan.respond_with_owned(...)`. A transport error, the request deadline,
+or shutdown cancels unfinished plans. A client can half-close its sending
+side and still receive the response.
 
 ### A file response with a deadline
 
@@ -177,6 +172,14 @@ first buffer as state to `respond_with_owned(state, respond, discard)`. After
 the footer read joins, the builder hands the first buffer and the footer outcome
 to `respond` or to `discard` if the request ends or a local deadline wins.
 [Dependent file handler](examples/http-file/file_sequence.kur)
+
+### Custom request continuations
+
+Use `plan.defer(|outcome, state| ...)` to act directly on `RequestState`.
+The continuation receives the owned outcome after the plan joins.
+An active request can return `Some(action)` to continue or `None` to close
+the connection without a reply. On cancellation, release the owned values
+and return `None`.
 
 ## Delayed and suspended computations
 

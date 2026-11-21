@@ -81,7 +81,7 @@ fn main(args: Args) -> i32 {
             Option::None => return usage(),
         },
     };
-    let server = match Server!::bind_async(port, handle) {
+    let server = match Server!::bind(port, handle) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"kable: cannot listen (libuv error {code})\n");

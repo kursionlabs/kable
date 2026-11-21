@@ -156,7 +156,7 @@ fn main(args: Args) -> i32 {
         return 1;
     }
 
-    let server = match Server!::bind_async(port, serve) {
+    let server = match Server!::bind(port, serve) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"static-files: cannot listen (libuv error {code})\n");

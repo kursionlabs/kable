@@ -88,7 +88,7 @@ fn handle(request: Request!) -> Action! {
 }
 
 fn main() -> i32 {
-    let server = match Server!::bind_async(0, handle) {
+    let server = match Server!::bind(0, handle) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"http-file: cannot listen (libuv error {code})\n");

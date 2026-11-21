@@ -70,10 +70,7 @@ impl Response! {
 
 fn discard_delayed_response(response: Response!, status: Completion[()]) { response.destroy(); }
 
-enum Handler {
-    Immediate(fn(Request!) -> Response!),
-    Deferred(fn(Request!) -> Action!),
-}
+struct Handler { call: fn(Request!) -> Action! }
 
 exposed enum RequestState { Active, Cancelled }
 
@@ -299,37 +296,23 @@ unsafe fn respond(context: *u8, client: *u8, status: u16, method: u8, http10: u8
         target: unsafe Buffer!::new_with_cap(target_len).push_n(target, target_len),
         body: unsafe Buffer!::new_with_cap(body_len).push_n(body, body_len),
     };
-    let action = match unsafe *(unsafe (context as *Handler)) {
-        Handler::Immediate(call) => Action!::Reply.(call(request)),
-        Handler::Deferred(call) => call(request),
-    };
-    unsafe apply(client, action, head, http10)
+    let { call } = unsafe *(unsafe (context as *Handler));
+    unsafe apply(client, call(request), head, http10)
 }
 
 struct Server! { raw: *u8, context: *u8 }
 
 impl Server! {
-    fn bind_local(port: u16, call: fn(Request!) -> Response!) -> Result[Server!, i32] {
-        Server!::bind(port, Handler::Immediate.(call))
-    }
-
     /// Binds handlers that can reply immediately or defer to a scoped plan.
-    fn bind_async(port: u16, call: fn(Request!) -> Action!) -> Result[Server!, i32] {
-        Server!::bind(port, Handler::Deferred.(call))
-    }
-
-    fn bind(port: u16, handler: Handler) -> Result[Server!, i32] {
+    fn bind(port: u16, call: fn(Request!) -> Action!) -> Result[Server!, i32] {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
-        unsafe *(unsafe (context as *Handler)) = handler;
+        unsafe *(unsafe (context as *Handler)) = Handler.{ call };
 
-        let scratch = Buffer!::new_zeroed(sizeof[i32]());
-        let error = unsafe ((unsafe &scratch.as_ptr()) as *i32);
+        let error = unsafe alloca[i32]();
         let raw = unsafe kable_bind(port, validate_head, respond, context, error);
-        let status = unsafe *error;
-        scratch.destroy();
         if is_null(raw) {
             HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
-            Result::Err.(status)
+            Result::Err.(unsafe *error)
         } else {
             Result::Ok.(Server!.{ raw, context })
         }

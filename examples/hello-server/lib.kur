@@ -16,7 +16,7 @@ fn hello(request: Request!) -> Action! {
 }
 
 fn main() -> i32 {
-    let server = match Server!::bind_async(0, hello) {
+    let server = match Server!::bind(0, hello) {
         Result::Ok(server) => server,
         Result::Err(code) => {
             eprint_buffer(f"hello-server: cannot listen (libuv error {code})\n");
