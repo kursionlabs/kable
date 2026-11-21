@@ -224,9 +224,10 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
 }
 
 unsafe fn write_then_next(connection: Connection!, bytes: Buffer!, stream: FileChunks!) -> i32 {
-    unsafe connection.submit_stream(|connection| {
-        prepare_hosted(connection.write(bytes), |result, host, flags| unsafe write_joined(result, stream))
-    })
+    unsafe connection.submit_stream(
+        |connection| connection.write(bytes),
+        |result| unsafe write_joined(result, stream),
+    )
 }
 
 unsafe fn write_joined(result: (Connection!, Buffer!, Completion[()]), stream: FileChunks!) -> i32 {
@@ -243,13 +244,14 @@ unsafe fn write_joined(result: (Connection!, Buffer!, Completion[()]), stream: F
         stream.close();
         return unsafe connection.finish_stream();
     }
-    unsafe connection.submit_stream(|connection| {
-        prepare_hosted(stream.next(), |result, host, flags| unsafe chunk_joined(connection, result))
-    })
+    unsafe connection.submit_stream(
+        |connection| stream.next().map(|chunk| (connection, chunk)),
+        |result| unsafe chunk_joined(result),
+    )
 }
 
-unsafe fn chunk_joined(connection: Connection!, result: (FileChunks!, Completion[Option[Buffer!]])) -> i32 {
-    let (stream, outcome) = result;
+unsafe fn chunk_joined(result: (Connection!, (FileChunks!, Completion[Option[Buffer!]]))) -> i32 {
+    let (connection, (stream, outcome)) = result;
     let chunk = match outcome {
         Completion::Ready(chunk) => chunk,
         Completion::Cancelled | Completion::Failed => Option::None,

@@ -133,16 +133,17 @@ impl Connection! {
             return status;
         }
         let connection = Connection!.{ raw };
-        unsafe connection.submit_stream(|connection| {
-            prepare_hosted(connection.write(bytes), |result, host, flags| {
+        unsafe connection.submit_stream(
+            |connection| connection.write(bytes),
+            |result| {
                 let (connection, bytes, completion) = result;
                 bytes.destroy();
                 match completion {
                     Completion::Ready => unsafe connection.finish_stream(),
                     Completion::Cancelled | Completion::Failed => unsafe connection.abort_stream(),
                 }
-            })
-        })
+            },
+        )
     }
 
     /// Begins a response on the host's idle connection. The host must keep
@@ -153,12 +154,14 @@ impl Connection! {
         else { Result::Ok.(Connection!.{ raw }) }
     }
 
-    /// Submits one stage of a response. The builder transfers the connection
-    /// into the plan or continuation. The host collects rejected plans too.
-    forall Env.
-    unsafe fn submit_stream(self, prepare: closure[Env](Connection!) -> HostedPlan!) -> i32 {
+    /// Submits one stage of a response. The builder transfers ownership of the
+    /// connection into the plan. The callback also receives rejected outcomes.
+    forall Task, Output, BuildEnv, ResumeEnv where Plan[Task, Scope! -> Output].
+    unsafe fn submit_stream(self, build: closure[BuildEnv](Connection!) -> Task,
+        resume: closure[ResumeEnv](Output) -> i32) -> i32 {
         let { raw } = self;
-        let plan = prepare(Connection!.{ raw });
+        let task = build(Connection!.{ raw });
+        let plan = prepare_hosted(task, |outcome, host, flags| resume(outcome));
         let submission = unsafe plan.submit(raw, 0, kable_tcp_schedule);
         submission.unwrap_or_else(|rejection| rejection.scheduler_error)
     }
