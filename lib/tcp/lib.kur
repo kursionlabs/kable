@@ -6,7 +6,7 @@ use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream, StreamOutcome};
+use task::{Completion, Failure, PlanOutput, Sink, Stream, StreamOutcome};
 use task::driver::Plan;
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -110,23 +110,6 @@ unsafe fn read_result(raw: *u8) -> StreamOutcome[Buffer!] {
         3u8 => StreamOutcome::Eof,
         _ => StreamOutcome::Failed.(Failure::Operation.(unsafe *status)),
     }
-}
-
-/// Combines a joined read and its deadline, releasing any chunk when interrupted.
-fn timed_read_outcome(result: ((Connection!, StreamOutcome[Buffer!]), DeadlineStatus))
-    -> (Connection!, StreamOutcome[Buffer!]) {
-    let ((connection, read), deadline) = result;
-    let interrupted = match deadline {
-        DeadlineStatus::Completed => return (connection, read),
-        DeadlineStatus::TimedOut => StreamOutcome::TimedOut,
-        DeadlineStatus::Cancelled => StreamOutcome::Cancelled,
-        DeadlineStatus::Failed(failure) => StreamOutcome::Failed.(failure),
-    };
-    match read {
-        StreamOutcome::Item(bytes) => bytes.destroy(),
-        _ => (),
-    };
-    (connection, interrupted)
 }
 
 enum Action! {

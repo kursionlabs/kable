@@ -4,7 +4,7 @@ use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
-use tcp::{Action!, Connection!, Listener!, timed_read_outcome};
+use tcp::{Action!, Connection!, Listener!};
 use thunk::{Resumable, Step};
 
 struct LineReader! { pending: Buffer! }
@@ -59,8 +59,8 @@ fn close_session(connection: Connection!, reader: LineReader!) -> Action! {
 }
 
 fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Action! {
-    connection.next().within(Duration::from_secs(1))
-        .defer_tcp(|result| read_finished(timed_read_outcome(result), reader, retried))
+    connection.next_within(Duration::from_secs(1))
+        .defer_tcp(|result| read_finished(result, reader, retried))
 }
 
 fn read_finished(result: (Connection!, StreamOutcome[Buffer!]), reader: LineReader!, retried: bool) -> Action! {

@@ -563,6 +563,22 @@ def gated_file_server(command, directory, library, gates=1, reset_notify=None):
         yield process, port, started, permit
 
 
+def check_timed_file_read(command, directory):
+    root = directory / "timed read"
+    root.mkdir()
+    payload = b"file position survives the deadline\x00\n"
+    (root / "large.bin").write_bytes(payload)
+    library = build_file_gate(directory)
+    with gated_file_process([*command, "--timed-read"], root, library, gates=8) as (process, started, permit):
+        wait_for_held_read(started, b"D")
+        assert not select.select([process.stdout], [], [], 0.75)[0], "timed read returned before the worker joined"
+        assert os.write(permit, b"R") == 1
+        stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0, stderr
+        assert stdout == b"timed out\n" + payload, (stdout, stderr)
+    print("Kable timed file read and retry checks passed")
+
+
 def wait_for_held_read(started, expected=b"A"):
     assert select.select([started], [], [], 5)[0], "file worker did not start"
     token = os.read(started, 1)
@@ -1041,6 +1057,7 @@ def main():
             check_file_copy([str(file_copy)], Path(directory))
             subprocess.run([file_position], cwd=directory, check=True, timeout=10)
             assert (Path(directory) / "mixed-writes").read_bytes() == b"aXcd"
+            check_timed_file_read([str(file_position)], Path(directory))
             check_http_file([str(http_file)], Path(directory), args.check_timeout)
             check_tcp_echo([str(tcp_echo)])
             check_tcp_write([str(tcp_write)])

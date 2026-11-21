@@ -343,6 +343,10 @@ File chunks and TCP connections both use this interface. TCP EOF ends the read
 side and the returned connection can still write. A file stream's `remaining()`
 reports any requested bytes left unread at EOF.
 
+For buffer streams, `source.next_within(duration)` races a read against a
+local timer. It returns the source and a `StreamOutcome` after both plans join
+and releases any buffer from an interrupted read.
+
 ### Sequential writes
 
 Import `task::Sink` to call `writer.write(bytes)` on an output file or a TCP
@@ -443,11 +447,10 @@ connection. `Listener!::bind_connections(port, read_next)` calls
 `read_next(connection)` once per accepted connection. Import `task::PlanOutput`
 to use `.defer_tcp(...)` on a plan and `task::Sink` to use `.send(...)`. The
 echo handler uses them to run both
-`connection.next().within(Duration::from_secs(1))` and
+`connection.next_within(Duration::from_secs(1))` and
 `connection.send(bytes).within(Duration::from_secs(1))` on the listener loop.
-`timed_read_outcome` folds the deadline into the joined `StreamOutcome`.
-It releases any chunk if the deadline interrupts the read and
-reports timeout separately so the session can retry an idle read.
+`next_within` reports `StreamOutcome::TimedOut` so the session can retry an
+idle read.
 `send` releases the buffer after the write joins and hands back the connection
 and completion. The echo resumes reading after a send succeeds within its deadline.
 

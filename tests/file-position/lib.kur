@@ -1,13 +1,44 @@
-use async::{create_file, run};
+use async::{create_file, open_file, run};
 use std::buffer::Buffer!;
-use std::process::trap;
+use std::io::print_buffer;
+use std::process::{Args, trap};
 use std::slice::StaticRead;
-use task::{Completion, PlanOutput, Sink};
+use std::time::Duration;
+use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
 
 forall Writer, Item, Write where Sink[Writer -> Item, Write], PlanOutput[Write -> (Writer, Item, Completion[()])].
 fn write_item(writer: Writer, item: Item) -> Write { writer.write(item) }
 
-fn main() -> i32 {
+fn check_timed_read() -> i32 {
+    let access = StaticRead::new();
+    let file = match run(open_file(&access, "large.bin")) {
+        Completion::Ready(file) => file,
+        _ => return 1,
+    };
+    let length = &file.len();
+    let source = file.chunks(0, length);
+    let (source, outcome) = run(source.next_within(Duration::from_millis(500)));
+    match outcome {
+        StreamOutcome::TimedOut => (),
+        StreamOutcome::Item(bytes) => { bytes.destroy(); trap(); },
+        _ => trap(),
+    };
+    if &source.remaining() != length { trap(); }
+    if print_buffer(f"timed out\n").is_err() { trap(); }
+
+    let (source, outcome) = run(source.next());
+    let remaining = &source.remaining();
+    source.close();
+    let bytes = match outcome {
+        StreamOutcome::Item(bytes) => bytes,
+        _ => trap(),
+    };
+    if remaining != 0 { bytes.destroy(); return 1; }
+    if print_buffer(bytes).is_ok() { 0 } else { 1 }
+}
+
+fn main(args: Args) -> i32 {
+    if args.len() > 1 { return check_timed_read(); }
     let access = StaticRead::new();
     let file = match run(create_file(&access, "mixed-writes")) {
         Completion::Ready(file) => file,
