@@ -3,7 +3,6 @@ name="static_files"
 source_root="."
 kind="executable"
 entry="main"
-c_sources=["native/status.c"]
 
 [dependencies.std]
 path="../../../kursal/lib/std"

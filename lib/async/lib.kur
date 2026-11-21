@@ -36,6 +36,31 @@ extern "C" fn kable_scope_write_result(scope: *u8, id: usize, written: *usize) -
 extern "C" fn kable_scope_take_file(scope: *u8, id: usize, len: *u64) -> i32;
 extern "C" fn kable_scope_free(scope: *u8) -> ();
 extern "C" fn kable_file_close_descriptor(fd: i32) -> i32;
+extern "C" fn kable_file_error_kind(code: i32) -> u8;
+
+exposed enum FileErrorKind {
+    NotFound, NotADirectory, SymlinkLoop, CrossDevice, InvalidInput, PermissionDenied, TooLarge, Other,
+}
+
+impl Failure {
+    /// Classifies a failure from a libuv file operation. The failure retains its raw code.
+    fn file_error_kind(self) -> FileErrorKind {
+        let code = match self {
+            Failure::Operation(code) => code,
+            _ => return FileErrorKind::Other,
+        };
+        match unsafe kable_file_error_kind(code) {
+            1 => FileErrorKind::NotFound,
+            2 => FileErrorKind::NotADirectory,
+            3 => FileErrorKind::SymlinkLoop,
+            4 => FileErrorKind::CrossDevice,
+            5 => FileErrorKind::InvalidInput,
+            6 => FileErrorKind::PermissionDenied,
+            7 => FileErrorKind::TooLarge,
+            _ => FileErrorKind::Other,
+        }
+    }
+}
 
 forall Item.
 struct FilePathPlan! {

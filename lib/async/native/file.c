@@ -259,6 +259,20 @@ int32_t kable_file_close_descriptor(int32_t fd) {
     return close(fd) == 0 ? 0 : uv_translate_sys_error(errno);
 }
 
+/* Matches FileErrorKind's native tags in lib.kur. */
+uint8_t kable_file_error_kind(int32_t code) {
+    switch (code) {
+    case UV_ENOENT: return 1;
+    case UV_ENOTDIR: return 2;
+    case UV_ELOOP: return 3;
+    case UV_EXDEV: return 4;
+    case UV_EINVAL: return 5;
+    case UV_EACCES: case UV_EPERM: return 6;
+    case UV_EFBIG: return 7;
+    default: return 0;
+    }
+}
+
 void kable_file_free(KableFile *file) {
     if (!file) return;
     if (retains_descriptor(file) && file->fd >= 0) close(file->fd);
