@@ -5,6 +5,7 @@
 
 static int fail_next_realloc;
 static int fail_next_file;
+static int fail_next_queue_work;
 static int track_next_file;
 static KableFile *tracked_file;
 static unsigned released_files;
@@ -12,6 +13,7 @@ static unsigned released_files;
 void *__real_realloc(void *ptr, size_t size);
 KableFile *__real_kable_file_chunk(int fd, uint64_t offset, size_t limit);
 void __real_kable_file_free(KableFile *file);
+int __real_uv_queue_work(uv_loop_t *loop, uv_work_t *request, uv_work_cb work, uv_after_work_cb after_work);
 
 void *__wrap_realloc(void *ptr, size_t size) {
     if (fail_next_realloc) {
@@ -41,6 +43,14 @@ void __wrap_kable_file_free(KableFile *file) {
         released_files++;
     }
     __real_kable_file_free(file);
+}
+
+int __wrap_uv_queue_work(uv_loop_t *loop, uv_work_t *request, uv_work_cb work, uv_after_work_cb after_work) {
+    if (fail_next_queue_work) {
+        fail_next_queue_work = 0;
+        return UV_EIO;
+    }
+    return __real_uv_queue_work(loop, request, work, after_work);
 }
 
 typedef struct {
@@ -130,7 +140,7 @@ static void check_rejected_file(void) {
     assert(released_files == 1);
 }
 
-static size_t expired_scope_event(uint8_t *raw, uint8_t event, size_t id) {
+static size_t cancelled_scope_event(uint8_t *raw, uint8_t event, size_t id) {
     Policy *policy = (Policy *)raw;
     if (event == BEGIN) {
         assert(id == 0);
@@ -140,6 +150,8 @@ static size_t expired_scope_event(uint8_t *raw, uint8_t event, size_t id) {
         policy->cancelled = 1;
         return 0;
     }
+    if (event == TAKE_CANCEL) return SIZE_MAX;
+    if (event == JOINED) return policy->cancelled;
     return scope_event(raw, event, id);
 }
 
@@ -152,7 +164,7 @@ static void check_expired_hosted_scope(void) {
     uv_loop_t loop;
     assert(uv_loop_init(&loop) == 0);
     Policy policy = {0};
-    uint8_t *scope = kable_scope_new((uint8_t *)&policy, add_leaf, add_pair, expired_scope_event);
+    uint8_t *scope = kable_scope_new((uint8_t *)&policy, add_leaf, add_pair, cancelled_scope_event);
     assert(scope && kable_scope_add_timer(scope, 0) == 0);
     uint64_t end_ms = kable_now_millis();
     assert(!kable_scope_start(scope, 0, &loop, end_ms, 1, unexpected_join, NULL));
@@ -161,9 +173,29 @@ static void check_expired_hosted_scope(void) {
     assert(uv_loop_close(&loop) == 0 && policy.destroyed == 1);
 }
 
+static void check_file_start_failure(void) {
+    uv_loop_t loop;
+    assert(uv_loop_init(&loop) == 0);
+    Policy policy = {0};
+    uint8_t *scope = kable_scope_new((uint8_t *)&policy, add_leaf, add_pair, cancelled_scope_event);
+    assert(scope);
+    unsigned released_before = released_files;
+    track_next_file = 1;
+    assert(kable_scope_add_chunk(scope, -1, 0, 10) == 0 && tracked_file);
+
+    fail_next_queue_work = 1;
+    assert(!kable_scope_start(scope, 0, &loop, 0, 0, unexpected_join, NULL));
+    assert(!fail_next_queue_work && policy.cancelled && !uv_loop_alive(&loop));
+    assert(kable_scope_result(scope, 0) == UV_EIO && tracked_file);
+    kable_scope_free(scope);
+    assert(!tracked_file && released_files == released_before + 1);
+    assert(uv_loop_close(&loop) == 0 && policy.destroyed == 1);
+}
+
 int main(void) {
     check_slot_growth_failure();
     check_file_allocation_failure();
     check_rejected_file();
     check_expired_hosted_scope();
+    check_file_start_failure();
 }

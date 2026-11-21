@@ -18,8 +18,8 @@ enum { READ_CHUNK = KABLE_CREATE_FILE + 1, WRITE_CHUNK };
 
 struct KableFile {
     uv_work_t request;
-    void (*done)(void *);
-    void *context;
+    void (*done)(uint8_t *);
+    uint8_t *context;
     char *path;
     uint8_t *data;
     const uint8_t *input;
@@ -31,7 +31,6 @@ struct KableFile {
     uint64_t offset;
     uint64_t size;
     atomic_bool cancelled;
-    int queued;
     int status;
 };
 
@@ -213,23 +212,24 @@ static void file_work(uv_work_t *request) {
 
 static void file_done(uv_work_t *request, int status) {
     KableFile *file = request->data;
-    file->queued = 0;
     if (status < 0) file->status = status;
     file->done(file->context);
 }
 
-int kable_file_start(KableFile *file, uv_loop_t *loop, void (*done)(void *), void *context) {
+int32_t kable_file_start(uint8_t *raw, uint8_t *loop, void (*done)(uint8_t *), uint8_t *context) {
+    KableFile *file = (KableFile *)raw;
     file->done = done;
     file->context = context;
     file->request.data = file;
-    int status = uv_queue_work(loop, &file->request, file_work, file_done);
-    if (status == 0) file->queued = 1;
-    return status;
+    return uv_queue_work((uv_loop_t *)loop, &file->request, file_work, file_done);
 }
 
-void kable_file_cancel(KableFile *file) {
+uint8_t kable_file_stop(uint8_t *raw) {
+    KableFile *file = (KableFile *)raw;
     atomic_store_explicit(&file->cancelled, 1, memory_order_relaxed);
-    if (file->queued) uv_cancel((uv_req_t *)&file->request);
+    uv_cancel((uv_req_t *)&file->request);
+    /* The after-work callback retires both queued and running requests. */
+    return 1;
 }
 
 int kable_file_result(KableFile *file, uint8_t **data, size_t *len) {

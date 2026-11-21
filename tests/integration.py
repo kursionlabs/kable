@@ -1236,7 +1236,7 @@ def check_native_registration(directory):
     subprocess.run([
         "cc", str(ROOT / "tests/native_registration.c"),
         str(native / "file.c"), str(native / "timer.c"),
-        "-Wl,--wrap=realloc,--wrap=kable_file_chunk,--wrap=kable_file_free",
+        "-Wl,--wrap=realloc,--wrap=kable_file_chunk,--wrap=kable_file_free,--wrap=uv_queue_work",
         "-luv", "-o", str(binary),
     ], check=True)
     subprocess.run([str(binary)], check=True, timeout=5)
