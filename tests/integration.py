@@ -80,6 +80,15 @@ def check_http(port):
                     400, b"Bad Request\n")
     assert_response(exchange(port, b"GET / HTTP/1.1\r\nHost: two names\r\n\r\n"),
                     400, b"Bad Request\n")
+    for first, rest, status, body in (
+        (b"local", b"host \t", 200, b"Kable\n"),
+        (b"two ", b"names", 400, b"Bad Request\n"),
+    ):
+        with connect(port) as client:
+            client.sendall(b"GET / HTTP/1.1\r\nHost: " + first)
+            assert not select.select([client], [], [], 0.05)[0]
+            client.sendall(rest + b"\r\n\r\n")
+            assert_response(read_response(client), status, body)
     assert_response(exchange(port, b"POST /echo HTTP/1.1\r\n", host,
                              b"Content-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n"),
                     400, b"Bad Request\n")
@@ -90,6 +99,11 @@ def check_http(port):
     assert_response(exchange(port, b"POST /echo HTTP/1.1\r\n", host,
                              b"Expect: 100-continue\r\nContent-Length: 1\r\n\r\n"),
                     417, b"Expectation Failed\n")
+    oversized_expected = b"Expect: 100-continue\r\nContent-Length: 1048577\r\n\r\n"
+    assert_response(exchange(port, b"POST /echo HTTP/1.1\r\n", host, oversized_expected),
+                    417, b"Expectation Failed\n")
+    assert_response(exchange(port, b"POST /echo HTTP/1.1\r\nHost: \t\r\n", oversized_expected),
+                    400, b"Bad Request\n")
     assert_response(exchange(port, b"GET / HTTP/1.1\r\n", host,
                              b"X-Large: " + b"a" * 16384),
                     431, b"Request Header Fields Too Large\n")

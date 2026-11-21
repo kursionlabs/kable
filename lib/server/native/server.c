@@ -17,6 +17,8 @@ enum {
 
 typedef int32_t (*respond_fn)(uint8_t *, uint8_t *, uint16_t, uint8_t,
     uint8_t, uint8_t *, size_t, uint8_t *, size_t);
+typedef uint16_t (*validate_head_fn)(uint8_t, uint8_t, uint32_t, uint8_t, uint8_t,
+    uint64_t, uint64_t, uint8_t *, size_t, size_t);
 
 /* Values shared with respond in server.kur. */
 enum { METHOD_OTHER, METHOD_GET, METHOD_HEAD, METHOD_POST };
@@ -31,6 +33,7 @@ typedef struct {
 
 typedef struct {
     uint8_t *listener;
+    validate_head_fn validate_head;
     respond_fn respond;
     uint8_t *context;
 } Server;
@@ -45,7 +48,8 @@ typedef struct {
     int completing_plan;
     Server *server;
     llhttp_t parser;
-    Bytes target;
+    Bytes head; /* The request target followed by the first Host value. */
+    size_t target_len;
     Bytes body;
     size_t wire_bytes;
     uint64_t deadline;
@@ -54,12 +58,11 @@ typedef struct {
     int complete;
     char field[8];
     size_t field_len;
-    unsigned hosts;
+    uint32_t hosts;
     uint8_t range[MAX_RANGE];
     size_t range_len;
     unsigned ranges;
     int if_range;
-    enum { HOST_EMPTY, HOST_VALUE, HOST_TRAILING_SPACE, HOST_INVALID } host;
     int expect;
 } Client;
 
@@ -80,12 +83,18 @@ static int append(Bytes *bytes, const char *src, size_t len, size_t limit) {
     return 0;
 }
 
-static int on_url(llhttp_t *parser, const char *at, size_t len) {
-    Client *client = parser->data;
-    int status = append(&client->target, at, len, MAX_HEAD);
+static int append_head(Client *client, const char *at, size_t len) {
+    int status = append(&client->head, at, len, MAX_HEAD);
     if (status == 0) return 0;
     client->rejection = status == UV_ENOBUFS ? 431 : 500;
     return HPE_USER;
+}
+
+static int on_url(llhttp_t *parser, const char *at, size_t len) {
+    Client *client = parser->data;
+    int status = append_head(client, at, len);
+    client->target_len = client->head.len;
+    return status;
 }
 
 static int on_field(llhttp_t *parser, const char *at, size_t len) {
@@ -107,19 +116,10 @@ static int field_is(const Client *client, const char *name, size_t len) {
 static int on_value(llhttp_t *parser, const char *at, size_t len) {
     Client *client = parser->data;
     if (client->headers_done) return 0;
-    if (field_is(client, "host", 4)) {
-        for (size_t i = 0; i < len; i++) {
-            unsigned char byte = (unsigned char)at[i];
-            if (byte == ' ' || byte == '\t') {
-                if (client->host == HOST_VALUE) client->host = HOST_TRAILING_SPACE;
-            } else if (byte < '!' || byte > '~' || byte == ',' ||
-                client->host == HOST_TRAILING_SPACE || client->host == HOST_INVALID) {
-                client->host = HOST_INVALID;
-            } else {
-                client->host = HOST_VALUE;
-            }
-        }
-    } else if (field_is(client, "range", 5) && !client->ranges && client->range_len <= MAX_RANGE) {
+    if (!client->hosts && field_is(client, "host", 4)) {
+        return append_head(client, at, len);
+    }
+    if (field_is(client, "range", 5) && !client->ranges && client->range_len <= MAX_RANGE) {
         if (len > MAX_RANGE - client->range_len) {
             client->range_len = MAX_RANGE + 1;
         } else if (len) {
@@ -143,22 +143,10 @@ static int on_value_complete(llhttp_t *parser) {
 
 static int on_headers(llhttp_t *parser) {
     Client *client = parser->data;
-    uint8_t minor = llhttp_get_http_minor(parser);
-    if (llhttp_get_http_major(parser) != 1 || minor > 1) {
-        client->rejection = 505;
-    } else if (client->hosts > 1 || (minor == 1 && !client->hosts)
-        || (client->hosts && (client->host == HOST_EMPTY || client->host == HOST_INVALID))) {
-        client->rejection = 400;
-    } else if (llhttp_get_upgrade(parser) || llhttp_get_method(parser) == HTTP_CONNECT) {
-        client->rejection = 501;
-    } else if (!client->target.len || client->target.data[0] != '/'
-        || memchr(client->target.data, '#', client->target.len)) {
-        client->rejection = 400;
-    } else if (client->expect) {
-        client->rejection = 417;
-    } else if ((parser->flags & F_CONTENT_LENGTH) && parser->content_length > MAX_BODY) {
-        client->rejection = 413;
-    }
+    uint64_t length = parser->flags & F_CONTENT_LENGTH ? parser->content_length : 0;
+    client->rejection = client->server->validate_head(llhttp_get_http_major(parser), llhttp_get_http_minor(parser),
+        client->hosts, llhttp_get_upgrade(parser) || llhttp_get_method(parser) == HTTP_CONNECT,
+        client->expect, length, MAX_BODY, client->head.data, client->head.len, client->target_len);
     if (client->rejection) return -1;
     client->headers_done = 1;
     return 0;
@@ -189,10 +177,11 @@ static const llhttp_settings_t settings = {
 };
 
 static void release_request(Client *client) {
-    free(client->target.data);
+    free(client->head.data);
     free(client->body.data);
-    client->target = (Bytes){0};
+    client->head = (Bytes){0};
     client->body = (Bytes){0};
+    client->target_len = 0;
 }
 
 static void destroy_client(uint8_t *attachment) {
@@ -275,7 +264,7 @@ static int reply(Client *client, uint16_t status) {
     uint8_t http10 = llhttp_get_http_major(&client->parser) == 1
         && llhttp_get_http_minor(&client->parser) == 0;
     int result = client->server->respond(client->server->context, (uint8_t *)client,
-        status, method, http10, client->target.data, client->target.len,
+        status, method, http10, client->head.data, client->target_len,
         client->body.data, client->body.len);
     release_request(client);
     return result;
@@ -344,12 +333,13 @@ static int32_t on_event(uint8_t *context, uint8_t *connection, uint8_t event,
     }
 }
 
-uint8_t *kable_bind(uint16_t port, respond_fn respond, uint8_t *context, int32_t *error) {
+uint8_t *kable_bind(uint16_t port, validate_head_fn validate_head, respond_fn respond, uint8_t *context, int32_t *error) {
     Server *server = calloc(1, sizeof *server);
     if (!server) {
         *error = UV_ENOMEM;
         return NULL;
     }
+    server->validate_head = validate_head;
     server->respond = respond;
     server->context = context;
     server->listener = kable_tcp_bind(port, (uint8_t *)server, on_event, error);

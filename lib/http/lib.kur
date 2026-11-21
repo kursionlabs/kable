@@ -1,4 +1,4 @@
-//! Request ownership and HTTP response serialization.
+//! Request validation and ownership, and HTTP response serialization.
 use std::ascii::{is_digit, to_lower};
 use std::buffer::Buffer!;
 use std::cmp::min;
@@ -7,6 +7,49 @@ use std::raw::Span;
 use std::slice::{ReadBytes, Slice, StaticRead};
 
 exposed enum Method { Other, Get, Head, Post }
+
+forall 'k.
+exposed struct RequestHead {
+    major: u8,
+    minor: u8,
+    host_count: u32,
+    host: Span['k],
+    upgrade_or_connect: bool,
+    target: Span['k],
+    expect: bool,
+    content_length: u64,
+}
+
+/// Checks the request before reading its body and returns any rejection status.
+forall C, 'k where ReadBytes[C, Span['k]].
+fn validate_request_head(&access: C, head: RequestHead['k], body_limit: u64) -> Option[u16] {
+    let { major, minor, host_count, host, upgrade_or_connect, target, expect, content_length } = head;
+    if major != 1 || minor > 1 { return Option::Some.(505); }
+    if host_count > 1 || (minor == 1 && host_count == 0) || (host_count == 1 && !valid_host(&access, host)) {
+        return Option::Some.(400);
+    }
+    if upgrade_or_connect { return Option::Some.(501); }
+    if target.byte_or_zero(&access, 0) != b'/' || target.find_byte(&access, b'#', 0).is_some() {
+        return Option::Some.(400);
+    }
+    if expect { return Option::Some.(417); }
+    if content_length > body_limit { return Option::Some.(413); }
+    Option::None
+}
+
+forall C, 'k where ReadBytes[C, Span['k]].
+fn valid_host(&access: C, host: Span['k]) -> bool {
+    let host = skip_header_space(&access, host);
+    if host.is_empty() { return false; }
+    var i = 0;
+    while i < host.len() {
+        let byte = host.at(&access, i);
+        if header_space(byte) { return skip_header_space(&access, host.skip(i)).is_empty(); }
+        if byte < b'!' || byte > b'~' || byte == b',' { return false; }
+        i = i + 1;
+    }
+    true
+}
 
 exposed struct Request! {
     method: Method,
