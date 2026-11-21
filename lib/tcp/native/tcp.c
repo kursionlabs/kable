@@ -16,7 +16,7 @@ typedef struct {
     uv_signal_t interrupt;
     uv_signal_t terminate;
     uv_signal_t broken_pipe;
-    KableTcpHandler handler;
+    KableTcpAccept accept;
     uint8_t *context;
     unsigned connections;
     int stopping;
@@ -50,9 +50,7 @@ typedef struct {
     int phase;
     int socket_closed;
     int read_eof;
-    uint8_t event;
-    int error;
-    size_t length;
+    int32_t read_count;
     char input[READ_SIZE];
 } Connection;
 
@@ -139,31 +137,6 @@ void kable_tcp_attach(uint8_t *raw, uint8_t *attachment, void (*destroy)(uint8_t
     connection->destroy_attachment = destroy;
 }
 
-static void notify(Connection *connection, uint8_t event, size_t length, int error) {
-    Listener *listener = connection->listener;
-    int terminal = event == KABLE_TCP_END || event == KABLE_TCP_CANCELLED || event == KABLE_TCP_FAILED;
-    connection->phase = terminal ? TERMINAL : IDLE;
-    connection->event = event;
-    int status = listener->handler(listener->context, (uint8_t *)connection, event,
-        (uint8_t *)connection->input, length, error);
-    if (connection->phase == TERMINAL) {
-        close_connection(connection);
-    } else if (status < 0) {
-        notify(connection, KABLE_TCP_FAILED, 0, status);
-    }
-}
-
-static void complete_read(Connection *connection, uint8_t event, size_t length, int error) {
-    if (!connection->read_ready) return;
-    void (*ready)(uint8_t *) = connection->read_ready;
-    uint8_t *context = connection->read_context;
-    connection->event = event;
-    connection->length = length;
-    connection->error = error;
-    kable_tcp_stop_scoped_read((uint8_t *)connection);
-    ready(context);
-}
-
 static void allocate_read(uv_handle_t *handle, size_t suggested, uv_buf_t *buffer) {
     (void)suggested;
     Connection *connection = handle->data;
@@ -173,12 +146,16 @@ static void allocate_read(uv_handle_t *handle, size_t suggested, uv_buf_t *buffe
 static void read_done(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer) {
     (void)buffer;
     Connection *connection = stream->data;
-    if (count > 0) complete_read(connection, KABLE_TCP_BYTES, (size_t)count, 0);
-    else if (count == UV_EOF) {
+    if (count == 0 || !connection->read_ready) return;
+    if (count == UV_EOF) {
         connection->read_eof = 1;
-        complete_read(connection, KABLE_TCP_END, 0, 0);
+        count = 0;
     }
-    else if (count < 0) complete_read(connection, KABLE_TCP_FAILED, 0, (int)count);
+    connection->read_count = (int32_t)count;
+    void (*ready)(uint8_t *) = connection->read_ready;
+    uint8_t *context = connection->read_context;
+    kable_tcp_stop_scoped_read((uint8_t *)connection);
+    ready(context);
 }
 
 int32_t kable_tcp_start_scoped_read(uint8_t *raw, uint8_t *loop,
@@ -202,12 +179,10 @@ uint8_t kable_tcp_stop_scoped_read(uint8_t *raw) {
     return 0;
 }
 
-uint8_t kable_tcp_read_result(uint8_t *raw, uint8_t **bytes, size_t *len, int32_t *error) {
+int32_t kable_tcp_read_result(uint8_t *raw, uint8_t **bytes) {
     Connection *connection = (Connection *)raw;
     *bytes = (uint8_t *)connection->input;
-    *len = connection->length;
-    *error = connection->error;
-    return connection->event;
+    return connection->read_count;
 }
 
 uint8_t *kable_tcp_new_scoped_write(uint8_t *raw, uint8_t *bytes, size_t len) {
@@ -364,35 +339,22 @@ static void parked_read(uv_stream_t *stream, ssize_t count, const uv_buf_t *buff
 }
 
 static int watch_peer(Connection *connection) {
-    if (!connection->read_eof) {
-        int status = uv_read_start((uv_stream_t *)&connection->socket, allocate_read, parked_read);
+    return connection->read_eof ? 0 :
+        uv_read_start((uv_stream_t *)&connection->socket, allocate_read, parked_read);
+}
+
+int32_t kable_tcp_schedule_timed(uint8_t *raw, KableTcpTimedPlan mode, uint8_t *scope,
+    size_t root, uint8_t *plan, KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline) {
+    Connection *connection = (Connection *)raw;
+    if (connection->phase != IDLE || connection->listener->stopping || socket_closing(connection)) {
+        return UV_ECANCELED;
+    }
+    if (mode == KABLE_TCP_DEFER_REPLY) {
+        int status = watch_peer(connection);
         if (status < 0) return status;
     }
     connection->cancelled = 0;
-    return 0;
-}
-
-int32_t kable_tcp_schedule_receive(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t *host, uint64_t deadline) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != IDLE || connection->listener->stopping || socket_closing(connection)) {
-        return UV_ECANCELED;
-    }
-    connection->cancelled = 0;
-    connection->phase = RECEIVING;
-    return start_plan(connection, (PendingPlan){ .scope = scope,
-        .plan = plan, .finish = finish, .host = host, .deadline = deadline }, root);
-}
-
-int32_t kable_tcp_schedule_until(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != IDLE || connection->listener->stopping || socket_closing(connection)) {
-        return UV_ECANCELED;
-    }
-    int status = watch_peer(connection);
-    if (status < 0) return status;
-    connection->phase = PARKED;
+    connection->phase = mode == KABLE_TCP_DEFER_REPLY ? PARKED : RECEIVING;
     return start_plan(connection, (PendingPlan){ .scope = scope,
         .plan = plan, .finish = finish, .host = host, .deadline = deadline, .flags = flags }, root);
 }
@@ -435,6 +397,7 @@ int32_t kable_tcp_stream_begin(uint8_t *raw, uint64_t ms) {
         kable_timer_cancel(connection->timer);
         return status;
     }
+    connection->cancelled = 0;
     connection->phase = STREAMING;
     connection->stream_idle_ms = ms;
     return 0;
@@ -495,8 +458,11 @@ static void accept_connection(uv_stream_t *stream, int status) {
     connection->socket.data = connection;
     listener->connections++;
     status = uv_accept(stream, (uv_stream_t *)&connection->socket);
-    if (status < 0 || listener->connections > MAX_CONNECTIONS) close_connection(connection);
-    else notify(connection, KABLE_TCP_CONNECTED, 0, 0);
+    if (status == 0 && listener->connections <= MAX_CONNECTIONS) {
+        status = listener->accept(listener->context, (uint8_t *)connection);
+        if (status >= 0) return;
+    }
+    close_connection(connection);
 }
 
 static int watch_signal(Listener *listener, uv_signal_t *signal, int signum) {
@@ -531,7 +497,7 @@ static int run_and_free(Listener *listener) {
     return status;
 }
 
-uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpHandler handler, int32_t *error) {
+uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpAccept accept, int32_t *error) {
     Listener *listener = calloc(1, sizeof *listener);
     if (!listener) {
         *error = UV_ENOMEM;
@@ -543,7 +509,7 @@ uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpHandler handler
         free(listener);
         return NULL;
     }
-    listener->handler = handler;
+    listener->accept = accept;
     listener->context = context;
     status = listen_local(listener, port);
     if (status == 0) status = watch_signal(listener, &listener->interrupt, SIGINT);

@@ -7,17 +7,12 @@
 
 #include "../../async/native/scope.h"
 
-enum KableTcpEvent {
-    KABLE_TCP_CONNECTED, KABLE_TCP_BYTES, KABLE_TCP_TIMED_OUT, KABLE_TCP_END,
-    KABLE_TCP_CANCELLED, KABLE_TCP_FAILED
-};
-
-/* The callback borrows the connection and bytes until it returns. A negative
+/* The accept callback borrows the connection until it returns. A negative
    result fails the connection. A successful callback starts one operation
    or closes the connection. */
-typedef int32_t (*KableTcpHandler)(uint8_t *, uint8_t *, uint8_t, uint8_t *, size_t, int32_t);
+typedef int32_t (*KableTcpAccept)(uint8_t *context, uint8_t *connection);
 
-uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpHandler handler, int32_t *error);
+uint8_t *kable_tcp_bind(uint16_t port, uint8_t *context, KableTcpAccept accept, int32_t *error);
 uint16_t kable_tcp_port(uint8_t *listener);
 int32_t kable_tcp_run(uint8_t *listener);
 void kable_tcp_stop(uint8_t *listener);
@@ -27,7 +22,10 @@ void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(
 int32_t kable_tcp_start_scoped_read(uint8_t *connection, uint8_t *loop,
     void (*ready)(uint8_t *), uint8_t *context);
 uint8_t kable_tcp_stop_scoped_read(uint8_t *connection);
-uint8_t kable_tcp_read_result(uint8_t *connection, uint8_t **bytes, size_t *len, int32_t *error);
+/* After a read completes and joins, returns the byte count, zero for EOF,
+   or a negative transport error. The bytes are borrowed until the next
+   read or connection close. */
+int32_t kable_tcp_read_result(uint8_t *connection, uint8_t **bytes);
 /* The plan keeps the bytes alive until the request has joined. */
 uint8_t *kable_tcp_new_scoped_write(uint8_t *connection, uint8_t *bytes, size_t len);
 int32_t kable_tcp_start_scoped_write(uint8_t *request, uint8_t *loop,
@@ -38,16 +36,14 @@ int32_t kable_tcp_collect_scoped_write(uint8_t *request);
    A successful submission owns the plan until finish runs after the scope joins. */
 int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags);
-/* Watches the peer while the plan runs under an absolute deadline. The join
-   callback borrows host and receives the supplied flags, plus ACTIVE when
-   the socket can still reply. */
 enum { KABLE_TCP_PLAN_ACTIVE = 1 };
-/* Schedules one ingress read under the original request deadline. ACTIVE
-   allows a reply when the socket is open, including after a deadline fires. */
-int32_t kable_tcp_schedule_receive(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t *host, uint64_t deadline);
-int32_t kable_tcp_schedule_until(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
+typedef enum { KABLE_TCP_RECEIVE, KABLE_TCP_DEFER_REPLY } KableTcpTimedPlan;
+/* Runs under an absolute deadline. The join callback borrows host and receives
+   the flags, plus ACTIVE when the socket can reply. RECEIVE reads its own input
+   and permits a timeout reply. DEFER_REPLY watches the peer and suppresses
+   replies after the deadline. */
+int32_t kable_tcp_schedule_timed(uint8_t *connection, KableTcpTimedPlan mode, uint8_t *scope,
+    size_t root, uint8_t *plan, KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
 /* Starts the fixed deadline for a final write, half-close, and drain.
    A read-side EOF still permits the write, and listener shutdown lets it finish. */
 int32_t kable_tcp_finish_begin(uint8_t *connection, uint64_t ms);
