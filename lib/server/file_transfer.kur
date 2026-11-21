@@ -1,0 +1,54 @@
+//! Sends headers and file chunks on a connection with a response in progress.
+use async::FileChunks!;
+use std::buffer::Buffer!;
+use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
+use tcp::Connection!;
+
+struct FileTransfer! { connection: Connection!, chunks: FileChunks! }
+
+unsafe fn start(connection: Connection!, chunks: FileChunks!, headers: Buffer!) -> i32 {
+    let transfer = FileTransfer!.{ connection, chunks };
+    unsafe transfer.write(headers)
+}
+
+impl FileTransfer! {
+    unsafe fn write(self, bytes: Buffer!) -> i32 {
+        let { connection, chunks } = self;
+        unsafe connection.submit_stream(
+            |connection| connection.send(bytes),
+            |result| {
+                let (connection, completion) = result;
+                let transfer = FileTransfer!.{ connection, chunks };
+                match completion {
+                    Completion::Ready => unsafe transfer.read_next(),
+                    _ => unsafe transfer.finish(false),
+                }
+            },
+        )
+    }
+
+    unsafe fn read_next(self) -> i32 {
+        if &self.chunks.remaining() == 0 { return unsafe self.finish(true); }
+        let { connection, chunks } = self;
+        unsafe connection.submit_stream(
+            |connection| chunks.next().map(|result| {
+                let (chunks, outcome) = result;
+                (FileTransfer!.{ connection, chunks }, outcome)
+            }),
+            |result| {
+                let (transfer, outcome) = result;
+                match outcome {
+                    StreamOutcome::Item(bytes) => unsafe transfer.write(bytes),
+                    _ => unsafe transfer.finish(false),
+                }
+            },
+        )
+    }
+
+    unsafe fn finish(self, complete: bool) -> i32 {
+        let { connection, chunks } = self;
+        chunks.close();
+        if complete { unsafe connection.finish_stream() }
+        else { unsafe connection.abort_stream() }
+    }
+}

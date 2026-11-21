@@ -1,8 +1,9 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{FileChunks!, OpenedFile!, Scope!};
+use async::{OpenedFile!, Scope!};
 use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
+use package::file_transfer;
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
@@ -12,7 +13,7 @@ use std::ptr::is_null;
 use std::raw::Span;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Sink, Stream, StreamOutcome, sleep};
+use task::{Completion, DeadlineStatus, PlanOutput, sleep};
 use task::driver::Plan;
 use tcp::Connection!;
 use thunk::Thunk!;
@@ -198,44 +199,7 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
             return error;
         },
     };
-    unsafe write_then_next(connection, headers, file.chunks(start, count))
-}
-
-unsafe fn write_then_next(connection: Connection!, bytes: Buffer!, stream: FileChunks!) -> i32 {
-    unsafe connection.submit_stream(
-        |connection| connection.send(bytes),
-        |result| unsafe write_joined(result, stream),
-    )
-}
-
-unsafe fn write_joined(result: (Connection!, Completion[()]), stream: FileChunks!) -> i32 {
-    let (connection, completion) = result;
-    match completion {
-        Completion::Ready => (),
-        Completion::Cancelled | Completion::Failed => {
-            stream.close();
-            return unsafe connection.abort_stream();
-        },
-    }
-    if &stream.remaining() == 0 {
-        stream.close();
-        return unsafe connection.finish_stream();
-    }
-    unsafe connection.submit_stream(
-        |connection| stream.next().map(|chunk| (connection, chunk)),
-        |result| unsafe chunk_joined(result),
-    )
-}
-
-unsafe fn chunk_joined(result: (Connection!, (FileChunks!, StreamOutcome[Buffer!]))) -> i32 {
-    let (connection, (stream, outcome)) = result;
-    match outcome {
-        StreamOutcome::Item(bytes) => unsafe write_then_next(connection, bytes, stream),
-        _ => {
-            stream.close();
-            unsafe connection.abort_stream()
-        },
-    }
+    unsafe file_transfer::start(connection, file.chunks(start, count), headers)
 }
 
 unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connect: u8,
