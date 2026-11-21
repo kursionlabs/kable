@@ -1,10 +1,11 @@
 //! TCP integration for native hosts that own a listener and event loop.
 use async::Scope!;
 use async::host::prepare_hosted;
-use package::{Connection!, OperationPlan!, read_plan};
+use package::Connection!;
 use package::native::{
     kable_tcp_close, kable_tcp_schedule, kable_tcp_finish_begin, kable_tcp_stream_begin, kable_tcp_stream_end,
 };
+use package::operation::{OperationPlan!, read_for_host};
 use std::buffer::Buffer!;
 use std::option::Result;
 use task::{Completion, Sink};
@@ -16,12 +17,7 @@ const PLAN_ACTIVE: u8 = 1;
 /// Runs a read for the host, which borrows the native bytes on join.
 /// The host keeps the connection valid and owns it through collection.
 unsafe fn read(raw: *u8) -> OperationPlan![Connection!, Completion[()]] {
-    read_plan(Connection!.{ raw }, finish_read)
-}
-
-fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> Completion[()] {
-    let { raw } = connection;
-    completion
+    read_for_host(Connection!.{ raw })
 }
 
 /// Closes the host's live connection.

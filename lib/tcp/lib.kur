@@ -3,109 +3,21 @@ use async::Scope!;
 use async::host::{HostedPlan!, prepare_hosted};
 use package::host;
 use package::native::{
-    kable_tcp_bind, kable_tcp_port, kable_tcp_run, kable_tcp_stop, kable_tcp_close,
-    kable_tcp_start_scoped_read, kable_tcp_stop_scoped_read, kable_tcp_read_result,
-    kable_tcp_new_scoped_write, kable_tcp_start_scoped_write, kable_tcp_stop_scoped_write,
-    kable_tcp_collect_scoped_write, kable_tcp_schedule,
+    kable_tcp_bind, kable_tcp_port, kable_tcp_run, kable_tcp_stop, kable_tcp_close, kable_tcp_schedule,
 };
+use package::operation::OperationPlan!;
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
-use std::mem::{alloca, sizeof};
-use std::option::{Option, Result};
-use std::ptr::{is_null, null};
-use task::{Completion, Failure, PlanOutput, Sink, Stream, StreamOutcome};
+use std::mem::sizeof;
+use std::option::Result;
+use std::ptr::is_null;
+use task::PlanOutput;
 use task::driver::Plan;
 
 export host;
+export OperationPlan!;
 
 exposed(package) struct Connection! { raw: *u8 }
-
-forall State, Output.
-struct OperationPlan! {
-    state: State,
-    prepare: fn(&_: State) -> *u8,
-    start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
-    stop: unsafe fn(*u8) -> u8,
-    finish: fn(State, *u8, Completion[()]) -> Output,
-    context: *u8,
-    id: Option[usize],
-}
-
-forall State, Output.
-instance PlanOutput[OperationPlan![State, Output] -> Output] {}
-
-forall State, Output.
-instance Plan[OperationPlan![State, Output], Scope! -> Output] {
-    fn stage(&task: OperationPlan![State, Output], &scope: Scope!) -> Option[usize] {
-        let { state, prepare, start, stop, finish, context, id } = task;
-        let context = prepare(&state);
-        let id = unsafe &scope.add_operation(context, start, stop);
-        task = OperationPlan!.{ state, prepare, start, stop, finish, context, id };
-        id
-    }
-
-    fn collect(task: OperationPlan![State, Output], &scope: Scope!) -> Output {
-        let { state, prepare, start, stop, finish, context, id } = task;
-        finish(state, context, (&scope.result(id)).completion())
-    }
-}
-
-fn prepare_read(&connection: Connection!) -> *u8 {
-    let { raw } = connection;
-    connection = Connection!.{ raw };
-    raw
-}
-
-fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> (Connection!, StreamOutcome[Buffer!]) {
-    let outcome = match completion {
-        Completion::Ready => unsafe read_result(context),
-        Completion::Cancelled => StreamOutcome::Cancelled,
-        Completion::Failed(failure) => StreamOutcome::Failed.(failure),
-    };
-    (connection, outcome)
-}
-
-forall Output.
-fn read_plan(connection: Connection!, finish: fn(Connection!, *u8, Completion[()]) -> Output)
-    -> OperationPlan![Connection!, Output] {
-    OperationPlan!.{
-        state: connection, prepare: prepare_read, start: kable_tcp_start_scoped_read,
-        stop: kable_tcp_stop_scoped_read, finish, context: null(), id: Option::None,
-    }
-}
-
-fn prepare_write(&state: (Connection!, Buffer!)) -> *u8 {
-    let ({ raw }, bytes) = state;
-    let request = unsafe kable_tcp_new_scoped_write(raw, unsafe &bytes.as_ptr(), &bytes.len());
-    state = (Connection!.{ raw }, bytes);
-    request
-}
-
-fn finish_write(state: (Connection!, Buffer!), request: *u8, completion: Completion[()])
-    -> (Connection!, Buffer!, Completion[()]) {
-    let (connection, bytes) = state;
-    // Collection frees the native request on every outcome.
-    let status = unsafe kable_tcp_collect_scoped_write(request);
-    let completion = completion.and_then(|unit| {
-        if status < 0 { Completion::Failed.(Failure::Operation.(status)) } else { Completion::Ready.(unit) }
-    });
-    (connection, bytes, completion)
-}
-
-unsafe fn read_result(raw: *u8) -> StreamOutcome[Buffer!] {
-    let data = unsafe alloca[*u8]();
-    let count = unsafe kable_tcp_read_result(raw, data);
-    if count > 0 {
-        let bytes = unsafe *data;
-        let length = count as usize;
-        let chunk = unsafe Buffer!::new_with_cap(length).push_n(bytes, length);
-        StreamOutcome::Item.(chunk)
-    } else if count == 0 {
-        StreamOutcome::Eof
-    } else {
-        StreamOutcome::Failed.(Failure::Operation.(count))
-    }
-}
 
 enum Action! {
     Scoped(HostedPlan!),
@@ -148,25 +60,6 @@ impl Task {
 impl Connection! {
     /// Closes the connection when the listener handles the returned action.
     fn close(self) -> Action! { Action!::Close.(self) }
-}
-
-instance Stream[Connection! -> OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])]] {
-    /// Plans one read. EOF hands back the connection with its write side available.
-    fn next(source: Connection!) -> OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])] {
-        read_plan(source, finish_read)
-    }
-}
-
-instance Sink[Connection! -> Buffer!, OperationPlan![(Connection!, Buffer!), (Connection!, Buffer!, Completion[()])]] {
-    /// Returns the connection and buffer after the write joins. Cancelling an
-    /// in-flight write closes the socket. An interrupted write may be partial.
-    fn write(connection: Connection!, bytes: Buffer!)
-        -> OperationPlan![(Connection!, Buffer!), (Connection!, Buffer!, Completion[()])] {
-        OperationPlan!.{
-            state: (connection, bytes), prepare: prepare_write, start: kable_tcp_start_scoped_write,
-            stop: kable_tcp_stop_scoped_write, finish: finish_write, context: null(), id: Option::None,
-        }
-    }
 }
 
 struct Handler { accept: fn(Connection!) -> Action! }

@@ -1055,6 +1055,7 @@ def main():
             file_position = build("tests/file-position", Path(directory) / "file-position")
             http_file = build("examples/http-file", Path(directory) / "http-file")
             tcp_echo = build("examples/tcp-echo", Path(directory) / "tcp-echo")
+            check_tcp_api_boundary(Path(directory))
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
@@ -1078,6 +1079,78 @@ def build(package, binary):
         check=True,
     )
     return binary
+
+
+def check_tcp_api_boundary(directory):
+    package = directory / "tcp-api-source"
+    package.mkdir()
+    (package / "kur.toml").write_text(f"""
+[package]
+name="tcp_api_test"
+source_root="."
+kind="executable"
+entry="main"
+
+[dependencies.tcp]
+path="{ROOT / 'lib/tcp'}"
+
+[dependencies.std]
+path="{(ROOT / '../kursal/lib/std').resolve()}"
+
+[dependencies.task]
+path="{ROOT / 'lib/task'}"
+""")
+    (package / "lib.kur").write_text("""
+use std::buffer::Buffer!;
+use task::{PlanOutput, Stream, StreamOutcome};
+use tcp::{Action!, Connection!, OperationPlan!};
+
+fn receive(connection: Connection!) -> Action! {
+    let read: OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])] = connection.next();
+    read.defer_tcp(|result| {
+        let (connection, outcome) = result;
+        outcome.discard(Buffer!::destroy);
+        connection.close()
+    })
+}
+
+fn main() -> i32 {
+    let handler = receive;
+    0
+}
+""")
+    build(str(package), directory / "tcp-api")
+
+    probes = [
+        ("""
+use tcp::Connection!;
+
+fn from_raw(raw: *u8) -> Connection! { Connection!.{ raw } }
+
+fn main() -> i32 {
+    let constructor = from_raw;
+    0
+}
+""", "the shape of tcp::Connection! is not exposed here"),
+    ]
+    for path, member in (("tcp::prepare_read", "prepare_read"), ("tcp::operation::prepare_read", "operation")):
+        probes.append((f"""
+use {path};
+
+fn main() -> i32 {{
+    let prepare = prepare_read;
+    0
+}}
+""", f"unknown or private member {member} of tcp"))
+
+    for source, diagnostic in probes:
+        (package / "lib.kur").write_text(source)
+        result = subprocess.run(
+            [str(ROOT / "../kursal/bin/kursal"), "build", str(package), "-o", str(directory / "tcp-api")],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        assert result.returncode != 0 and diagnostic in result.stderr, result
+    print("Kable TCP API visibility checks passed")
 
 
 def build_virtual(package, directory):
