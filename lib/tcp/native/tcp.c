@@ -107,7 +107,7 @@ static void close_socket(Connection *connection) {
 static void end_stream(Connection *connection, int complete);
 
 static void close_connection(Connection *connection) {
-    if (connection->phase == RECEIVING) connection->cancelled = 1;
+    if (connection->phase == SCOPED || connection->phase == RECEIVING) connection->cancelled = 1;
     if (connection->phase == SCOPED || connection->phase == RECEIVING ||
         (connection->phase == FINISHING && connection->pending.plan)) {
         kable_scope_cancel(connection->pending.scope);
@@ -249,17 +249,17 @@ static void scope_joined(void *context) {
         connection->pending = (PendingPlan){0};
         int phase = connection->phase;
         int active = 1;
-        if (phase == SCOPED || phase == PARKED || phase == RECEIVING) connection->phase = IDLE;
-        if (phase == PARKED || phase == RECEIVING) {
+        if (phase == SCOPED || phase == PARKED || phase == RECEIVING) {
+            connection->phase = IDLE;
             if (phase == PARKED) uv_read_stop((uv_stream_t *)&connection->socket);
             active = !connection->cancelled && !connection->listener->stopping && !socket_closing(connection) &&
-                (phase == RECEIVING || kable_now_millis() < pending.deadline);
+                (phase != PARKED || kable_now_millis() < pending.deadline);
             if (active) pending.flags |= KABLE_TCP_PLAN_ACTIVE;
         }
         int status = pending.finish(pending.plan, pending.host, pending.flags);
         if (phase == STREAMING) {
             if (status < 0 || connection->cancelled) end_stream(connection, 0);
-        } else if (!active || status < 0 || (phase == SCOPED && connection->listener->stopping)) {
+        } else if (!active || status < 0) {
             close_connection(connection);
         }
     }
@@ -312,6 +312,7 @@ int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *p
     switch (connection->phase) {
     case IDLE:
         if (connection->listener->stopping) return UV_ECANCELED;
+        connection->cancelled = 0;
         connection->phase = SCOPED;
         break;
     case STREAMING:

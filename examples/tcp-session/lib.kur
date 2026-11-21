@@ -60,10 +60,21 @@ fn close_session(connection: Connection!, reader: LineReader!) -> Action! {
 
 fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Action! {
     connection.next_within(Duration::from_secs(1))
-        .defer_tcp(|result| read_finished(result, reader, retried))
+        .defer_tcp_owned((reader, retried), |state, result| read_finished(state, result), discard_read)
 }
 
-fn read_finished(result: (Connection!, StreamOutcome[Buffer!]), reader: LineReader!, retried: bool) -> Action! {
+fn discard_read(state: (LineReader!, bool), outcome: StreamOutcome[Buffer!]) {
+    let (reader, retried) = state;
+    match outcome {
+        StreamOutcome::Item(bytes) => bytes.destroy(),
+        _ => (),
+    };
+    eprint_buffer(f"Discarded a read for a closing session.\n");
+    reader.discard();
+}
+
+fn read_finished(state: (LineReader!, bool), result: (Connection!, StreamOutcome[Buffer!])) -> Action! {
+    let (reader, retried) = state;
     let (connection, outcome) = result;
     let bytes = match outcome {
         StreamOutcome::Item(bytes) => bytes,
@@ -91,13 +102,17 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
         },
     };
     let reader = LineReader!.{ pending: tail };
-    connection.send(complete).defer_tcp(|result| {
+    connection.send(complete).defer_tcp_owned(reader, |reader, result| {
         let (connection, status) = result;
         match status {
             Completion::Ready => read_line(connection, reader, false),
             Completion::Cancelled | Completion::Failed => close_session(connection, reader),
         }
-    })
+    }, discard_send)
+}
+
+fn discard_send(reader: LineReader!, status: Completion[()]) {
+    reader.discard();
 }
 
 fn main() -> i32 {

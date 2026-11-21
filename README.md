@@ -489,8 +489,12 @@ The session example gives each connection a `LineReader!` that owns its
 pending bytes and implements `Resumable`. The read continuation resumes the
 reader with each chunk and carries it across one idle retry. When the reader
 returns complete lines, the write continuation holds a new reader for the
-trailing bytes until the write joins. Closing the session discards the reader
-and its pending bytes.
+trailing bytes until the write joins. Both plans use
+`.defer_tcp_owned(state, resume, discard)`. The active continuation receives
+the state and the `(connection, outcome)` pair, including after an idle timeout.
+On shutdown, socket closure, or submission rejection, the cleanup function
+receives the state and outcome after collection. The listener closes the
+socket.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-session -o bin/tcp-session

@@ -32,11 +32,12 @@ int32_t kable_tcp_start_scoped_write(uint8_t *request, uint8_t *loop,
     void (*ready)(uint8_t *), uint8_t *context);
 uint8_t kable_tcp_stop_scoped_write(uint8_t *request);
 int32_t kable_tcp_collect_scoped_write(uint8_t *request);
-/* Submits a plan on an idle connection or during a response.
+enum { KABLE_TCP_PLAN_ACTIVE = 1 };
+/* Submits a plan on an idle connection or during a response. An idle
+   connection supplies ACTIVE at join if it is still open for another plan.
    A successful submission owns the plan until finish runs after the scope joins. */
 int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags);
-enum { KABLE_TCP_PLAN_ACTIVE = 1 };
 typedef enum { KABLE_TCP_RECEIVE, KABLE_TCP_DEFER_REPLY } KableTcpTimedPlan;
 /* Runs under an absolute deadline. The join callback borrows host and receives
    the flags, plus ACTIVE when the socket can reply. RECEIVE reads its own input

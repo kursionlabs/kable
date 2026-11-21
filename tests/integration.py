@@ -987,6 +987,7 @@ def check_tcp_session(command):
                 assert first.recv(1) == b""
                 assert process.wait(timeout=5) == 0
                 logs.extend(process.stderr.read())
+                assert logs.count(b"Discarded a read for a closing session.") == 1, logs
                 assert logs.count(b"Closed session with 0 buffered bytes.") == 1, logs
                 assert logs.count(b"Closed session with 4 buffered bytes.") == 1, logs
         finally:

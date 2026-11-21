@@ -9,6 +9,8 @@ use std::ptr::{is_null, null};
 use task::{Completion, Failure, PlanOutput, Sink, Stream, StreamOutcome};
 use task::driver::Plan;
 
+const PLAN_ACTIVE: u8 = 1;
+
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
     accept: unsafe fn(*u8, *u8) -> i32, error: *i32) -> *u8;
 extern "C" fn kable_tcp_port(listener: *u8) -> u16;
@@ -135,6 +137,29 @@ impl Task {
     forall Env where Plan[Task, Scope! -> Output].
     fn defer_tcp(self, resume: closure[Env](Output) -> Action!) -> Action! {
         let hosted = prepare_hosted(self, |outcome, connection, flags| unsafe apply(connection, resume(outcome)));
+        Action!::Scoped.(hosted)
+    }
+}
+
+forall Task, Output where PlanOutput[Task -> (Connection!, Output)].
+impl Task {
+    /// Runs a plan that returns the listener's connection with its outcome.
+    /// An active connection hands both values and state to resume, including
+    /// on local timeout. Shutdown, socket closure, and submission rejection
+    /// hand state and the outcome to discard. The listener closes the socket.
+    forall State, Env where Copy[Env], Plan[Task, Scope! -> (Connection!, Output)].
+    fn defer_tcp_owned(self, state: State, resume: closure[Env](State, (Connection!, Output)) -> Action!,
+        discard: fn(State, Output) -> ()) -> Action! {
+        let handoff = thunk::defer(state, resume, discard);
+        let hosted = prepare_hosted(self, |result, connection, flags| {
+            if (flags & PLAN_ACTIVE) != 0 {
+                return unsafe apply(connection, handoff.resume(result));
+            }
+            let (connection, outcome) = result;
+            let { raw } = connection;
+            handoff.discard_with(outcome);
+            -1
+        });
         Action!::Scoped.(hosted)
     }
 }
