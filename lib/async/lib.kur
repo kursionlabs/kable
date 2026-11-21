@@ -7,7 +7,7 @@ use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::slice::ReadBytes;
 use std::time::Duration;
-use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream};
+use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
@@ -202,10 +202,10 @@ impl FileChunks! {
 }
 
 instance Stream[FileChunks! ->
-    Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, Completion[Option[Buffer!]]), (u64, u64)]] {
+    Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, StreamOutcome[Buffer!]), (u64, u64)]] {
     /// Plans a read of at most 64 KiB and advances only by the bytes read.
     fn next(source: FileChunks!)
-        -> Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, Completion[Option[Buffer!]]), (u64, u64)] {
+        -> Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, StreamOutcome[Buffer!]), (u64, u64)] {
         let { file, offset, remaining } = source;
         let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
         file.read_chunk(offset, limit as usize).map(|result| {
@@ -213,16 +213,16 @@ instance Stream[FileChunks! ->
             let (outcome, count) = match outcome {
                 Completion::Ready(bytes) => {
                     let count = &bytes.len() as u64;
-                    let chunk = if count == 0 {
+                    let item = if count == 0 {
                         bytes.destroy();
-                        Option::None
+                        StreamOutcome::Eof
                     } else {
-                        Option::Some.(bytes)
+                        StreamOutcome::Item.(bytes)
                     };
-                    (Completion::Ready.(chunk), count)
+                    (item, count)
                 },
-                Completion::Cancelled => (Completion::Cancelled, 0),
-                Completion::Failed(failure) => (Completion::Failed.(failure), 0),
+                Completion::Cancelled => (StreamOutcome::Cancelled, 0),
+                Completion::Failed(failure) => (StreamOutcome::Failed.(failure), 0),
             };
             (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
         })
@@ -238,6 +238,10 @@ enum RunLoop { Standalone, Reusable(*u8) }
 fn monotonic_now() -> Duration { Duration::from_millis(unsafe kable_now_millis()) }
 
 fn deadline_after(budget: Duration) -> Duration { monotonic_now().add(budget) }
+
+fn sequence_deadline(budget: Option[Duration]) -> Option[Duration] {
+    budget.map(|duration| deadline_after(duration))
+}
 
 // Scalar encoding used by the native scope adapter.
 const CANCELLED: i32 = 0i32;
@@ -571,8 +575,7 @@ impl Runner! {
     /// Runs a sequence on this loop with one optional budget for all stages.
     forall Stages, Output where Chain[Stages, Runner! -> Output].
     fn run_sequence(&self, plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
-        let deadline = budget.map(|duration| deadline_after(duration));
-        drive_sequence_until(plan, &self, deadline)
+        drive_sequence_until(plan, &self, sequence_deadline(budget))
     }
 
     forall Task, Output where Plan[Task, Scope! -> Output].
@@ -605,9 +608,9 @@ instance StageDriver[Task, Runner! -> Output] {
     }
 }
 
-/// Runs a sequence with an optional shared time budget.
+/// Runs a sequence with an optional shared time budget that includes loop setup.
 forall Stages, Output where Chain[Stages, Runner! -> Output].
 fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
-    let deadline = budget.map(|duration| deadline_after(duration));
+    let deadline = sequence_deadline(budget);
     with_runner(|&runner| drive_sequence_until(plan, &runner, deadline))
 }

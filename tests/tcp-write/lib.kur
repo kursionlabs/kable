@@ -5,7 +5,7 @@ use std::mem::alloca;
 use std::option::{Option, Result};
 use std::process::{Args, trap};
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream, StreamOutcome};
 use tcp::{Action!, Connection!, Listener!};
 
 const LARGE_WRITE: usize = 16 * 1024 * 1024;
@@ -75,11 +75,9 @@ fn serve(connection: Connection!, consuming: bool) -> Action! {
     connection.next().defer_tcp(|result| {
         let (connection, outcome) = result;
         match outcome {
-            Completion::Ready(chunk) => match chunk {
-                Option::None => send_after_eof(connection, consuming),
-                Option::Some(bytes) => { bytes.destroy(); connection.close() },
-            },
-            Completion::Cancelled | Completion::Failed => connection.close(),
+            StreamOutcome::Eof => send_after_eof(connection, consuming),
+            StreamOutcome::Item(bytes) => { bytes.destroy(); connection.close() },
+            StreamOutcome::TimedOut | StreamOutcome::Cancelled | StreamOutcome::Failed => connection.close(),
         }
     })
 }

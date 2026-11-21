@@ -3,8 +3,8 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
-use task::{Completion, PlanOutput, Stream};
-use tcp::{Action!, Connection!, Listener!, ReadOutcome!, timed_read_outcome};
+use task::{Completion, PlanOutput, Stream, StreamOutcome};
+use tcp::{Action!, Connection!, Listener!, timed_read_outcome};
 use thunk::{Resumable, Step};
 
 struct LineReader! { pending: Buffer! }
@@ -63,18 +63,18 @@ fn read_line(connection: Connection!, reader: LineReader!, retried: bool) -> Act
         .defer_tcp(|result| read_finished(timed_read_outcome(result), reader, retried))
 }
 
-fn read_finished(result: (Connection!, ReadOutcome!), reader: LineReader!, retried: bool) -> Action! {
+fn read_finished(result: (Connection!, StreamOutcome[Buffer!]), reader: LineReader!, retried: bool) -> Action! {
     let (connection, outcome) = result;
     let bytes = match outcome {
-        ReadOutcome!::Chunk(bytes) => bytes,
-        ReadOutcome!::TimedOut => {
+        StreamOutcome::Item(bytes) => bytes,
+        StreamOutcome::TimedOut => {
             if !retried {
                 eprint_buffer(f"Retrying idle read.\n");
                 return read_line(connection, reader, true);
             }
             return close_session(connection, reader);
         },
-        ReadOutcome!::Eof | ReadOutcome!::Cancelled | ReadOutcome!::Failed => return close_session(connection, reader),
+        StreamOutcome::Eof | StreamOutcome::Cancelled | StreamOutcome::Failed => return close_session(connection, reader),
     };
     match reader.resume(bytes) {
         Step::Suspended(next) => read_line(connection, next, false),

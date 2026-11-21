@@ -55,7 +55,7 @@ each socket write completes. `file.chunks(offset, length)` creates an
 owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
 joins. Only a nonempty chunk advances the cursor. The server sends its
-headers and each chunk with `Sink.write()`, then pulls the next chunk from
+headers and each chunk with `Connection!.send()`, then pulls the next chunk from
 the write continuation. The server closes the stream after the final
 write joins or when a read or write is interrupted. An early EOF
 ends the response with fewer bytes than its declared length. `HEAD`
@@ -336,11 +336,12 @@ deadline expiry alongside its joined output. [Driver interfaces](lib/task/driver
 
 Import `task::Stream` to call `source.next()`. It moves the source into a
 one-shot plan. After the plan joins it returns the source alongside
-`Completion[Option[Item]]`. `Ready(Some(item))` returns an item and
-`Ready(None)` means EOF. `Cancelled` and `Failed(failure)` report how the
-pull stopped. The caller decides when to request another item. File chunks
-and TCP connections both use this interface. TCP EOF ends the read side
-and the returned connection can still write.
+`StreamOutcome[Item]`. `Item(value)` transfers ownership of the item, and
+`Eof` marks the end of input. `TimedOut`, `Cancelled` and `Failed(failure)`
+report how the pull stopped. The caller decides when to request another item.
+File chunks and TCP connections both use this interface. TCP EOF ends the read
+side and the returned connection can still write. A file stream's `remaining()`
+reports any requested bytes left unread at EOF.
 
 ### Sequential writes
 
@@ -369,7 +370,8 @@ consume them and any available outcome if the handoff is skipped. The
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
 Inside a libuv `with_runner` callback, `&runner.run_sequence(chain, budget)`
 drives the chain on the same loop as other runs in the callback.
-The budget is an `Option[Duration]` that applies to the whole chain.
+The budget is an `Option[Duration]` that applies to the whole chain and starts
+when `run_sequence` is called. A standalone libuv run includes loop setup.
 For a single plan, use `run` or `run_with_deadline`.
 Match the sequence result using `task::sequence::SequenceOutcome`.
 
@@ -438,8 +440,8 @@ connection. `Listener!::bind_connections(port, read_next)` calls
 to use `.defer_tcp(...)` on a plan. The echo handler uses it to run both
 `connection.next().within(Duration::from_secs(1))` and
 `connection.send(bytes).within(Duration::from_secs(1))` on the listener loop.
-`timed_read_outcome` combines a joined read and its deadline into a TCP
-`ReadOutcome!`. It releases any chunk if the deadline interrupts the read and
+`timed_read_outcome` folds the deadline into the joined `StreamOutcome`.
+It releases any chunk if the deadline interrupts the read and
 reports timeout separately so the session can retry an idle read.
 `send` releases the buffer after the write joins and hands back the connection
 and completion. The echo resumes reading after a send succeeds within its deadline.

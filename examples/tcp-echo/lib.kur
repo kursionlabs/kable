@@ -1,22 +1,23 @@
+use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, PlanOutput, Stream};
-use tcp::{Action!, Connection!, Listener!, ReadOutcome!, timed_read_outcome};
+use task::{Completion, DeadlineStatus, PlanOutput, Stream, StreamOutcome};
+use tcp::{Action!, Connection!, Listener!, timed_read_outcome};
 
 fn read_next(connection: Connection!) -> Action! {
     connection.next().within(Duration::from_secs(1))
         .defer_tcp(|result| read_finished(timed_read_outcome(result)))
 }
 
-fn read_finished(result: (Connection!, ReadOutcome!)) -> Action! {
+fn read_finished(result: (Connection!, StreamOutcome[Buffer!])) -> Action! {
     let (connection, outcome) = result;
     match outcome {
-        ReadOutcome!::Chunk(bytes) => return connection.send(bytes).within(Duration::from_secs(1))
+        StreamOutcome::Item(bytes) => return connection.send(bytes).within(Duration::from_secs(1))
             .defer_tcp(|result| write_finished(result)),
-        ReadOutcome!::TimedOut => { eprint_buffer(f"Read deadline expired.\n"); },
-        ReadOutcome!::Cancelled => { eprint_buffer(f"Cancelled connection on shutdown.\n"); },
-        ReadOutcome!::Eof | ReadOutcome!::Failed => (),
+        StreamOutcome::TimedOut => { eprint_buffer(f"Read deadline expired.\n"); },
+        StreamOutcome::Cancelled => { eprint_buffer(f"Cancelled connection on shutdown.\n"); },
+        StreamOutcome::Eof | StreamOutcome::Failed => (),
     };
     connection.close()
 }

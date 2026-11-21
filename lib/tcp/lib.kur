@@ -6,7 +6,7 @@ use std::buffer::Buffer!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::{is_null, null};
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream};
+use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sink, Stream, StreamOutcome};
 use task::driver::Plan;
 
 extern "C" fn kable_tcp_bind(port: u16, context: *u8,
@@ -68,8 +68,13 @@ fn prepare_read(&connection: Connection!) -> *u8 {
     raw
 }
 
-fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> (Connection!, Completion[Option[Buffer!]]) {
-    (connection, completion.and_then(|unit| unsafe read_result(context)))
+fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> (Connection!, StreamOutcome[Buffer!]) {
+    let outcome = match completion {
+        Completion::Ready => unsafe read_result(context),
+        Completion::Cancelled => StreamOutcome::Cancelled,
+        Completion::Failed(failure) => StreamOutcome::Failed.(failure),
+    };
+    (connection, outcome)
 }
 
 fn prepare_write(&state: (Connection!, Buffer!)) -> *u8 {
@@ -107,7 +112,7 @@ fn write_plan(connection: Connection!, bytes: Buffer!,
     }
 }
 
-unsafe fn read_result(raw: *u8) -> Completion[Option[Buffer!]] {
+unsafe fn read_result(raw: *u8) -> StreamOutcome[Buffer!] {
     let data = unsafe alloca[*u8]();
     let len = unsafe alloca[usize]();
     let status = unsafe alloca[i32]();
@@ -117,45 +122,25 @@ unsafe fn read_result(raw: *u8) -> Completion[Option[Buffer!]] {
             let bytes = unsafe *data;
             let length = unsafe *len;
             let chunk = unsafe Buffer!::new_with_cap(length).push_n(bytes, length);
-            Completion::Ready.(Option::Some.(chunk))
+            StreamOutcome::Item.(chunk)
         },
-        3u8 => Completion::Ready.(Option::None),
-        _ => Completion::Failed.(Failure::Operation.(unsafe *status)),
-    }
-}
-
-/// The result of a TCP read with a local deadline.
-exposed enum ReadOutcome! {
-    Chunk(Buffer!),
-    Eof,
-    TimedOut,
-    Cancelled,
-    Failed(Failure),
-}
-
-fn read_outcome(read: Completion[Option[Buffer!]]) -> ReadOutcome! {
-    match read {
-        Completion::Ready(chunk) => match chunk {
-            Option::Some(bytes) => ReadOutcome!::Chunk.(bytes),
-            Option::None => ReadOutcome!::Eof,
-        },
-        Completion::Cancelled => ReadOutcome!::Cancelled,
-        Completion::Failed(failure) => ReadOutcome!::Failed.(failure),
+        3u8 => StreamOutcome::Eof,
+        _ => StreamOutcome::Failed.(Failure::Operation.(unsafe *status)),
     }
 }
 
 /// Combines a joined read and its deadline, releasing any chunk when interrupted.
-fn timed_read_outcome(result: ((Connection!, Completion[Option[Buffer!]]), DeadlineStatus))
-    -> (Connection!, ReadOutcome!) {
+fn timed_read_outcome(result: ((Connection!, StreamOutcome[Buffer!]), DeadlineStatus))
+    -> (Connection!, StreamOutcome[Buffer!]) {
     let ((connection, read), deadline) = result;
     let interrupted = match deadline {
-        DeadlineStatus::Completed => return (connection, read_outcome(read)),
-        DeadlineStatus::TimedOut => ReadOutcome!::TimedOut,
-        DeadlineStatus::Cancelled => ReadOutcome!::Cancelled,
-        DeadlineStatus::Failed(failure) => ReadOutcome!::Failed.(failure),
+        DeadlineStatus::Completed => return (connection, read),
+        DeadlineStatus::TimedOut => StreamOutcome::TimedOut,
+        DeadlineStatus::Cancelled => StreamOutcome::Cancelled,
+        DeadlineStatus::Failed(failure) => StreamOutcome::Failed.(failure),
     };
-    match read_outcome(read) {
-        ReadOutcome!::Chunk(bytes) => bytes.destroy(),
+    match read {
+        StreamOutcome::Item(bytes) => bytes.destroy(),
         _ => (),
     };
     (connection, interrupted)
@@ -241,9 +226,9 @@ impl Connection! {
     fn close(self) -> Action! { Action!::Close.(self) }
 }
 
-instance Stream[Connection! -> OperationPlan![Connection!, (Connection!, Completion[Option[Buffer!]])]] {
+instance Stream[Connection! -> OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])]] {
     /// Plans one read. EOF hands back the connection with its write side available.
-    fn next(source: Connection!) -> OperationPlan![Connection!, (Connection!, Completion[Option[Buffer!]])] {
+    fn next(source: Connection!) -> OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])] {
         OperationPlan!.{
             state: source, prepare: prepare_read, start: kable_tcp_start_scoped_read,
             stop: kable_tcp_stop_scoped_read, finish: finish_read, context: null(), id: Option::None,

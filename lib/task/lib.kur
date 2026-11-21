@@ -56,9 +56,18 @@ impl Completion[T] {
     }
 }
 
+/// The next item, end of input, or the reason a stream read stopped.
+forall T.
+exposed enum StreamOutcome {
+    Item(T),
+    Eof,
+    TimedOut,
+    Cancelled,
+    Failed(Failure),
+}
+
 /// A source that builds a one-shot plan for its next item.
-/// The plan returns (Source, Completion[Option[Item]]) after joining.
-/// A ready None means EOF.
+/// The plan returns (Source, StreamOutcome[Item]) after joining.
 forall Source -> Next.
 trait Stream {
     fn next(source: Source) -> Next;
