@@ -472,7 +472,12 @@ def check_async_read(command, directory):
     library = build_file_gate(directory)
     growing = directory / "example.txt"
     too_large = f"async-read: first file failed (operation error {-errno.EFBIG})\n".encode()
-    for prefix, tail, expected in ((payload[:6], payload[6:], 0), (payload, b"!", 1)):
+    growth_cases = (
+        (payload[:6], payload[6:16 * 1024 + 1], 0),
+        (payload[:6], payload[6:], 0),
+        (payload, b"!", 1),
+    )
+    for prefix, tail, expected in growth_cases:
         growing.write_bytes(prefix)
         with gated_file_process([*command, str(growing), str(empty)], directory, library) as (
             process, started, permit
@@ -484,7 +489,7 @@ def check_async_read(command, directory):
             stdout, stderr = process.communicate(timeout=5)
             assert process.returncode == expected, stderr
             if expected == 0:
-                assert stdout == payload, stderr
+                assert stdout == prefix + tail, stderr
             else:
                 assert stdout == b"" and stderr == too_large, stderr
     print("Kable async file checks passed")

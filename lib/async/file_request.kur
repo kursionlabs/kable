@@ -1,6 +1,7 @@
 //! Owns a native file worker request from registration through collection.
 use package::{Scope!, kable_scope_fail_allocation};
 use std::buffer::Buffer!;
+use std::heap::HeapAllocator;
 use std::mem::alloca;
 use std::option::Option;
 use std::ptr::{is_null, null};
@@ -12,7 +13,8 @@ extern "C" fn kable_file_write_chunk(fd: i32, offset: u64, bytes: *u8, len: usiz
 extern "C" fn kable_file_start(request: *u8, loop: *u8,
     done: unsafe fn(*u8) -> (), context: *u8) -> i32;
 extern "C" fn kable_file_stop(request: *u8) -> u8;
-extern "C" fn kable_file_result(request: *u8, bytes: *(*u8), len: *usize) -> i32;
+extern "C" fn kable_file_take_contents(request: *u8, bytes: *(*u8), len: *usize, capacity: *usize) -> i32;
+extern "C" fn kable_file_read_count(request: *u8, len: *usize) -> i32;
 extern "C" fn kable_file_write_result(request: *u8, written: *usize) -> i32;
 extern "C" fn kable_file_take_descriptor(request: *u8, len: *u64) -> i32;
 extern "C" fn kable_file_free(request: *u8) -> ();
@@ -73,16 +75,20 @@ impl FileRequest! {
 unsafe fn collect_read(request: *u8) -> Completion[Buffer!] {
     let data = unsafe alloca[*u8]();
     let size = unsafe alloca[usize]();
-    let code = unsafe kable_file_result(request, data, size);
+    let capacity = unsafe alloca[usize]();
+    let code = unsafe kable_file_take_contents(request, data, size, capacity);
     if code < 0 { return Completion::Failed.(Failure::Operation.(code)); }
     let bytes = unsafe *data;
+    if is_null(bytes) { return Completion::Ready.(Buffer!::new_with_cap(0)); }
     let len = unsafe *size;
-    Completion::Ready.(unsafe Buffer!::new_with_cap(len).push_n(bytes, len))
+    let cap = unsafe *capacity;
+    let storage = unsafe HeapAllocator::adopt_raw_sized(bytes, cap);
+    Completion::Ready.(unsafe Buffer!::from_initialized_allocation(storage, len))
 }
 
 unsafe fn collect_chunk_count(request: *u8) -> Completion[usize] {
     let size = unsafe alloca[usize]();
-    let code = unsafe kable_file_result(request, null(), size);
+    let code = unsafe kable_file_read_count(request, size);
     if code < 0 { Completion::Failed.(Failure::Operation.(code)) }
     else { Completion::Ready.(unsafe *size) }
 }

@@ -240,13 +240,29 @@ uint8_t kable_file_stop(uint8_t *raw) {
     return 1;
 }
 
-int32_t kable_file_result(uint8_t *raw, uint8_t **data, size_t *len) {
+int32_t kable_file_take_contents(uint8_t *raw, uint8_t **data, size_t *len, size_t *capacity) {
     KableFile *file = (KableFile *)raw;
-    if (!file || file->request.data) return UV_EINVAL;
-    if (file->status == 0) {
-        if (data) *data = file->data;
-        *len = file->len;
+    if (!file || file->request.data || (file->mode != KABLE_READ_FILE && file->mode != KABLE_READ_BENEATH)) {
+        return UV_EINVAL;
     }
+    if (file->status < 0) return file->status;
+    if (!file->len) {
+        *data = NULL;
+        *len = *capacity = 0;
+        return 0;
+    }
+    *data = file->data;
+    *len = file->len;
+    *capacity = file->capacity;
+    file->data = NULL;
+    file->len = file->capacity = 0;
+    return 0;
+}
+
+int32_t kable_file_read_count(uint8_t *raw, size_t *len) {
+    KableFile *file = (KableFile *)raw;
+    if (!file || file->request.data || file->mode != READ_CHUNK) return UV_EINVAL;
+    *len = file->len;
     return file->status;
 }
 
