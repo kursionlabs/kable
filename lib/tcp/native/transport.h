@@ -22,10 +22,9 @@ uint16_t kable_tcp_port(uint8_t *listener);
 int32_t kable_tcp_run(uint8_t *listener);
 void kable_tcp_stop(uint8_t *listener);
 
-/* The connection owns one attachment through its socket and timer cleanup. */
+/* The connection owns one attachment through socket, timer, and plan cleanup. */
 void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(uint8_t *));
 uint8_t *kable_tcp_attachment(uint8_t *connection);
-uv_loop_t *kable_tcp_loop(uint8_t *connection);
 /* Delivers the next read or deadline through the native event callback. */
 int32_t kable_tcp_read(uint8_t *connection, uint64_t ms);
 int32_t kable_tcp_start_scoped_read(uint8_t *connection, uint8_t *loop,
@@ -42,11 +41,12 @@ int32_t kable_tcp_collect_scoped_write(uint8_t *request);
    A successful submission owns the plan until finish runs after the scope joins. */
 int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags);
-/* An external operation holds the connection until it joins. While parked,
-   incoming bytes are discarded, and a close or read error requests
-   cancellation. Unpark returns whether the socket can reply. */
-int32_t kable_tcp_park(uint8_t *connection, void (*cancel)(void *), void *context);
-int kable_tcp_unpark(uint8_t *connection);
+/* Watches the peer while the plan runs under an absolute deadline. The join
+   callback borrows host and receives the supplied flags, plus ACTIVE when
+   the socket can still reply. */
+enum { KABLE_TCP_PLAN_ACTIVE = 1 };
+int32_t kable_tcp_schedule_until(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
+    KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
 /* Starts the fixed deadline for a final write, half-close, and drain.
    A read-side EOF still permits the write, and listener shutdown lets it finish. */
 int32_t kable_tcp_finish_begin(uint8_t *connection, uint64_t ms);

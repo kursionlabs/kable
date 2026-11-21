@@ -22,8 +22,6 @@ typedef uint16_t (*validate_head_fn)(uint8_t, uint8_t, uint32_t, uint8_t, uint8_
 
 /* Values shared with respond in server.kur. */
 enum { METHOD_OTHER, METHOD_GET, METHOD_HEAD, METHOD_POST };
-/* Matches the flags in the Kursal HTTP host. */
-enum { RESPONSE_ACTIVE = 1 };
 
 typedef struct {
     uint8_t *data;
@@ -40,12 +38,6 @@ typedef struct {
 
 typedef struct {
     uint8_t *connection;
-    uint8_t *scope;
-    uint8_t *plan;
-    KablePlanFinish finish;
-    uint8_t response_flags;
-    int plan_ready;
-    int completing_plan;
     Server *server;
     llhttp_t parser;
     Bytes head; /* The request target followed by the first Host value. */
@@ -186,7 +178,6 @@ static void release_request(Client *client) {
 
 static void destroy_client(uint8_t *attachment) {
     Client *client = (Client *)attachment;
-    if (client->plan) abort();
     release_request(client);
     free(client);
 }
@@ -211,47 +202,10 @@ static uint64_t time_left(const Client *client) {
     return now < client->deadline ? client->deadline - now : 0;
 }
 
-static void cancel_plan(void *context) {
-    Client *client = context;
-    kable_scope_cancel(client->scope);
-}
-
-static void finish_plan(void *context) {
-    Client *client = context;
-    client->plan_ready = 1;
-    if (client->completing_plan) return;
-
-    /* A continuation may schedule a plan that fails to start immediately.
-       Finish it in this loop so chained failures do not recurse. */
-    client->completing_plan = 1;
-    while (client->plan_ready) {
-        client->plan_ready = 0;
-        uint8_t ready = kable_tcp_unpark(client->connection) && time_left(client) != 0;
-        uint8_t *plan = client->plan;
-        client->plan = NULL;
-        client->scope = NULL;
-        uint8_t flags = client->response_flags | (ready ? RESPONSE_ACTIVE : 0);
-        int status = client->finish(plan, (uint8_t *)client, flags);
-        if (!ready || status < 0) kable_tcp_close(client->connection);
-    }
-    client->completing_plan = 0;
-}
-
-/* The request owns the plan and its continuation once the socket is parked. */
 int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags) {
     Client *client = (Client *)raw;
-    int status = kable_tcp_park(client->connection, cancel_plan, client);
-    if (status < 0) return status;
-    client->scope = scope;
-    client->plan = plan;
-    client->finish = finish;
-    client->response_flags = flags;
-    if (!kable_scope_start(scope, root, kable_tcp_loop(client->connection), client->deadline,
-        1, finish_plan, client)) {
-        finish_plan(client);
-    }
-    return 0;
+    return kable_tcp_schedule_until(client->connection, scope, root, plan, finish, flags, raw, client->deadline);
 }
 
 static int reply(Client *client, uint16_t status) {

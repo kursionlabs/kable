@@ -25,18 +25,23 @@ typedef struct {
 } Listener;
 
 typedef struct {
+    uint8_t *scope;
+    uint8_t *plan;
+    KablePlanFinish finish;
+    uint8_t *host;
+    uint64_t deadline;
+    uint8_t flags;
+} PendingPlan;
+
+typedef struct {
     uv_tcp_t socket;
     uv_shutdown_t shutdown;
     Listener *listener;
     KableTimer *timer;
     uint8_t *attachment;
     void (*destroy_attachment)(uint8_t *);
-    void (*cancel_parked)(void *);
-    void *parked_context;
     uint64_t stream_idle_ms;
-    uint8_t *scope;
-    uint8_t *plan;
-    KablePlanFinish finish_plan;
+    PendingPlan pending;
     int scope_ready;
     int completing_scope;
     void (*read_ready)(uint8_t *);
@@ -79,9 +84,10 @@ static void release_connection(Connection *connection) {
     finish_shutdown(listener);
 }
 
-/* The socket, timer, and scope can retire in any order. */
+/* The socket, timer, and plan can retire in any order. */
 static void release_closed_connection(Connection *connection) {
-    if (connection->socket_closed && !connection->timer && !connection->scope) {
+    if (connection->socket_closed && !connection->timer &&
+        !connection->pending.plan && !connection->completing_scope) {
         release_connection(connection);
     }
 }
@@ -100,9 +106,11 @@ static void close_socket(Connection *connection) {
     if (!socket_closing(connection)) uv_close((uv_handle_t *)&connection->socket, connection_closed);
 }
 
+static void end_stream(Connection *connection, int complete);
+
 static void close_connection(Connection *connection) {
-    if (connection->phase == SCOPED || (connection->phase == FINISHING && connection->scope)) {
-        kable_scope_cancel(connection->scope);
+    if (connection->phase == SCOPED || (connection->phase == FINISHING && connection->pending.plan)) {
+        kable_scope_cancel(connection->pending.scope);
         return;
     }
     if (connection->phase == PARKED || connection->phase == STREAMING) {
@@ -110,7 +118,8 @@ static void close_connection(Connection *connection) {
             connection->cancelled = 1;
             uv_read_stop((uv_stream_t *)&connection->socket);
             kable_timer_cancel(connection->timer);
-            connection->cancel_parked(connection->parked_context);
+            if (connection->pending.plan) kable_scope_cancel(connection->pending.scope);
+            else end_stream(connection, 0);
         }
         return;
     }
@@ -130,10 +139,6 @@ void kable_tcp_attach(uint8_t *raw, uint8_t *attachment, void (*destroy)(uint8_t
 
 uint8_t *kable_tcp_attachment(uint8_t *raw) {
     return ((Connection *)raw)->attachment;
-}
-
-uv_loop_t *kable_tcp_loop(uint8_t *raw) {
-    return &((Connection *)raw)->listener->loop;
 }
 
 static void notify(Connection *connection, uint8_t event, size_t length, int error) {
@@ -309,25 +314,30 @@ int32_t kable_tcp_collect_scoped_write(uint8_t *raw) {
     return status;
 }
 
-static void end_stream(Connection *connection, int complete);
-
 static void scope_joined(void *context) {
     Connection *connection = context;
     connection->scope_ready = 1;
     if (connection->completing_scope) return;
 
+    /* A continuation can submit another plan that joins before submission returns. */
     connection->completing_scope = 1;
     while (connection->scope_ready) {
         connection->scope_ready = 0;
-        connection->scope = NULL;
-        uint8_t *plan = connection->plan;
-        connection->plan = NULL;
+        PendingPlan pending = connection->pending;
+        connection->pending = (PendingPlan){0};
         int phase = connection->phase;
-        if (phase == SCOPED) connection->phase = IDLE;
-        int status = connection->finish_plan(plan, (uint8_t *)connection, 0);
+        int active = 1;
+        if (phase == SCOPED || phase == PARKED) connection->phase = IDLE;
+        if (phase == PARKED) {
+            uv_read_stop((uv_stream_t *)&connection->socket);
+            active = !connection->cancelled && !connection->listener->stopping && !socket_closing(connection) &&
+                kable_now_millis() < pending.deadline;
+            if (active) pending.flags |= KABLE_TCP_PLAN_ACTIVE;
+        }
+        int status = pending.finish(pending.plan, pending.host, pending.flags);
         if (phase == STREAMING) {
             if (status < 0 || connection->cancelled) end_stream(connection, 0);
-        } else if (status < 0 || (phase == SCOPED && connection->listener->stopping)) {
+        } else if (!active || status < 0 || (phase == SCOPED && connection->listener->stopping)) {
             close_connection(connection);
         }
     }
@@ -358,17 +368,18 @@ static void shutdown_write(Connection *connection) {
 
 static void end_stream(Connection *connection, int complete) {
     uv_read_stop((uv_stream_t *)&connection->socket);
-    connection->cancel_parked = NULL;
-    connection->parked_context = NULL;
     connection->phase = complete ? FINISHING : TERMINAL;
     if (complete) shutdown_write(connection);
     else close_connection(connection);
 }
 
-static void cancel_stream(void *context) {
-    Connection *connection = context;
-    if (connection->scope) kable_scope_cancel(connection->scope);
-    else end_stream(connection, 0);
+static int32_t start_plan(Connection *connection, PendingPlan pending, size_t root) {
+    connection->pending = pending;
+    if (!kable_scope_start(pending.scope, root, &connection->listener->loop,
+        pending.deadline, connection->phase == PARKED, scope_joined, connection)) {
+        scope_joined(connection);
+    }
+    return 0;
 }
 
 int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
@@ -384,18 +395,13 @@ int32_t kable_tcp_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *p
     case STREAMING:
     case FINISHING:
         if (connection->cancelled) return UV_ECANCELED;
-        if (connection->plan) return UV_EBUSY;
+        if (connection->pending.plan) return UV_EBUSY;
         break;
     default:
         return UV_ECANCELED;
     }
-    connection->scope = scope;
-    connection->plan = plan;
-    connection->finish_plan = finish;
-    if (!kable_scope_start(scope, root, &connection->listener->loop, 0, 0, scope_joined, connection)) {
-        scope_joined(connection);
-    }
-    return 0;
+    return start_plan(connection, (PendingPlan){ .scope = scope,
+        .plan = plan, .finish = finish, .host = raw }, root);
 }
 
 static void parked_read(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer) {
@@ -410,28 +416,26 @@ static void parked_read(uv_stream_t *stream, ssize_t count, const uv_buf_t *buff
     }
 }
 
-int32_t kable_tcp_park(uint8_t *raw, void (*cancel)(void *), void *context) {
-    Connection *connection = (Connection *)raw;
-    if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
+static int watch_peer(Connection *connection) {
     if (!connection->read_eof) {
         int status = uv_read_start((uv_stream_t *)&connection->socket, allocate_read, parked_read);
         if (status < 0) return status;
     }
-    connection->phase = PARKED;
-    connection->cancel_parked = cancel;
-    connection->parked_context = context;
     connection->cancelled = 0;
     return 0;
 }
 
-int kable_tcp_unpark(uint8_t *raw) {
+int32_t kable_tcp_schedule_until(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
+    KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline) {
     Connection *connection = (Connection *)raw;
-    if (connection->phase != PARKED) return 0;
-    uv_read_stop((uv_stream_t *)&connection->socket);
-    connection->phase = IDLE;
-    connection->cancel_parked = NULL;
-    connection->parked_context = NULL;
-    return !connection->cancelled && !connection->listener->stopping;
+    if (connection->phase != IDLE || connection->listener->stopping || socket_closing(connection)) {
+        return UV_ECANCELED;
+    }
+    int status = watch_peer(connection);
+    if (status < 0) return status;
+    connection->phase = PARKED;
+    return start_plan(connection, (PendingPlan){ .scope = scope,
+        .plan = plan, .finish = finish, .host = host, .deadline = deadline, .flags = flags }, root);
 }
 
 static void finish_expired(void *context) {
@@ -468,7 +472,7 @@ int32_t kable_tcp_stream_begin(uint8_t *raw, uint64_t ms) {
     if (connection->phase != IDLE || connection->listener->stopping) return UV_ECANCELED;
     int status = start_finish_timer(connection, ms);
     if (status < 0) return status;
-    status = kable_tcp_park(raw, cancel_stream, connection);
+    status = watch_peer(connection);
     if (status < 0) {
         kable_timer_cancel(connection->timer);
         return status;
@@ -483,7 +487,7 @@ int32_t kable_tcp_stream_end(uint8_t *raw) {
     if ((connection->phase != STREAMING && connection->phase != FINISHING) || connection->cancelled) {
         return UV_ECANCELED;
     }
-    if (connection->plan) return UV_EBUSY;
+    if (connection->pending.plan) return UV_EBUSY;
     end_stream(connection, 1);
     return 0;
 }
