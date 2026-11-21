@@ -56,21 +56,19 @@ impl Response! {
 
     /// Sends this response after a request-scoped timer.
     fn after(self, duration: Duration) -> Action! {
-        sleep(duration).defer(|status, state| {
-            match state {
-                RequestState::Cancelled => { self.destroy(); Option::None },
-                RequestState::Active => {
-                    let response = match status {
-                        Completion::Ready => self,
-                        Completion::Cancelled => { self.destroy(); Response!::rejected(408) },
-                        Completion::Failed => { self.destroy(); Response!::rejected(500) },
-                    };
-                    Option::Some.(response.reply())
-                },
-            }
-        })
+        sleep(duration).respond_with_owned(self, |response, status| {
+            let code = match status {
+                Completion::Ready => return response.reply(),
+                Completion::Cancelled => 408,
+                Completion::Failed => 500,
+            };
+            response.destroy();
+            Response!::rejected(code).reply()
+        }, discard_delayed_response).reply()
     }
 }
+
+fn discard_delayed_response(response: Response!, status: Completion[()]) { response.destroy(); }
 
 enum Handler {
     Immediate(fn(Request!) -> Response!),
