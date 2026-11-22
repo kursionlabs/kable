@@ -3,7 +3,7 @@
 use async::{OpenedFile!, Scope!};
 use async::host::{HostedPlan!, prepare_hosted};
 use http::{Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
-use package::file_transfer;
+use package::{file_transfer, static_files};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
@@ -17,6 +17,8 @@ use task::{Completion, DeadlineStatus, PlanOutput, sleep};
 use task::driver::Plan;
 use tcp::host;
 use thunk::Thunk!;
+
+export static_files;
 
 extern "C" fn kable_bind(port: u16,
     validate: unsafe fn(u8, u8, u32, u8, u8, u64, u64, *u8, usize, usize) -> u16,
