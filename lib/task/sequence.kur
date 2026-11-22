@@ -94,11 +94,11 @@ trait Chain {
 forall Engine where Clock[Engine].
 fn remaining_budget(&engine: Engine, deadline: Option[Duration]) -> Option[Duration] {
     match deadline {
-        Option::Some(end) => {
+        Some(end) => {
             let now = Clock[Engine]::now(&engine);
             Option::Some.(end.sub(now))
         },
-        Option::None => Option::None,
+        None => Option::None,
     }
 }
 
@@ -117,28 +117,28 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
         -> SequenceOutcome[StageResult[Output]] {
         let { previous, handoff } = stages;
         let stage = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
-            SequenceOutcome::Finished(stage) => stage,
-            SequenceOutcome::Stopped => {
+            Finished(stage) => stage,
+            Stopped => {
                 handoff.discard_with(Option::None);
                 return SequenceOutcome::Stopped;
             },
-            SequenceOutcome::Cancelled => {
+            Cancelled => {
                 handoff.discard_with(Option::None);
                 return SequenceOutcome::Cancelled;
             },
         };
         let { output: input, deadline_expired } = stage;
         let expired = deadline_expired || (match remaining_budget(&engine, deadline) {
-            Option::Some(duration) => duration.is_zero(),
-            Option::None => false,
+            Some(duration) => duration.is_zero(),
+            None => false,
         });
         if expired {
             handoff.discard_with(Option::Some.(input));
             return SequenceOutcome::Cancelled;
         }
         match handoff.resume(input) {
-            Option::Some(task) => SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline)),
-            Option::None => SequenceOutcome::Stopped,
+            Some(task) => SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline)),
+            None => SequenceOutcome::Stopped,
         }
     }
 }
@@ -148,11 +148,11 @@ forall Stages, Output, Engine where Chain[Stages, Engine -> Output].
 fn drive_sequence_until(sequence: Sequence![Stages, Output], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output] {
     let { stages } = sequence;
     match Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline) {
-        SequenceOutcome::Finished(stage) => {
+        Finished(stage) => {
             let { output, deadline_expired } = stage;
             SequenceOutcome::Finished.(output)
         },
-        SequenceOutcome::Stopped => SequenceOutcome::Stopped,
-        SequenceOutcome::Cancelled => SequenceOutcome::Cancelled,
+        Stopped => SequenceOutcome::Stopped,
+        Cancelled => SequenceOutcome::Cancelled,
     }
 }

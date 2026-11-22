@@ -18,7 +18,7 @@ fn serve() -> Action! {
 
 fn read_footer(outcome: Completion[Buffer!]) -> Action! {
     let first = match outcome {
-        Completion::Ready(first) => first,
+        Ready(first) => first,
         _ => return Response!::rejected(500).reply(),
     };
     let path = footer_path(&first);
@@ -43,8 +43,8 @@ fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {
     let exists 'k. (access, bytes, restore) = first.open();
     let text = Span::from_slice(bytes);
     let line = match text.find_byte(&access, b'\n', 0) {
-        Option::Some(end) => text.take(end),
-        Option::None => text,
+        Some(end) => text.take(end),
+        None => text,
     };
     let path = if line.is(&access, "footer: detailed") { "footer-detailed.txt" } else { "footer.txt" };
     first = restore.restore(access);

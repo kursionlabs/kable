@@ -28,30 +28,30 @@ fn close_after_read() -> Action! {
 
 fn file_response(outcome: Completion[Buffer!]) -> Response! {
     match outcome {
-        Completion::Ready(bytes) => Response!::ok(bytes),
-        Completion::TimedOut => Response!::rejected(504),
-        Completion::Cancelled => {
+        Ready(bytes) => Response!::ok(bytes),
+        TimedOut => Response!::rejected(504),
+        Cancelled => {
             eprint_buffer(f"File request cancelled.\n");
             Response!::rejected(408)
         },
-        Completion::Failed(code) => Response!::rejected(500),
+        Failed(code) => Response!::rejected(500),
     }
 }
 
 fn discard_plain_file(outcome: Completion[Buffer!]) {
     match outcome {
-        Completion::Ready(bytes) => bytes.destroy(),
-        Completion::Cancelled => { eprint_buffer(f"File request cancelled.\n"); },
-        Completion::TimedOut | Completion::Failed => (),
+        Ready(bytes) => bytes.destroy(),
+        Cancelled => { eprint_buffer(f"File request cancelled.\n"); },
+        TimedOut | Failed => (),
     }
 }
 
 fn append_file(first: Buffer!, second: Completion[Buffer!]) -> Response! {
     match second {
-        Completion::Ready(bytes) => Response!::ok(first.push_buffer(bytes)),
-        Completion::TimedOut => { first.destroy(); Response!::rejected(504) },
-        Completion::Cancelled => { first.destroy(); Response!::rejected(408) },
-        Completion::Failed(code) => { first.destroy(); Response!::rejected(500) },
+        Ready(bytes) => Response!::ok(first.push_buffer(bytes)),
+        TimedOut => { first.destroy(); Response!::rejected(504) },
+        Cancelled => { first.destroy(); Response!::rejected(408) },
+        Failed(code) => { first.destroy(); Response!::rejected(500) },
     }
 }
 
@@ -75,25 +75,25 @@ fn handle(request: Request!) -> Action! {
     body.destroy();
 
     match method {
-        Method::Get | Method::Head => (),
+        Get | Head => (),
         _ => { return Response!::method_not_allowed("GET, HEAD").reply(); },
     }
     match route {
-        Route::File => serve_file(false),
-        Route::TimedFile => serve_file(true),
-        Route::FileJoin => file_join::serve(),
-        Route::FileSequence => file_sequence::serve(),
-        Route::Close => Action!::Close,
-        Route::CloseAfterRead => close_after_read(),
-        Route::Health => Response!::text(200, "ok\n").reply(),
-        Route::Missing => Response!::rejected(404).reply(),
+        File => serve_file(false),
+        TimedFile => serve_file(true),
+        FileJoin => file_join::serve(),
+        FileSequence => file_sequence::serve(),
+        Close => Action!::Close,
+        CloseAfterRead => close_after_read(),
+        Health => Response!::text(200, "ok\n").reply(),
+        Missing => Response!::rejected(404).reply(),
     }
 }
 
 fn main() -> i32 {
     let server = match Server!::bind(0, handle) {
-        Result::Ok(server) => server,
-        Result::Err(code) => {
+        Ok(server) => server,
+        Err(code) => {
             eprint_buffer(f"http-file: cannot listen (libuv error {code})\n");
             return 1;
         },
@@ -104,8 +104,8 @@ fn main() -> i32 {
         return 1;
     }
     match server.run() {
-        Result::Ok(unit) => 0,
-        Result::Err(code) => {
+        Ok(unit) => 0,
+        Err(code) => {
             eprint_buffer(f"http-file: server stopped (libuv error {code})\n");
             1
         },

@@ -37,12 +37,12 @@ instance Resumable[Session! -> Buffer!, Lines!] {
         let exists 'k. (access, bytes, restore) = pending.open();
         let span = Span::from_slice(bytes);
         match span.rfind_byte(&access, b'\n') {
-            Option::None => {
+            None => {
                 let pending = restore.restore(access);
                 if &pending.len() > 16384 { Step::Done.(Lines!::TooLong.(pending)) }
                 else { Step::Suspended.(Session!::new(pending)) }
             },
-            Option::Some(index) => {
+            Some(index) => {
                 let end = index + 1;
                 let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
                 let rest = span.skip(end);
@@ -69,12 +69,12 @@ fn read_line(connection: Connection!, session: Session!) -> Action! {
         let (connection, outcome) = result;
         let bytes = match outcome {
             StreamOutcome::Item(bytes) => bytes,
-            StreamOutcome::TimedOut => return retry_read(connection, session),
+            TimedOut => return retry_read(connection, session),
             _ => return close_session(connection, session),
         };
         match session.resume(bytes) {
-            Step::Suspended(next) => read_line(connection, next),
-            Step::Done(lines) => write_lines(connection, lines),
+            Suspended(next) => read_line(connection, next),
+            Done(lines) => write_lines(connection, lines),
         }
     }, discard_read)
 }
@@ -95,8 +95,8 @@ fn retry_read(connection: Connection!, session: Session!) -> Action! {
 
 fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
     let (complete, tail) = match lines {
-        Lines!::Complete(complete, tail) => (complete, tail),
-        Lines!::TooLong(pending) => {
+        Complete(complete, tail) => (complete, tail),
+        TooLong(pending) => {
             discard_line(pending);
             return connection.close();
         },
@@ -116,8 +116,8 @@ fn discard_send(session: Session!, status: Completion[()]) {
 
 fn main() -> i32 {
     let listener = match Listener!::bind_connections(0, start) {
-        Result::Ok(listener) => listener,
-        Result::Err(code) => {
+        Ok(listener) => listener,
+        Err(code) => {
             eprint_buffer(f"tcp-session: cannot listen (libuv error {code})\n");
             return 1i32;
         },
@@ -128,8 +128,8 @@ fn main() -> i32 {
         return 1i32;
     }
     match listener.run() {
-        Result::Ok(unit) => 0i32,
-        Result::Err(code) => {
+        Ok(unit) => 0i32,
+        Err(code) => {
             eprint_buffer(f"tcp-session: listener stopped (libuv error {code})\n");
             1i32
         },

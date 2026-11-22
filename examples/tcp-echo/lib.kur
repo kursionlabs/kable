@@ -12,11 +12,11 @@ fn read_next(connection: Connection!) -> Action! {
 fn read_finished(result: (Connection!, StreamOutcome[Buffer!])) -> Action! {
     let (connection, outcome) = result;
     match outcome {
-        StreamOutcome::Item(bytes) => return connection.send_within(bytes, Duration::from_secs(1))
+        Item(bytes) => return connection.send_within(bytes, Duration::from_secs(1))
             .defer_tcp(|result| write_finished(result)),
-        StreamOutcome::TimedOut => { eprint_buffer(f"Read deadline expired.\n"); },
-        StreamOutcome::Cancelled => { eprint_buffer(f"Cancelled connection on shutdown.\n"); },
-        StreamOutcome::Eof | StreamOutcome::Failed => (),
+        TimedOut => { eprint_buffer(f"Read deadline expired.\n"); },
+        Cancelled => { eprint_buffer(f"Cancelled connection on shutdown.\n"); },
+        Eof | Failed => (),
     };
     connection.close()
 }
@@ -24,15 +24,15 @@ fn read_finished(result: (Connection!, StreamOutcome[Buffer!])) -> Action! {
 fn write_finished(result: (Connection!, Completion[()])) -> Action! {
     let (connection, status) = result;
     match status {
-        Completion::Ready => read_next(connection),
+        Ready => read_next(connection),
         _ => connection.close(),
     }
 }
 
 fn main() -> i32 {
     let listener = match Listener!::bind_connections(0, read_next) {
-        Result::Ok(listener) => listener,
-        Result::Err(code) => {
+        Ok(listener) => listener,
+        Err(code) => {
             eprint_buffer(f"tcp-echo: cannot listen (libuv error {code})\n");
             return 1i32;
         },
@@ -43,8 +43,8 @@ fn main() -> i32 {
         return 1i32;
     }
     match listener.run() {
-        Result::Ok(unit) => 0i32,
-        Result::Err(code) => {
+        Ok(unit) => 0i32,
+        Err(code) => {
             eprint_buffer(f"tcp-echo: listener stopped (libuv error {code})\n");
             1i32
         },

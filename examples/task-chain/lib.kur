@@ -10,7 +10,7 @@ use task::sequence::SequenceOutcome;
 fn append(state: Buffer!, prior: (Buffer!, Completion[()])) -> Buffer! {
     let (bytes, status) = prior;
     match status {
-        Completion::Ready => bytes.push_buffer(state),
+        Ready => bytes.push_buffer(state),
         _ => { bytes.destroy(); state.destroy(); trap(); },
     }
 }
@@ -19,20 +19,20 @@ fn stop(state: Buffer!, prior: (Buffer!, Completion[()])) {
     let (bytes, status) = prior;
     bytes.destroy();
     state.destroy();
-    match status { Completion::Ready => (), _ => trap() };
+    match status { Ready => (), _ => trap() };
     print_buffer(f"Stopped after the first result and reclaimed both buffers.\n");
 }
 
 fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
     state.destroy();
     match prior {
-        Option::Some(outcome) => {
+        Some(outcome) => {
             let (bytes, status) = outcome;
             bytes.destroy();
-            match status { Completion::Cancelled => (), _ => trap() };
+            match status { Cancelled => (), _ => trap() };
             print_buffer(f"Deadline reclaimed the first result and the pending state.\n");
         },
-        Option::None => {
+        None => {
             print_buffer(f"Reclaimed the last adapter's state without starting it.\n");
         },
     }
@@ -57,9 +57,9 @@ fn check_early_end(budget: Option[Duration]) {
             Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
         }, discard);
     match run_sequence(plan, budget) {
-        SequenceOutcome::Stopped => { if cancelled { trap(); } },
-        SequenceOutcome::Cancelled => { if !cancelled { trap(); } },
-        SequenceOutcome::Finished(outcome) => { let (bytes, status) = outcome; bytes.destroy(); trap(); },
+        Stopped => { if cancelled { trap(); } },
+        Cancelled => { if !cancelled { trap(); } },
+        Finished(outcome) => { let (bytes, status) = outcome; bytes.destroy(); trap(); },
     }
 }
 
@@ -73,18 +73,18 @@ fn check_chain(budget: Option[Duration], should_finish: bool) {
         }, discard);
     let result = run_sequence(plan, budget);
     match result {
-        SequenceOutcome::Finished(outcome) => {
+        Finished(outcome) => {
             let (bytes, status) = outcome;
             let length = &bytes.len();
             bytes.destroy();
             let ready = match status {
-                Completion::Ready => true,
-                Completion::Cancelled => false,
+                Ready => true,
+                Cancelled => false,
                 _ => trap(),
             };
             if length != 11usize || ready != should_finish { trap(); }
         },
-        SequenceOutcome::Stopped | SequenceOutcome::Cancelled => trap(),
+        Stopped | Cancelled => trap(),
     }
 }
 
@@ -93,13 +93,13 @@ fn main() -> i32 {
         .then(|outcome| Option::Some.(sleep(Duration::from_nanos(0)).map(|status| (outcome, status))));
     let result = run_sequence(plan, Option::None);
     match result {
-        SequenceOutcome::Finished(outcome) => {
+        Finished(outcome) => {
             let ((value, first), second) = outcome;
-            match first { Completion::Ready => (), _ => trap() };
-            match second { Completion::Ready => (), _ => trap() };
+            match first { Ready => (), _ => trap() };
+            match second { Ready => (), _ => trap() };
             if value != 7 { trap(); }
         },
-        SequenceOutcome::Stopped | SequenceOutcome::Cancelled => trap(),
+        Stopped | Cancelled => trap(),
     }
 
     check_chain(Option::None, true);

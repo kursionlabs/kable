@@ -45,7 +45,7 @@ impl Failure {
     /// Classifies a failure from a libuv file operation. The failure retains its raw code.
     fn file_error_kind(self) -> FileErrorKind {
         let code = match self {
-            Failure::Operation(code) => code,
+            Operation(code) => code,
             _ => return FileErrorKind::Other,
         };
         match unsafe kable_file_error_kind(code) {
@@ -221,9 +221,9 @@ instance Stream[FileChunks! ->
                     };
                     (item, count)
                 },
-                Completion::TimedOut => (StreamOutcome::TimedOut, 0),
-                Completion::Cancelled => (StreamOutcome::Cancelled, 0),
-                Completion::Failed(failure) => (StreamOutcome::Failed.(failure), 0),
+                TimedOut => (StreamOutcome::TimedOut, 0),
+                Cancelled => (StreamOutcome::Cancelled, 0),
+                Failed(failure) => (StreamOutcome::Failed.(failure), 0),
             };
             (FileChunks!.{ file, offset: offset + count, remaining: remaining - count }, outcome)
         })
@@ -297,14 +297,14 @@ unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
         5u8 => { &state.cancel(); 0usize },
         6u8 => (&state.take_cancel()).unwrap_or(usize::MAX),
         7u8 => match &state.result(registered(id)) {
-            Option::Some(result) => match result {
-                Resolution::Cancelled => CANCELLED as usize,
-                Resolution::Completed => COMPLETED as usize,
-                Resolution::First => FIRST as usize,
-                Resolution::Second => SECOND as usize,
-                Resolution::Failed => usize::MAX,
+            Some(result) => match result {
+                Cancelled => CANCELLED as usize,
+                Completed => COMPLETED as usize,
+                First => FIRST as usize,
+                Second => SECOND as usize,
+                Failed => usize::MAX,
             },
-            Option::None => usize::MAX,
+            None => usize::MAX,
         },
         9u8 => if &state.joined() { 1usize } else { 0usize },
         _ => 0usize,
@@ -349,12 +349,12 @@ impl Scope! {
         let { raw } = self;
         let root = root.unwrap_or(usize::MAX);
         let (end_ms, timed) = match deadline {
-            Option::None => (0u64, 0u8),
-            Option::Some(end) => (timer_millis(end), 1u8),
+            None => (0u64, 0u8),
+            Some(end) => (timer_millis(end), 1u8),
         };
         let expired = match loop {
-            RunLoop::Standalone => unsafe kable_scope_run(raw, root, end_ms, timed),
-            RunLoop::Reusable(loop) => unsafe kable_runner_run(loop, raw, root, end_ms, timed),
+            Standalone => unsafe kable_scope_run(raw, root, end_ms, timed),
+            Reusable(loop) => unsafe kable_runner_run(loop, raw, root, end_ms, timed),
         };
         self = Scope!.{ raw };
         expired != 0
@@ -416,17 +416,17 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
         let { file, offset, limit, bytes, request } = task;
         let { fd, length } = file;
         let (id, bytes) = match bytes {
-            Option::Some(bytes) => (Option::None, Option::Some.(bytes)),
-            Option::None => {
+            Some(bytes) => (Option::None, Option::Some.(bytes)),
+            None => {
                 let (bytes, dest) = if limit > isize::MAX as usize {
                     (Option::None, null())
                 } else {
                     match Buffer!::try_new_with_cap(limit) {
-                        Result::Ok(bytes) => {
+                        Ok(bytes) => {
                             let dest = unsafe &bytes.tail_ptr();
                             (Option::Some.(bytes), dest)
                         },
-                        Result::Err(_) => (Option::None, null()),
+                        Err(_) => (Option::None, null()),
                     }
                 };
                 let raw = unsafe kable_file_chunk(fd, offset, dest, limit);
@@ -441,16 +441,16 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
         let { file, offset, limit, bytes, request } = task;
         let outcome = match unsafe request.collect(&scope, collect_chunk_count) {
-            Completion::Ready(count) => {
+            Ready(count) => {
                 let outcome = match bytes {
-                    Option::Some(bytes) => Completion::Ready.(unsafe bytes.commit(count)),
-                    Option::None => Completion::Failed.(Failure::InvalidResult),
+                    Some(bytes) => Completion::Ready.(unsafe bytes.commit(count)),
+                    None => Completion::Failed.(Failure::InvalidResult),
                 };
                 return (file, outcome);
             },
-            Completion::TimedOut => Completion::TimedOut,
-            Completion::Cancelled => Completion::Cancelled,
-            Completion::Failed(failure) => Completion::Failed.(failure),
+            TimedOut => Completion::TimedOut,
+            Cancelled => Completion::Cancelled,
+            Failed(failure) => Completion::Failed.(failure),
         };
         bytes.map(|buffer| buffer.destroy());
         (file, outcome)
@@ -487,8 +487,8 @@ instance PlanDriver[Scope!] {
     fn pair(&scope: Scope!, pair: Pair) -> Option[usize] {
         let { kind, first, second } = pair;
         let tag = match kind {
-            PairKind::Select => 0u8,
-            PairKind::Join => 1u8,
+            Select => 0u8,
+            Join => 1u8,
         };
         let { raw } = scope;
         let id = unsafe kable_scope_add_pair(raw, tag, first, second);

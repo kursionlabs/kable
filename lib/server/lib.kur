@@ -73,9 +73,9 @@ impl Response! {
         sleep(duration).respond_with_owned(self, |response, status| {
             let code = match status {
                 Completion::Ready => return response.reply(),
-                Completion::TimedOut => 504,
-                Completion::Cancelled => 408,
-                Completion::Failed => 500,
+                TimedOut => 504,
+                Cancelled => 408,
+                Failed => 500,
             };
             response.destroy();
             Response!::rejected(code).reply()
@@ -129,11 +129,11 @@ impl ReplyBuilder![Task, State, Output, Env] {
     fn reply(self) -> Action! {
         let { task, handoff, timeout } = self;
         let hosted = match timeout {
-            Option::Some(duration) => prepare_hosted(task.within(duration), |result, client, flags| {
+            Some(duration) => prepare_hosted(task.within(duration), |result, client, flags| {
                 let (outcome, deadline) = result;
                 unsafe finish_reply(handoff, outcome, deadline, client, flags)
             }),
-            Option::None => prepare_hosted(task, |outcome, client, flags| {
+            None => prepare_hosted(task, |outcome, client, flags| {
                 unsafe finish_reply(handoff, outcome, DeadlineStatus::Completed, client, flags)
             }),
         };
@@ -156,10 +156,10 @@ forall State, Output, Env where Copy[Env].
 fn reply_action(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
     outcome: Output, deadline: DeadlineStatus) -> Action! {
     let status = match deadline {
-        DeadlineStatus::Completed => return handoff.resume(outcome),
-        DeadlineStatus::TimedOut => 504,
-        DeadlineStatus::Cancelled => 408,
-        DeadlineStatus::Failed => 500,
+        Completed => return handoff.resume(outcome),
+        TimedOut => 504,
+        Cancelled => 408,
+        Failed => 500,
     };
     handoff.discard_with(outcome);
     Response!::rejected(status).reply()
@@ -171,14 +171,14 @@ unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
 
 unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
     match action {
-        Action!::Reply(response) => unsafe write_wire(client, response.encode(head, http10)),
-        Action!::Deferred(plan) => {
+        Reply(response) => unsafe write_wire(client, response.encode(head, http10)),
+        Deferred(plan) => {
             let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
             let submission = unsafe plan.submit(client, flags, kable_schedule);
             submission.unwrap_or_else(|rejection| rejection.scheduler_error)
         },
-        Action!::File(reply) => unsafe write_file(client, reply, head, http10),
-        Action!::Close => { unsafe host::close(unsafe kable_client_connection(client)); 0 },
+        File(reply) => unsafe write_file(client, reply, head, http10),
+        Close => { unsafe host::close(unsafe kable_client_connection(client)); 0 },
     }
 }
 
@@ -199,8 +199,8 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
     }
     let raw = unsafe kable_client_connection(client);
     let connection = match unsafe host::begin_stream(raw, STREAM_IDLE) {
-        Result::Ok(connection) => connection,
-        Result::Err(error) => {
+        Ok(connection) => connection,
+        Err(error) => {
             headers.destroy();
             file.close();
             return error;
@@ -231,8 +231,8 @@ unsafe fn receive(context: *u8, client: *u8) -> i32 {
         if (flags & host::PLAN_ACTIVE) == 0 { return -1; }
         let result = match completion {
             Completion::Ready => unsafe kable_parse_input(client),
-            Completion::TimedOut | Completion::Cancelled => 408,
-            Completion::Failed => return -1,
+            TimedOut | Cancelled => 408,
+            Failed => return -1,
         };
         if result == REQUEST_MORE { return unsafe receive(context, client); }
         if result == REQUEST_CLOSED { return -1; }

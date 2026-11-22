@@ -14,10 +14,10 @@ impl Resolution {
     /// Converts a leaf or join resolution into its completion status.
     fn completion(self) -> Completion[()] {
         match self {
-            Resolution::Completed => Completion::Ready.(()),
-            Resolution::Cancelled => Completion::Cancelled,
-            Resolution::Failed(failure) => Completion::Failed.(failure),
-            Resolution::First | Resolution::Second => Completion::Failed.(Failure::InvalidResult),
+            Completed => Completion::Ready.(()),
+            Cancelled => Completion::Cancelled,
+            Failed(failure) => Completion::Failed.(failure),
+            First | Second => Completion::Failed.(Failure::InvalidResult),
         }
     }
 }

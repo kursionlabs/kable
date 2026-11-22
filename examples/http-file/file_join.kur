@@ -22,19 +22,19 @@ fn serve() -> Action! {
 fn joined_response(files: (Completion[Buffer!], Completion[Buffer!], Completion[()])) -> Response! {
     let (first, second, status) = files;
     match status {
-        Completion::Ready => file_response(first, second),
-        Completion::TimedOut => reject_files(first, second, 504),
-        Completion::Cancelled => reject_files(first, second, 408),
-        Completion::Failed => reject_files(first, second, 500),
+        Ready => file_response(first, second),
+        TimedOut => reject_files(first, second, 504),
+        Cancelled => reject_files(first, second, 408),
+        Failed => reject_files(first, second, 500),
     }
 }
 
 fn file_response(first: Completion[Buffer!], second: Completion[Buffer!]) -> Response! {
     match first {
-        Completion::Ready(left) => append_file(left, second),
-        Completion::TimedOut => { second.discard(); Response!::rejected(504) },
-        Completion::Cancelled => { second.discard(); Response!::rejected(408) },
-        Completion::Failed(code) => { second.discard(); Response!::rejected(500) },
+        Ready(left) => append_file(left, second),
+        TimedOut => { second.discard(); Response!::rejected(504) },
+        Cancelled => { second.discard(); Response!::rejected(408) },
+        Failed(code) => { second.discard(); Response!::rejected(500) },
     }
 }
 

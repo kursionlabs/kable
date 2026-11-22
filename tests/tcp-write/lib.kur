@@ -16,16 +16,16 @@ fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)
     bytes.destroy();
     if length != LARGE_WRITE { trap(); }
     let reason = match deadline {
-        DeadlineStatus::Completed => "completed",
-        DeadlineStatus::TimedOut => "timeout",
-        DeadlineStatus::Cancelled => "shutdown",
-        DeadlineStatus::Failed => "scope failure",
+        Completed => "completed",
+        TimedOut => "timeout",
+        Cancelled => "shutdown",
+        Failed => "scope failure",
     };
     let status = match completion {
-        Completion::Ready => "written",
-        Completion::TimedOut => "timed out",
-        Completion::Cancelled => "cancelled",
-        Completion::Failed => "failed",
+        Ready => "written",
+        TimedOut => "timed out",
+        Cancelled => "cancelled",
+        Failed => "failed",
     };
     eprint_buffer(f"write {reason}: {status}\n");
     connection.close()
@@ -34,10 +34,10 @@ fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)
 fn finish_send(result: (Connection!, Completion[()])) -> Action! {
     let (connection, completion) = result;
     let status = match completion {
-        Completion::Ready => "written",
-        Completion::TimedOut => "timed out",
-        Completion::Cancelled => "cancelled",
-        Completion::Failed => "failed",
+        Ready => "written",
+        TimedOut => "timed out",
+        Cancelled => "cancelled",
+        Failed => "failed",
     };
     eprint_buffer(f"send {status}\n");
     connection.close()
@@ -52,7 +52,7 @@ fn discard_write(connection: Connection!) -> Connection! {
         let length = &bytes.len();
         bytes.destroy();
         let unstarted = match status {
-            Completion::Failed(failure) => match failure { Failure::NotStarted => true, _ => false },
+            Completion::Failed(failure) => match failure { NotStarted => true, _ => false },
             _ => false,
         };
         if !unstarted || length != 9 || state != 0 { trap(); }
@@ -83,8 +83,8 @@ fn serve(connection: Connection!, consuming: bool) -> Action! {
         let (connection, outcome) = result;
         match outcome {
             StreamOutcome::Eof => send_after_eof(connection, consuming),
-            StreamOutcome::Item(bytes) => { bytes.destroy(); connection.close() },
-            StreamOutcome::TimedOut | StreamOutcome::Cancelled | StreamOutcome::Failed => connection.close(),
+            Item(bytes) => { bytes.destroy(); connection.close() },
+            TimedOut | Cancelled | Failed => connection.close(),
         }
     })
 }
@@ -96,8 +96,8 @@ fn serve_send(connection: Connection!) -> Action! { serve(connection, true) }
 fn main(args: Args) -> i32 {
     let accept: fn(Connection!) -> Action! = if args.len() > 1 { serve_send } else { serve_write };
     let listener = match Listener!::bind_connections(0, accept) {
-        Result::Ok(listener) => listener,
-        Result::Err(code) => return 1,
+        Ok(listener) => listener,
+        Err(code) => return 1,
     };
     let port = &listener.port();
     if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {

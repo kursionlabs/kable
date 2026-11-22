@@ -78,8 +78,8 @@ impl ScopeState! {
     /// Begins a scope when the staged root connects all registered nodes.
     fn begin(&self, root: Option[usize]) -> bool {
         let id = match root {
-            Option::Some(id) => id,
-            Option::None => return false,
+            Some(id) => id,
+            None => return false,
         };
         let { nodes, root: prior, ..rest } = self;
         let count = &nodes.len();
@@ -109,8 +109,8 @@ impl ScopeState! {
         let { nodes, root, pending, parent_timer, ..rest } = self;
         let changed = if root.is_some() {
             match resource {
-                Resource::Leaf(id) => update_leaf(&nodes, id, starting),
-                Resource::ParentTimer => update_lifetime(&parent_timer, starting),
+                Leaf(id) => update_leaf(&nodes, id, starting),
+                ParentTimer => update_lifetime(&parent_timer, starting),
             }
         } else { false };
         let pending = if changed {
@@ -140,7 +140,7 @@ impl ScopeState! {
         if root.is_some() && id < &nodes.len() {
             let leaf = &nodes.at(id);
             match leaf.branch {
-                Branch::Leaf => { resolved = settle(&nodes, &stops, id); },
+                Leaf => { resolved = settle(&nodes, &stops, id); },
                 _ => (),
             }
         }
@@ -151,8 +151,8 @@ impl ScopeState! {
     fn cancel(&self) {
         let { nodes, stops, root, ..rest } = self;
         match root {
-            Option::Some(root) => cancel_branch(&nodes, &stops, root),
-            Option::None => (),
+            Some(root) => cancel_branch(&nodes, &stops, root),
+            None => (),
         };
         self = ScopeState!.{ nodes, stops, root, ..rest };
     }
@@ -167,8 +167,8 @@ impl ScopeState! {
     /// Returns a registered node's result after the scope joins.
     fn result(&self, id: Option[usize]) -> Option[Resolution] {
         let id = match id {
-            Option::Some(id) => id,
-            Option::None => return Option::None,
+            Some(id) => id,
+            None => return Option::None,
         };
         let { nodes, root, pending, ..rest } = self;
         let result = if scope_joined(&nodes, root, pending) && id < &nodes.len() {
@@ -191,8 +191,8 @@ fn add_branch(&scope: ScopeState!, branch: Branch) -> Option[usize] {
     let index = &nodes.len();
     let valid = if root.is_none() {
         match branch {
-            Branch::Leaf => true,
-            Branch::Pair(pair) => {
+            Leaf => true,
+            Pair(pair) => {
                 if pair.first < index && pair.second < index && pair.first != pair.second {
                     let a = &nodes.at(pair.first);
                     let b = &nodes.at(pair.second);
@@ -218,8 +218,8 @@ fn add_branch(&scope: ScopeState!, branch: Branch) -> Option[usize] {
 fn scope_joined(&nodes: OwnedVec![Node], root: Option[usize], pending: usize) -> bool {
     if pending != 0usize { return false; }
     match root {
-        Option::Some(id) => (&nodes.at(id)).result.is_some(),
-        Option::None => false,
+        Some(id) => (&nodes.at(id)).result.is_some(),
+        None => false,
     }
 }
 
@@ -227,29 +227,29 @@ fn update_leaf(&nodes: OwnedVec![Node], id: usize, starting: bool) -> bool {
     if id >= &nodes.len() { return false; }
     let node = &nodes.at(id);
     match node.branch {
-        Branch::Leaf => {
+        Leaf => {
             let { lifetime, ..rest } = node;
             let changed = update_lifetime(&lifetime, starting);
             if changed { &nodes.set(id, Node.{ lifetime, ..rest }); }
             changed
         },
-        Branch::Pair => false,
+        Pair => false,
     }
 }
 
 fn update_lifetime(&lifetime: Lifetime, starting: bool) -> bool {
     match lifetime {
-        Lifetime::Unstarted => {
+        Unstarted => {
             if !starting { return false; }
             lifetime = Lifetime::Active;
             true
         },
-        Lifetime::Active => {
+        Active => {
             if starting { return false; }
             lifetime = Lifetime::Retired;
             true
         },
-        Lifetime::Retired => false,
+        Retired => false,
     }
 }
 
@@ -265,17 +265,17 @@ fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize)
         if node.result.is_none() {
             &nodes.set(index, node.resolve(Resolution::Cancelled));
             match node.branch {
-                Branch::Leaf => { stops = stops.push(index); },
-                Branch::Pair(pair) => { child = Option::Some.(pair.first); },
+                Leaf => { stops = stops.push(index); },
+                Pair(pair) => { child = Option::Some.(pair.first); },
             }
         }
         let next = match child {
-            Option::Some(id) => Option::Some.(id),
-            Option::None => next_sibling(&nodes, root, index),
+            Some(id) => Option::Some.(id),
+            None => next_sibling(&nodes, root, index),
         };
         match next {
-            Option::Some(id) => { index = id; },
-            Option::None => return,
+            Some(id) => { index = id; },
+            None => return,
         }
     }
 }
@@ -293,8 +293,8 @@ fn next_sibling(&nodes: OwnedVec![Node], root: usize, start: usize) -> Option[us
 
 fn children(&nodes: OwnedVec![Node], id: usize) -> Pair {
     match (&nodes.at(id)).branch {
-        Branch::Pair(pair) => pair,
-        Branch::Leaf => trap(),
+        Pair(pair) => pair,
+        Leaf => trap(),
     }
 }
 
@@ -306,19 +306,19 @@ fn settle(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], start: usize) -> bo
         if node.result.is_some() { return false; }
         &nodes.set(index, node.resolve(result));
         let parent_id = match node.parent {
-            Option::Some(parent_id) => parent_id,
-            Option::None => return true,
+            Some(parent_id) => parent_id,
+            None => return true,
         };
 
         let pair = children(&nodes, parent_id);
         let first = index == pair.first;
         let other = if first { pair.second } else { pair.first };
         match pair.kind {
-            PairKind::Select => {
+            Select => {
                 cancel_branch(&nodes, &stops, other);
                 result = if first { Resolution::First } else { Resolution::Second };
             },
-            PairKind::Join => {
+            Join => {
                 if (&nodes.at(other)).result.is_none() { return false; }
                 result = Resolution::Completed;
             },

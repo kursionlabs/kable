@@ -10,24 +10,24 @@ use task::{Completion, Discard, join};
 
 fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
     let first = match left {
-        Completion::Ready(first) => first,
-        Completion::Failed(failure) => {
+        Ready(first) => first,
+        Failed(failure) => {
             right.discard();
             eprint_buffer(f"async-read: first file failed ({failure})\n");
             return 1;
         },
-        Completion::TimedOut | Completion::Cancelled => { right.discard(); return 1; },
+        TimedOut | Cancelled => { right.discard(); return 1; },
     };
     match right {
-        Completion::Ready(second) => {
+        Ready(second) => {
             if print_buffer(first.push_buffer(second)).is_err() { 1 } else { 0 }
         },
-        Completion::Failed(failure) => {
+        Failed(failure) => {
             first.destroy();
             eprint_buffer(f"async-read: second file failed ({failure})\n");
             1
         },
-        Completion::TimedOut | Completion::Cancelled => { first.destroy(); 1 },
+        TimedOut | Cancelled => { first.destroy(); 1 },
     }
 }
 
@@ -40,30 +40,30 @@ fn main(args: Args) -> i32 {
     if args.len() < 3usize || args.len() > 4usize { return usage(); }
     let access = StaticRead::new();
     let left = match args.bytes(1usize) {
-        Option::Some(path) => path,
-        Option::None => return usage(),
+        Some(path) => path,
+        None => return usage(),
     };
     let right = match args.bytes(2usize) {
-        Option::Some(path) => path,
-        Option::None => return usage(),
+        Some(path) => path,
+        None => return usage(),
     };
     let deadline = match args.bytes(3usize) {
-        Option::Some(value) => match parse_u64(&access, value) {
-            Option::Some(ms) => Duration::from_millis(ms),
-            Option::None => return usage(),
+        Some(value) => match parse_u64(&access, value) {
+            Some(ms) => Duration::from_millis(ms),
+            None => return usage(),
         },
-        Option::None => Duration::from_secs(5),
+        None => Duration::from_secs(5),
     };
     let plan = join(read_file(&access, left, 65_536usize), read_file(&access, right, 65_536usize));
     let (left, right, status) = run_with_deadline(plan, deadline);
     match status {
-        Completion::Ready => print_pair(left, right),
-        Completion::TimedOut | Completion::Cancelled => {
+        Ready => print_pair(left, right),
+        TimedOut | Cancelled => {
             (left, right).discard();
             eprint_buffer(f"async-read: deadline expired\n");
             1i32
         },
-        Completion::Failed(failure) => {
+        Failed(failure) => {
             (left, right).discard();
             eprint_buffer(f"async-read: scope failed ({failure})\n");
             1i32

@@ -12,7 +12,7 @@ struct ReverseSelect! { first: Sleep!, second: Sleep!, id: Option[usize] }
 
 fn invalid_result(resolution: Resolution) -> bool {
     match resolution {
-        Resolution::Failed(failure) => match failure { Failure::InvalidResult => true, _ => false },
+        Failed(failure) => match failure { InvalidResult => true, _ => false },
         _ => false,
     }
 }
@@ -24,11 +24,11 @@ instance Plan[ReverseSelect!, Driver -> bool] {
         let a = Plan[Sleep!, Driver -> Completion[()]]::stage(&first, &scope);
         let b = Plan[Sleep!, Driver -> Completion[()]]::stage(&second, &scope);
         let id = match a {
-            Option::Some(a) => match b {
-                Option::Some(b) => PlanDriver[Driver]::pair(&scope, Pair.{ kind: PairKind::Select, first: a, second: b }),
-                Option::None => Option::None,
+            Some(a) => match b {
+                Some(b) => PlanDriver[Driver]::pair(&scope, Pair.{ kind: PairKind::Select, first: a, second: b }),
+                None => Option::None,
             },
-            Option::None => Option::None,
+            None => Option::None,
         };
         task = ReverseSelect!.{ first, second, id };
         id
@@ -37,17 +37,17 @@ instance Plan[ReverseSelect!, Driver -> bool] {
     fn collect(task: ReverseSelect!, &scope: Driver) -> bool {
         let { first, second, id } = task;
         let selected = match PlanDriver[Driver]::result(&scope, id) {
-            Resolution::First => true,
+            First => true,
             _ => false,
         };
         let status = Plan[Sleep!, Driver -> Completion[()]]::collect(second, &scope);
         let cancelled = match status {
-            Completion::Cancelled => true,
+            Cancelled => true,
             _ => false,
         };
         let status = Plan[Sleep!, Driver -> Completion[()]]::collect(first, &scope);
         let completed = match status {
-            Completion::Ready => true,
+            Ready => true,
             _ => false,
         };
         let missing = PlanDriver[Driver]::result(&scope, Option::None);
@@ -79,7 +79,7 @@ instance Plan[InvalidRootTimer!, Driver -> (Buffer!, Completion[()])] {
 forall T where Copy[T].
 fn invalid_plan(status: Completion[T]) -> bool {
     match status {
-        Completion::Failed(failure) => match failure { Failure::InvalidPlan => true, _ => false },
+        Failed(failure) => match failure { InvalidPlan => true, _ => false },
         _ => false,
     }
 }
@@ -130,9 +130,9 @@ fn check_cancelled_join() -> bool {
     let lengths_ok = &first.len() == 5 && &second.len() == 15;
     first.destroy();
     second.destroy();
-    let first_ready = match first_status { Completion::Ready => true, _ => false };
-    let second_cancelled = match second_status { Completion::Cancelled => true, _ => false };
-    let join_cancelled = match status { Completion::Cancelled => true, _ => false };
+    let first_ready = match first_status { Ready => true, _ => false };
+    let second_cancelled = match second_status { Cancelled => true, _ => false };
+    let join_cancelled = match status { Cancelled => true, _ => false };
     lengths_ok && first_ready && second_cancelled && join_cancelled
 }
 
@@ -185,7 +185,7 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
     let length = &bytes.len();
     bytes.destroy();
     match status {
-        Completion::Cancelled => { if length != 5 { trap(); } },
+        Cancelled => { if length != 5 { trap(); } },
         _ => trap(),
     }
     deadline
@@ -200,15 +200,15 @@ fn deadline_with_timer_result(timer_result: Resolution) -> DeadlineStatus {
 fn check_deadline_timer_results() -> bool {
     let deadline = deadline_with_timer_result(Resolution::Failed.(Failure::Operation.(-42)));
     match deadline {
-        DeadlineStatus::Failed(failure) => match failure {
-            Failure::Operation(code) => { if code != -42 { return false; } },
+        Failed(failure) => match failure {
+            Operation(code) => { if code != -42 { return false; } },
             _ => return false,
         },
         _ => return false,
     }
     match deadline_with_timer_result(Resolution::Cancelled) {
-        DeadlineStatus::Failed(failure) => match failure {
-            Failure::InvalidResult => true,
+        Failed(failure) => match failure {
+            InvalidResult => true,
             _ => false,
         },
         _ => false,
@@ -251,9 +251,9 @@ fn check_reported_deadline() -> bool {
         |state, output| unexpected_resume(state, output), discard_expired);
     let engine = EarlyDeadline.{};
     match drive_sequence_until(plan, &engine, Option::Some.(Duration::from_secs(1))) {
-        SequenceOutcome::Cancelled => true,
-        SequenceOutcome::Finished(output) => { output.destroy(); false },
-        SequenceOutcome::Stopped => false,
+        Cancelled => true,
+        Finished(output) => { output.destroy(); false },
+        Stopped => false,
     }
 }
 
@@ -269,7 +269,7 @@ fn check_local_timeout_handoff() -> bool {
         }
     });
     match run_sequence(plan, Option::None) {
-        SequenceOutcome::Finished(status) => match status { Completion::Ready => true, _ => false },
+        Finished(status) => match status { Ready => true, _ => false },
         _ => false,
     }
 }
@@ -292,9 +292,9 @@ instance Stream[TestStream! -> Map![Sleep!, Completion[()], (TestStream!, Stream
         sleep(delay).map(|status| {
             let outcome = match status {
                 Completion::Ready => StreamOutcome::Item.(TestItem!.{ bytes: Buffer!::new().push_static("item") }),
-                Completion::TimedOut => StreamOutcome::TimedOut,
-                Completion::Cancelled => StreamOutcome::Cancelled,
-                Completion::Failed(failure) => StreamOutcome::Failed.(failure),
+                TimedOut => StreamOutcome::TimedOut,
+                Cancelled => StreamOutcome::Cancelled,
+                Failed(failure) => StreamOutcome::Failed.(failure),
             };
             (source, outcome)
         })
@@ -327,7 +327,7 @@ fn check_timed_stream() -> bool {
     let pending = Duration::from_secs(30);
     let (source, outcome) = run(test_stream(immediate).next_within(pending));
     let ready = match outcome {
-        StreamOutcome::Item(item) => {
+        Item(item) => {
             let { bytes } = item;
             let valid = &bytes.len() == 4;
             bytes.destroy();
@@ -339,16 +339,16 @@ fn check_timed_stream() -> bool {
 
     let (source, outcome) = run(test_stream(pending).next_within(immediate));
     let timed_out = match outcome {
-        StreamOutcome::TimedOut => true,
-        StreamOutcome::Item(item) => { item.discard(); false },
+        TimedOut => true,
+        Item(item) => { item.discard(); false },
         _ => false,
     };
     let timed_out_source = check_returned_stream(source);
 
     let (source, outcome) = run_with_deadline(test_stream(pending).next_within(pending), immediate);
     let cancelled = match outcome {
-        StreamOutcome::Cancelled => true,
-        StreamOutcome::Item(item) => { item.discard(); false },
+        Cancelled => true,
+        Item(item) => { item.discard(); false },
         _ => false,
     };
     let cancelled_source = check_returned_stream(source);
@@ -361,18 +361,18 @@ fn check_timed_send() -> bool {
     let item = TestItem!.{ bytes: Buffer!::new().push_static("send") };
     let (writer, outcome) = run(test_stream(immediate).send(item));
     let returned = check_returned_stream(writer);
-    match outcome { Completion::Ready => if !returned { return false; }, _ => return false };
+    match outcome { Ready => if !returned { return false; }, _ => return false };
 
     let item = TestItem!.{ bytes: Buffer!::new().push_static("send") };
     let send = test_stream(pending).send_within(item, immediate);
     let ((writer, outcome), sibling, status) = run(join(send, sleep(immediate)));
     let returned = check_returned_stream(writer);
     match outcome {
-        Completion::TimedOut => (),
+        TimedOut => (),
         _ => return false,
     };
-    match sibling { Completion::Ready => (), _ => return false };
-    match status { Completion::Ready => returned, _ => false }
+    match sibling { Ready => (), _ => return false };
+    match status { Ready => returned, _ => false }
 }
 
 fn main() -> i32 {

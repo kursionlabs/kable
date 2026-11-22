@@ -12,29 +12,29 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
         let (next, outcome) = &runner.run(source.next());
         source = next;
         let bytes = match outcome {
-            StreamOutcome::Item(bytes) => bytes,
-            StreamOutcome::Eof => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
-            StreamOutcome::TimedOut => { eprint_buffer(f"file-copy: read timed out\n"); return false; },
-            StreamOutcome::Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
-            StreamOutcome::Failed(failure) => {
+            Item(bytes) => bytes,
+            Eof => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
+            TimedOut => { eprint_buffer(f"file-copy: read timed out\n"); return false; },
+            Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
+            Failed(failure) => {
                 eprint_buffer(f"file-copy: read failed ({failure})\n");
                 return false;
             },
         };
         let write = destination.send(bytes);
         let (file, outcome) = match deadline {
-            Option::Some(duration) => &runner.run_with_deadline(write, duration),
-            Option::None => &runner.run(write),
+            Some(duration) => &runner.run_with_deadline(write, duration),
+            None => &runner.run(write),
         };
         destination = file;
         match outcome {
-            Completion::Ready => (),
-            Completion::TimedOut | Completion::Cancelled => {
+            Ready => (),
+            TimedOut | Cancelled => {
                 let count = &destination.position();
                 eprint_buffer(f"file-copy: write timed out after {count} bytes\n");
                 return false;
             },
-            Completion::Failed(failure) => {
+            Failed(failure) => {
                 let count = &destination.position();
                 eprint_buffer(f"file-copy: write failed after {count} bytes ({failure})\n");
                 return false;
@@ -47,18 +47,18 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
 fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'static], deadline: Option[Duration]) -> i32 {
     let access = StaticRead::new();
     let input = match &runner.run(open_file(&access, source)) {
-        Completion::Ready(file) => file,
-        Completion::TimedOut | Completion::Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
-        Completion::Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
+        Ready(file) => file,
+        TimedOut | Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
+        Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
     };
     let destination = match &runner.run(create_file(&access, destination)) {
-        Completion::Ready(file) => file,
-        Completion::TimedOut | Completion::Cancelled => {
+        Ready(file) => file,
+        TimedOut | Cancelled => {
             input.close();
             eprint_buffer(f"file-copy: destination creation cancelled\n");
             return 1;
         },
-        Completion::Failed(failure) => {
+        Failed(failure) => {
             input.close();
             eprint_buffer(f"file-copy: creating destination failed ({failure})\n");
             return 1;
@@ -69,8 +69,8 @@ fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'st
     let copied = transfer(&runner, &source, &destination, deadline);
     source.close();
     match destination.close() {
-        Result::Ok(unit) => if copied { 0 } else { 1 },
-        Result::Err(code) => { eprint_buffer(f"file-copy: closing destination failed ({code})\n"); 1 },
+        Ok(unit) => if copied { 0 } else { 1 },
+        Err(code) => { eprint_buffer(f"file-copy: closing destination failed ({code})\n"); 1 },
     }
 }
 
@@ -85,10 +85,10 @@ fn main(args: Args) -> i32 {
     let source = args.bytes(1).unwrap();
     let destination = args.bytes(2).unwrap();
     let deadline = match args.bytes(3) {
-        Option::None => Option::None,
-        Option::Some(value) => match parse_u64(&access, value) {
-            Option::Some(ms) => Option::Some.(Duration::from_millis(ms)),
-            Option::None => return usage(),
+        None => Option::None,
+        Some(value) => match parse_u64(&access, value) {
+            Some(ms) => Option::Some.(Duration::from_millis(ms)),
+            None => return usage(),
         },
     };
     with_runner(|&runner| copy(&runner, source, destination, deadline))

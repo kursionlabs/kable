@@ -39,8 +39,8 @@ fn discard_handoff(state: (Buffer!, *usize), prior: Option[Buffer!]) {
     let (bytes, released) = state;
     discard_line((bytes, released));
     match prior {
-        Option::Some(bytes) => discard_line((bytes, released)),
-        Option::None => (),
+        Some(bytes) => discard_line((bytes, released)),
+        None => (),
     }
 }
 
@@ -75,24 +75,24 @@ fn check_resume(finish: bool) -> bool {
     let line = suspend((Buffer!::new(), released),
         |state, byte| read_byte(state, byte, delimiter), discard_line);
     let line = match line.resume(b'a') {
-        Step::Suspended(line) => line,
-        Step::Done(bytes) => { bytes.destroy(); return false; },
+        Suspended(line) => line,
+        Done(bytes) => { bytes.destroy(); return false; },
     };
     let line = match line.resume(b'b') {
-        Step::Suspended(line) => line,
-        Step::Done(bytes) => { bytes.destroy(); return false; },
+        Suspended(line) => line,
+        Done(bytes) => { bytes.destroy(); return false; },
     };
     if !finish {
         line.discard();
         return (unsafe *released) == 2;
     }
     match line.resume(delimiter) {
-        Step::Done(bytes) => {
+        Done(bytes) => {
             let length = &bytes.len();
             bytes.destroy();
             length == 2 && (unsafe *released) == 0
         },
-        Step::Suspended(line) => { line.discard(); false },
+        Suspended(line) => { line.discard(); false },
     }
 }
 

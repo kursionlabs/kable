@@ -11,8 +11,8 @@ fn main() -> i32 {
     let (earlier, (bytes, tied), scope) = run_with_deadline(join(earlier, tied), deadline);
     let valid_buffer = &bytes.len() == 5;
     bytes.destroy();
-    let earlier_ready = match earlier { Completion::Ready => true, _ => false };
-    let tied_cancelled = match tied { Completion::Cancelled => true, _ => false };
-    let scope_cancelled = match scope { Completion::Cancelled => true, _ => false };
+    let earlier_ready = match earlier { Ready => true, _ => false };
+    let tied_cancelled = match tied { Cancelled => true, _ => false };
+    let scope_cancelled = match scope { Cancelled => true, _ => false };
     if valid_buffer && earlier_ready && tied_cancelled && scope_cancelled { 0 } else { 1 }
 }

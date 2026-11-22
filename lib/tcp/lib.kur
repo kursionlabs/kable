@@ -71,11 +71,11 @@ unsafe fn dispatch(context: *u8, raw: *u8) -> i32 {
 
 unsafe fn apply(connection: *u8, action: Action!) -> i32 {
     match action {
-        Action!::Scoped(plan) => {
+        Scoped(plan) => {
             let submission = unsafe plan.submit(connection, 0, kable_tcp_schedule);
             submission.unwrap_or_else(|rejection| rejection.continuation_status)
         },
-        Action!::Close(connection) => {
+        Close(connection) => {
             let { raw } = connection;
             unsafe kable_tcp_close(raw);
             0i32

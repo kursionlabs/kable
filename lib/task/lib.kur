@@ -28,11 +28,11 @@ forall W where Writable[W].
 instance Format[Failure, W] {
     fn format(value: Failure, out: W) -> (Failure, W) {
         let out = match value {
-            Failure::NotStarted => Writable[W]::write_static(out, "scope never started"),
-            Failure::InvalidPlan => Writable[W]::write_static(out, "invalid scope plan"),
-            Failure::InvalidResult => Writable[W]::write_static(out, "invalid scope result"),
-            Failure::Startup(code) => write_i64(Writable[W]::write_static(out, "startup error "), code as i64),
-            Failure::Operation(code) => write_i64(Writable[W]::write_static(out, "operation error "), code as i64),
+            NotStarted => Writable[W]::write_static(out, "scope never started"),
+            InvalidPlan => Writable[W]::write_static(out, "invalid scope plan"),
+            InvalidResult => Writable[W]::write_static(out, "invalid scope result"),
+            Startup(code) => write_i64(Writable[W]::write_static(out, "startup error "), code as i64),
+            Operation(code) => write_i64(Writable[W]::write_static(out, "operation error "), code as i64),
         };
         (value, out)
     }
@@ -52,7 +52,7 @@ impl Completion[T] {
     /// Releases the owned value if the operation completed successfully.
     fn discard_with(self, release: fn(T) -> ()) {
         match self {
-            Completion::Ready(value) => release(value),
+            Ready(value) => release(value),
             _ => (),
         }
     }
@@ -62,10 +62,10 @@ impl Completion[T] {
     forall Output, Env where Copy[Env].
     fn and_then(self, next: closure[Env](T) -> Completion[Output]) -> Completion[Output] {
         match self {
-            Completion::Ready(value) => next(value),
-            Completion::TimedOut => Completion::TimedOut,
-            Completion::Cancelled => Completion::Cancelled,
-            Completion::Failed(failure) => Completion::Failed.(failure),
+            Ready(value) => next(value),
+            TimedOut => Completion::TimedOut,
+            Cancelled => Completion::Cancelled,
+            Failed(failure) => Completion::Failed.(failure),
         }
     }
 }
@@ -85,7 +85,7 @@ impl StreamOutcome[T] {
     /// Releases the owned item if the read produced one.
     fn discard_with(self, release: fn(T) -> ()) {
         match self {
-            StreamOutcome::Item(item) => release(item),
+            Item(item) => release(item),
             _ => (),
         }
     }
@@ -108,10 +108,10 @@ impl Source {
         deadline::race(self.next(), duration).map(|result| {
             let ((source, read), status) = deadline::resolve(result);
             let interrupted = match status {
-                DeadlineStatus::Completed => return (source, read),
-                DeadlineStatus::TimedOut => StreamOutcome::TimedOut,
-                DeadlineStatus::Cancelled => StreamOutcome::Cancelled,
-                DeadlineStatus::Failed(failure) => StreamOutcome::Failed.(failure),
+                Completed => return (source, read),
+                TimedOut => StreamOutcome::TimedOut,
+                Cancelled => StreamOutcome::Cancelled,
+                Failed(failure) => StreamOutcome::Failed.(failure),
             };
             read.discard();
             (source, interrupted)
@@ -183,11 +183,11 @@ exposed enum Side { First, Second }
 
 fn select_result(result: Resolution) -> Completion[Side] {
     match result {
-        Resolution::First => Completion::Ready.(Side::First),
-        Resolution::Second => Completion::Ready.(Side::Second),
-        Resolution::Cancelled => Completion::Cancelled,
-        Resolution::Failed(failure) => Completion::Failed.(failure),
-        Resolution::Completed => Completion::Failed.(Failure::InvalidResult),
+        First => Completion::Ready.(Side::First),
+        Second => Completion::Ready.(Side::Second),
+        Cancelled => Completion::Cancelled,
+        Failed(failure) => Completion::Failed.(failure),
+        Completed => Completion::Failed.(Failure::InvalidResult),
     }
 }
 

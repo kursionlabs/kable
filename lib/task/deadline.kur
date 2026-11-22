@@ -14,24 +14,24 @@ fn resolve(result: (Completion[()], Output, Completion[Side])) -> (Output, Deadl
 
 fn finish(completion: Completion[()], deadline: DeadlineStatus) -> Completion[()] {
     match deadline {
-        DeadlineStatus::Completed => completion,
-        DeadlineStatus::TimedOut => Completion::TimedOut,
-        DeadlineStatus::Cancelled => Completion::Cancelled,
-        DeadlineStatus::Failed(failure) => Completion::Failed.(failure),
+        Completed => completion,
+        TimedOut => Completion::TimedOut,
+        Cancelled => Completion::Cancelled,
+        Failed(failure) => Completion::Failed.(failure),
     }
 }
 
 fn status(timer: Completion[()], race: Completion[Side]) -> DeadlineStatus {
     match race {
-        Completion::Ready(side) => match side {
-            Side::First => match timer {
-                Completion::Ready | Completion::TimedOut => DeadlineStatus::TimedOut,
-                Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
-                Completion::Cancelled => DeadlineStatus::Failed.(Failure::InvalidResult),
+        Ready(side) => match side {
+            First => match timer {
+                Ready | TimedOut => DeadlineStatus::TimedOut,
+                Failed(failure) => DeadlineStatus::Failed.(failure),
+                Cancelled => DeadlineStatus::Failed.(Failure::InvalidResult),
             },
-            Side::Second => DeadlineStatus::Completed,
+            Second => DeadlineStatus::Completed,
         },
-        Completion::TimedOut | Completion::Cancelled => DeadlineStatus::Cancelled,
-        Completion::Failed(failure) => DeadlineStatus::Failed.(failure),
+        TimedOut | Cancelled => DeadlineStatus::Cancelled,
+        Failed(failure) => DeadlineStatus::Failed.(failure),
     }
 }

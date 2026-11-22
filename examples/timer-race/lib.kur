@@ -50,7 +50,7 @@ fn check_within() -> bool {
 
     let (outcome, deadline) = run(sleep(Duration::from_nanos(0)).within(Duration::from_secs(30)));
     match deadline {
-        DeadlineStatus::Completed => {
+        Completed => {
             if !ready(outcome) { return false; }
             print_buffer(f"Local deadline left its sibling running; parent cancellation stayed distinct.\n");
             true
@@ -62,9 +62,9 @@ fn check_within() -> bool {
 fn reclaim_limited_buffer(result: ((Buffer!, Completion[()]), DeadlineStatus), local: bool) -> bool {
     let ((bytes, status), deadline) = result;
     let expected = match deadline {
-        DeadlineStatus::TimedOut => local,
-        DeadlineStatus::Cancelled => !local,
-        DeadlineStatus::Completed | DeadlineStatus::Failed => false,
+        TimedOut => local,
+        Cancelled => !local,
+        Completed | Failed => false,
     };
     let length = &bytes.len();
     bytes.destroy();
@@ -73,8 +73,8 @@ fn reclaim_limited_buffer(result: ((Buffer!, Completion[()]), DeadlineStatus), l
 
 fn label(bytes: Buffer!, suffix: Buffer!, status: Completion[()]) -> (Buffer!, bool) {
     match status {
-        Completion::Ready => (bytes.push_buffer(suffix), true),
-        Completion::Cancelled => (bytes.push_buffer(suffix), false),
+        Ready => (bytes.push_buffer(suffix), true),
+        Cancelled => (bytes.push_buffer(suffix), false),
         _ => { bytes.destroy(); suffix.destroy(); trap() },
     }
 }
@@ -142,18 +142,18 @@ fn check_nested_deadline() -> bool {
 }
 
 fn won(status: Completion[Side], expected: Side) -> bool {
-    let winner = match status { Completion::Ready(side) => side, _ => return false };
-    let first = match winner { Side::First => true, Side::Second => false };
-    match expected { Side::First => first, Side::Second => !first }
+    let winner = match status { Ready(side) => side, _ => return false };
+    let first = match winner { First => true, Second => false };
+    match expected { First => first, Second => !first }
 }
 
 fn ready(status: Completion[()]) -> bool {
-    match status { Completion::Ready => true, _ => false }
+    match status { Ready => true, _ => false }
 }
 
 forall T where Copy[T].
 fn cancelled(status: Completion[T]) -> bool {
-    match status { Completion::Cancelled => true, _ => false }
+    match status { Cancelled => true, _ => false }
 }
 
 fn reclaim_cancelled(result: (Buffer!, Completion[()])) -> bool {

@@ -88,8 +88,8 @@ instance Resumable[Suspension![State, Input, Output, Env] -> Input, Output] {
         -> Step[Suspension![State, Input, Output, Env], Output] {
         let { state, step, cleanup } = suspension;
         match step(state, input) {
-            Step::Done(output) => Step::Done.(output),
-            Step::Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
+            Done(output) => Step::Done.(output),
+            Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
         }
     }
 

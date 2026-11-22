@@ -17,8 +17,8 @@ fn hello(request: Request!) -> Action! {
 
 fn main() -> i32 {
     let server = match Server!::bind(0, hello) {
-        Result::Ok(server) => server,
-        Result::Err(code) => {
+        Ok(server) => server,
+        Err(code) => {
             eprint_buffer(f"hello-server: cannot listen (libuv error {code})\n");
             return 1;
         },
@@ -29,8 +29,8 @@ fn main() -> i32 {
         return 1;
     }
     match server.run() {
-        Result::Ok(unit) => 0,
-        Result::Err(code) => {
+        Ok(unit) => 0,
+        Err(code) => {
             eprint_buffer(f"hello-server: server stopped (libuv error {code})\n");
             1
         },

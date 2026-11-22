@@ -47,14 +47,14 @@ fn next_event(&timers: OwnedVec![Option[Duration]], deadline: Option[Duration]) 
     var i = 0usize;
     while i < &timers.len() {
         match &timers.at(i) {
-            Option::Some(duration) => {
+            Some(duration) => {
                 let sooner = match next {
-                    Option::Some(event) => { let (resource, due) = event; duration.as_nanos() < due.as_nanos() },
-                    Option::None => true,
+                    Some(event) => { let (resource, due) = event; duration.as_nanos() < due.as_nanos() },
+                    None => true,
                 };
                 if sooner { next = Option::Some.((Resource::Leaf.(i), duration)); }
             },
-            Option::None => (),
+            None => (),
         }
         i = i + 1usize;
     }
@@ -67,7 +67,7 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
         scope = Virtual!.{ state, timers, invalid_plan: true };
         return (Duration::from_nanos(0), false);
     }
-    let expired = match deadline { Option::Some(duration) => duration.is_zero(), Option::None => false, };
+    let expired = match deadline { Some(duration) => duration.is_zero(), None => false, };
     if expired {
         &state.cancel();
         scope = Virtual!.{ state, timers, invalid_plan };
@@ -87,13 +87,13 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
         let (resource, due) = next_event(&timers, limit).unwrap();
         elapsed = due;
         match resource {
-            Resource::ParentTimer => {
+            ParentTimer => {
                 deadline_expired = true;
                 &state.cancel();
                 &state.retired(Resource::ParentTimer);
                 limit = Option::None;
             },
-            Resource::Leaf(id) => {
+            Leaf(id) => {
                 &timers.set(id, Option::None);
                 let finished = &state.complete(id);
                 &state.retired(Resource::Leaf.(id));

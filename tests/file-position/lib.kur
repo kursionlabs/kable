@@ -12,15 +12,15 @@ fn write_item(writer: Writer, item: Item) -> Write { writer.write(item) }
 fn check_timed_read() -> i32 {
     let access = StaticRead::new();
     let file = match run(open_file(&access, "large.bin")) {
-        Completion::Ready(file) => file,
+        Ready(file) => file,
         _ => return 1,
     };
     let length = &file.len();
     let source = file.chunks(0, length);
     let (source, outcome) = run(source.next_within(Duration::from_millis(500)));
     match outcome {
-        StreamOutcome::TimedOut => (),
-        StreamOutcome::Item(bytes) => { bytes.destroy(); trap(); },
+        TimedOut => (),
+        Item(bytes) => { bytes.destroy(); trap(); },
         _ => trap(),
     };
     if &source.remaining() != length { trap(); }
@@ -30,7 +30,7 @@ fn check_timed_read() -> i32 {
     let remaining = &source.remaining();
     source.close();
     let bytes = match outcome {
-        StreamOutcome::Item(bytes) => bytes,
+        Item(bytes) => bytes,
         _ => trap(),
     };
     if remaining != 0 { bytes.destroy(); return 1; }
@@ -41,22 +41,22 @@ fn main(args: Args) -> i32 {
     if args.len() > 1 { return check_timed_read(); }
     let access = StaticRead::new();
     let file = match run(create_file(&access, "mixed-writes")) {
-        Completion::Ready(file) => file,
+        Ready(file) => file,
         _ => return 1,
     };
     let (file, bytes, status) = run(write_item(file, Buffer!::new().push_static("abc")));
     bytes.destroy();
-    match status { Completion::Ready => (), _ => trap() };
+    match status { Ready => (), _ => trap() };
     if &file.position() != 3 { trap(); }
 
     let (file, bytes, count, status) = run(file.write_chunk(1, Buffer!::new().push_static("X")));
     bytes.destroy();
-    match status { Completion::Ready => (), _ => trap() };
+    match status { Ready => (), _ => trap() };
     if count != 1 || &file.position() != 3 { trap(); }
 
     let (file, bytes, status) = run(write_item(file, Buffer!::new().push_static("d")));
     bytes.destroy();
-    match status { Completion::Ready => (), _ => trap() };
+    match status { Ready => (), _ => trap() };
     if &file.position() != 4 { trap(); }
     if file.close().is_ok() { 0 } else { 1 }
 }

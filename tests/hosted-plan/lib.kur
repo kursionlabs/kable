@@ -28,11 +28,11 @@ extern "C" fn kable_test_file_fault_begin(fault: u8) -> i32;
 extern "C" fn kable_test_file_fault_end() -> u8;
 
 fn never_started(failure: Failure) -> bool {
-    match failure { Failure::NotStarted => true, _ => false }
+    match failure { NotStarted => true, _ => false }
 }
 
 fn not_started(status: Completion[()]) -> bool {
-    match status { Completion::Failed(failure) => never_started(failure), _ => false }
+    match status { Failed(failure) => never_started(failure), _ => false }
 }
 
 struct FailStart { stage_nanos: u64 }
@@ -54,8 +54,8 @@ instance Plan[FailStart, Scope! -> ()] {
 
 fn startup_failed(status: Completion[()]) -> bool {
     match status {
-        Completion::Failed(failure) => match failure {
-            Failure::Startup(code) => code == -42,
+        Failed(failure) => match failure {
+            Startup(code) => code == -42,
             _ => false,
         },
         _ => false,
@@ -73,8 +73,8 @@ fn check_startup_failure() -> bool {
     first.destroy();
     second.destroy();
     let deadline_failed = match deadline {
-        DeadlineStatus::Failed(failure) => match failure {
-            Failure::Startup(code) => code == -42,
+        Failed(failure) => match failure {
+            Startup(code) => code == -42,
             _ => false,
         },
         _ => false,
@@ -103,14 +103,14 @@ fn check_partial_start_retirement() -> bool {
 
 fn discard_sequence(unit: (), prior: Option[(Buffer!, Completion[()])]) {
     match prior {
-        Option::Some(outcome) => { let (bytes, status) = outcome; bytes.destroy(); },
-        Option::None => (),
+        Some(outcome) => { let (bytes, status) = outcome; bytes.destroy(); },
+        None => (),
     }
 }
 
 fn sequence_stage_status(status: Completion[()], failed: bool) -> bool {
     if failed { return startup_failed(status); }
-    match status { Completion::Ready => true, _ => false }
+    match status { Ready => true, _ => false }
 }
 
 fn check_one_shot_loop(error: i32) -> bool {
@@ -127,8 +127,8 @@ fn check_one_shot_deadline(budget: Duration, init_time: Duration, should_finish:
     let status = run_with_deadline(sleep(immediate), budget);
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
     let expected = match status {
-        Completion::Ready => should_finish,
-        Completion::Cancelled => !should_finish,
+        Ready => should_finish,
+        Cancelled => !should_finish,
         _ => false,
     };
     loop_matched && expected
@@ -143,7 +143,7 @@ fn check_sequence_loop(error: i32) -> bool {
     let result = run_sequence(plan, Option::None);
     let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
     match result {
-        SequenceOutcome::Finished(outcome) => {
+        Finished(outcome) => {
             let ((bytes, first), second) = outcome;
             let length = &bytes.len();
             bytes.destroy();
@@ -173,10 +173,10 @@ fn check_runner_reuse() -> bool {
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
     let length = &bytes.len();
     bytes.destroy();
-    let cancelled = match first { Completion::Cancelled => true, _ => false };
-    let ready = match second { Completion::Ready => true, _ => false };
-    let timer_cancelled = match timer { Completion::Cancelled => true, _ => false };
-    let scope_cancelled = match joined { Completion::Cancelled => true, _ => false };
+    let cancelled = match first { Cancelled => true, _ => false };
+    let ready = match second { Ready => true, _ => false };
+    let timer_cancelled = match timer { Cancelled => true, _ => false };
+    let scope_cancelled = match joined { Cancelled => true, _ => false };
     loop_matched && length == 5 && cancelled && ready && timer_cancelled && scope_cancelled
 }
 
@@ -187,7 +187,7 @@ fn discard_runner_sequence(state: (Buffer!, *u8), prior: Option[(Buffer!, Comple
     state.destroy();
     bytes.destroy();
     if !valid { trap(); }
-    match status { Completion::Cancelled => (), _ => trap() };
+    match status { Cancelled => (), _ => trap() };
     unsafe *cleaned = (unsafe *cleaned) + 1;
 }
 
@@ -222,8 +222,8 @@ fn discard_setup_sequence(cleaned: *u8, prior: Option[((Buffer!, Completion[()])
     let ((bytes, timer), unit, joined) = prior.unwrap();
     let length = &bytes.len();
     bytes.destroy();
-    match timer { Completion::Cancelled => (), _ => trap() };
-    match joined { Completion::Cancelled => (), _ => trap() };
+    match timer { Cancelled => (), _ => trap() };
+    match joined { Cancelled => (), _ => trap() };
     if length != 5 { trap(); }
     unsafe *cleaned = (unsafe *cleaned) + 1;
 }
@@ -245,7 +245,7 @@ fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Dur
     unsafe kable_test_advance_clock_on_allocation(allocation_time.as_nanos());
     let result = run_sequence(plan, Option::Some.(Duration::from_millis(5)));
     let loop_matched = (unsafe kable_test_loop_end(1)) != 0;
-    let cancelled = match result { SequenceOutcome::Cancelled => true, _ => false };
+    let cancelled = match result { Cancelled => true, _ => false };
     loop_matched && cancelled && (unsafe *cleaned) == 1
 }
 
@@ -310,15 +310,15 @@ fn check_synchronous_submission() -> bool {
     });
     let host = unsafe (count as *u8);
     match unsafe hosted.submit(host, 6, kable_test_schedule_immediate) {
-        Result::Ok(status) => status == 0 && (unsafe *count) == 1,
-        Result::Err => false,
+        Ok(status) => status == 0 && (unsafe *count) == 1,
+        Err => false,
     }
 }
 
 fn check_file_fault(fault: u8) -> bool {
     let access = StaticRead::new();
     let file = match run(open_file(&access, "/proc/self/exe")) {
-        Completion::Ready(file) => file,
+        Ready(file) => file,
         _ => return false,
     };
     let expected = unsafe kable_test_file_fault_begin(fault);
@@ -332,9 +332,9 @@ fn check_file_fault(fault: u8) -> bool {
     };
     file.close();
     let correct = match outcome {
-        Completion::Ready(bytes) => { bytes.destroy(); false },
-        Completion::Failed(failure) => match failure {
-            Failure::Startup(code) => code == expected,
+        Ready(bytes) => { bytes.destroy(); false },
+        Failed(failure) => match failure {
+            Startup(code) => code == expected,
             _ => false,
         },
         _ => false,
@@ -346,22 +346,22 @@ fn check_file_fault(fault: u8) -> bool {
 fn check_file_path() -> bool {
     let access = StaticRead::new();
     let rejected_nul = match run(open_file(&access, "/proc/self/exe\x00ignored")) {
-        Completion::Failed(failure) => match failure.file_error_kind() {
-            FileErrorKind::InvalidInput => true,
+        Failed(failure) => match failure.file_error_kind() {
+            InvalidInput => true,
             _ => false,
         },
-        Completion::Ready(file) => { file.close(); false },
+        Ready(file) => { file.close(); false },
         _ => false,
     };
 
     let plan = open_file(&access, "/proc/self/exe");
     let expected = unsafe kable_test_file_fault_begin(2);
     let rejected_registration = match run(plan) {
-        Completion::Failed(failure) => match failure {
-            Failure::Startup(code) => code == expected,
+        Failed(failure) => match failure {
+            Startup(code) => code == expected,
             _ => false,
         },
-        Completion::Ready(file) => { file.close(); false },
+        Ready(file) => { file.close(); false },
         _ => false,
     };
     let released_once = (unsafe kable_test_file_fault_end()) != 0;
@@ -387,8 +387,8 @@ fn main() -> i32 {
 
     let submission = unsafe pending().submit(host, 6, reject_submission);
     match submission {
-        Result::Ok => return 1,
-        Result::Err(rejection) => {
+        Ok => return 1,
+        Err(rejection) => {
             if rejection.scheduler_error != -42 || rejection.continuation_status != 17 ||
                 (unsafe *count) != 1 { return 1; }
         },

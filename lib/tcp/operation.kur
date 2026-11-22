@@ -51,10 +51,10 @@ fn prepare_read(&connection: Connection!) -> *u8 {
 
 fn finish_read(connection: Connection!, context: *u8, completion: Completion[()]) -> (Connection!, StreamOutcome[Buffer!]) {
     let outcome = match completion {
-        Completion::Ready => unsafe read_result(context),
-        Completion::TimedOut => StreamOutcome::TimedOut,
-        Completion::Cancelled => StreamOutcome::Cancelled,
-        Completion::Failed(failure) => StreamOutcome::Failed.(failure),
+        Ready => unsafe read_result(context),
+        TimedOut => StreamOutcome::TimedOut,
+        Cancelled => StreamOutcome::Cancelled,
+        Failed(failure) => StreamOutcome::Failed.(failure),
     };
     (connection, outcome)
 }

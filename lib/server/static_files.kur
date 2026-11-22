@@ -14,15 +14,15 @@ fn serve_from_cwd(request: Request!) -> Action! {
     let { method, target, body } = request;
     body.destroy();
     match method {
-        Method::Get | Method::Head => (),
+        Get | Head => (),
         _ => {
             target.destroy();
             return Response!::method_not_allowed("GET, HEAD").reply();
         },
     }
     let path = match file_path(target) {
-        Option::Some(path) => path,
-        Option::None => return Response!::rejected(400).reply(),
+        Some(path) => path,
+        None => return Response!::rejected(400).reply(),
     };
     let content_type = path_type(&path);
     let exists 'k. (access, bytes, restore) = path.open();
@@ -36,14 +36,14 @@ fn serve_from_cwd(request: Request!) -> Action! {
 
 fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, 'static]) -> Action! {
     let status = match outcome {
-        Completion::Ready(file) => return file_reply(file, content_type),
-        Completion::TimedOut => 504,
-        Completion::Cancelled => 408,
-        Completion::Failed(failure) => match failure.file_error_kind() {
-            FileErrorKind::NotFound | FileErrorKind::NotADirectory | FileErrorKind::SymlinkLoop
-                | FileErrorKind::CrossDevice | FileErrorKind::InvalidInput => 404,
-            FileErrorKind::PermissionDenied | FileErrorKind::TooLarge => 403,
-            FileErrorKind::Other => 500,
+        Ready(file) => return file_reply(file, content_type),
+        TimedOut => 504,
+        Cancelled => 408,
+        Failed(failure) => match failure.file_error_kind() {
+            NotFound | NotADirectory | SymlinkLoop
+                | CrossDevice | InvalidInput => 404,
+            PermissionDenied | TooLarge => 403,
+            Other => 500,
         },
     };
     Response!::rejected(status).reply()
@@ -64,8 +64,8 @@ fn file_path(target: Buffer!) -> Option[Buffer!] {
     let exists 'k. (access, bytes, restore) = target.open();
     let raw = Span::from_slice(bytes);
     let path = match raw.find_byte(&access, b'?', 0) {
-        Option::Some(end) => raw.take(end),
-        Option::None => raw,
+        Some(end) => raw.take(end),
+        None => raw,
     };
     var valid = path.len() > 0 && path.at(&access, 0) == b'/';
     var decoded = Buffer!::new_with_cap(path.len());
@@ -104,8 +104,8 @@ fn path_type(&path: Buffer!) -> Slice[u8, 'static] {
     let exists 'k. (access, bytes, restore) = path.open();
     let name = Span::from_slice(bytes);
     let suffix = match name.rfind_byte(&access, b'.') {
-        Option::Some(dot) => name.skip(dot),
-        Option::None => name.skip(name.len()),
+        Some(dot) => name.skip(dot),
+        None => name.skip(name.len()),
     };
     let content_type =
         if suffix.is(&access, ".html") { "text/html; charset=utf-8" }

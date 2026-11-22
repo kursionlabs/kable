@@ -21,8 +21,8 @@ fn check_retirement_before_resolution() -> bool {
     let result = &scope.result(root);
     let first_result = &scope.result(Option::Some.(first));
     scope.destroy();
-    let root_ready = match result.unwrap() { Resolution::Completed => true, _ => false };
-    let first_ready = match first_result.unwrap() { Resolution::Completed => true, _ => false };
+    let root_ready = match result.unwrap() { Completed => true, _ => false };
+    let first_ready = match first_result.unwrap() { Completed => true, _ => false };
     valid && !first_resolved_root && !first_joined && drained &&
         !joined_early && hidden && root_resolved && joined && root_ready && first_ready
 }
@@ -64,9 +64,9 @@ fn main() -> i32 {
     let loser = &scope.result(Option::Some.(second));
     let next_stop = &scope.take_cancel();
     scope.destroy();
-    let first_won = match result.unwrap() { Resolution::First => true, _ => false, };
-    let winner_completed = match winner.unwrap() { Resolution::Completed => true, _ => false, };
-    let loser_cancelled = match loser.unwrap() { Resolution::Cancelled => true, _ => false, };
+    let first_won = match result.unwrap() { First => true, _ => false, };
+    let winner_completed = match winner.unwrap() { Completed => true, _ => false, };
+    let loser_cancelled = match loser.unwrap() { Cancelled => true, _ => false, };
     if missing_root_rejected && disconnected_root_rejected && rejected && refused_reparent && valid &&
         won && cancelled.unwrap() == second && waiting_for_timer &&
         !late && scope_joined && missing_result && out_of_range && first_won && winner_completed && loser_cancelled &&

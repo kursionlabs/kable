@@ -64,8 +64,8 @@ impl Request! {
         let exists 'k. (access, bytes, restore) = target.open();
         let raw = Span::from_slice(bytes);
         let raw = match raw.find_byte(&access, b'?', 0usize) {
-            Option::Some(end) => raw.take(end),
-            Option::None => raw,
+            Some(end) => raw.take(end),
+            None => raw,
         };
         let matches = raw.is(&access, path);
         self = Request!.{ method, target: restore.restore(access), body };

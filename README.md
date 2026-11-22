@@ -474,7 +474,7 @@ connection.send(bytes).defer_tcp(|result| {
     let (connection, status) = result;
     match status {
         Completion::Ready => read_next(connection),
-        Completion::Cancelled | Completion::Failed => connection.close(),
+        _ => connection.close(),
     }
 })
 ```
