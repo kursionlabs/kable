@@ -355,7 +355,7 @@ int32_t kable_tcp_schedule_timed(uint8_t *raw, KableTcpTimedPlan mode, uint8_t *
         if (status < 0) return status;
     }
     connection->cancelled = 0;
-    connection->phase = mode == KABLE_TCP_DEFER_REPLY ? PARKED : RECEIVING;
+    connection->phase = mode == KABLE_TCP_RECEIVE ? RECEIVING : PARKED;
     return start_plan(connection, (PendingPlan){ .scope = scope,
         .plan = plan, .finish = finish, .host = host, .deadline = deadline, .flags = flags }, root);
 }

@@ -51,10 +51,27 @@ fn valid_host(&access: C, host: Span['k]) -> bool {
     true
 }
 
+/// The read capability for one request body.
+struct Body! { key: u64 }
+
+impl Body! {
+    /// The server supplies the unique key of its live request.
+    unsafe fn from_request(key: u64) -> Body! { Body!.{ key } }
+
+    /// Identifies the host that can drive this body.
+    fn request_key(&self) -> u64 {
+        let { key } = self;
+        self = Body!.{ key };
+        key
+    }
+
+    fn destroy(self) { let { key } = self; }
+}
+
 exposed struct Request! {
     method: Method,
     target: Buffer!,
-    body: Buffer!,
+    body: Body!,
 }
 
 impl Request! {

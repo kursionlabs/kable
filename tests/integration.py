@@ -76,6 +76,10 @@ def check_http(port):
                                        b"2\r\na", b"\x00\r\n1\r\nb\r\n0\r\n\r\n"), 200, b"a\x00b")
     assert headers[b"content-type"] == b"application/octet-stream"
 
+    with connect(port) as client:
+        client.sendall(b"POST /health HTTP/1.1\r\n" + host + b"Content-Length: 6\r\n\r\n")
+        assert_response(read_response(client), 405, b"Method Not Allowed\n")
+
     assert_response(exchange(port, b"GET / HTTP/1.1\r\n\r\n"), 400, b"Bad Request\n")
     assert_response(exchange(port, b"GET / HTTP/1.1\r\n", host, host, b"\r\n"),
                     400, b"Bad Request\n")
@@ -417,12 +421,16 @@ def wait_for_file_release(process, path, timeout):
 
 
 def check_timeout(port):
-    with connect(port) as stalled:
+    with connect(port) as stalled, connect(port) as body:
         stalled.sendall(b"GET /health HTTP/1.1\r\nHost: local")
-        assert not select.select([stalled], [], [], 5)[0], "request expired too early"
+        body.sendall(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\na")
+        assert not select.select([stalled, body], [], [], 5)[0], "request expired too early"
         stalled.sendall(b"host\r\n")
+        body.sendall(b"b")
         assert select.select([stalled], [], [], 7)[0], "another read reset the request deadline"
         assert_response(read_response(stalled), 408, b"Request Timeout\n")
+        assert select.select([body], [], [], 2)[0], "a body fragment reset the request deadline"
+        assert_response(read_response(body), 408, b"Request Timeout\n")
 
 
 def check_thunk_message(binary):

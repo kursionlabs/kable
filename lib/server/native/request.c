@@ -108,19 +108,32 @@ static int on_headers(llhttp_t *parser) {
         request->expect, length, MAX_BODY, request->head.data, request->head.len, request->target_len);
     if (request->rejection) return -1;
     request->headers_done = 1;
+    if (length || (parser->flags & F_CHUNKED)) {
+        request->headers_paused = 1;
+        return HPE_PAUSED;
+    }
     return 0;
 }
 
 static int on_body(llhttp_t *parser, const char *at, size_t len) {
     KableRequest *request = parser->data;
-    int status = append(&request->body, at, len, MAX_BODY);
-    if (status == 0) return 0;
+    size_t limit = request->body_limit < MAX_BODY ? request->body_limit : MAX_BODY;
+    if (len > MAX_BODY - request->body_bytes || request->body.len > limit) {
+        request->rejection = 413;
+        return HPE_USER;
+    }
+    int status = append(&request->body, at, len, limit);
+    if (status == 0) {
+        request->body_bytes += len;
+        return 0;
+    }
     request->rejection = status == ENOBUFS ? 413 : 500;
     return HPE_USER;
 }
 
 static int on_complete(llhttp_t *parser) {
-    (void)parser;
+    KableRequest *request = parser->data;
+    request->complete = 1;
     return HPE_PAUSED;
 }
 
@@ -136,17 +149,23 @@ static const llhttp_settings_t settings = {
 };
 
 void kable_request_init(KableRequest *request, KableValidateHead validate_head) {
-    *request = (KableRequest){ .validate_head = validate_head };
+    *request = (KableRequest){ .validate_head = validate_head, .body_limit = MAX_BODY };
     llhttp_init(&request->parser, HTTP_REQUEST, &settings);
     request->parser.data = request;
 }
 
-void kable_release_request(KableRequest *request) {
+void kable_release_request_head(KableRequest *request) {
     free(request->head.data);
-    free(request->body.data);
     request->head = (KableRequestBytes){0};
-    request->body = (KableRequestBytes){0};
     request->target_len = 0;
+}
+
+void kable_release_request(KableRequest *request) {
+    kable_release_request_head(request);
+    free(request->body.data);
+    free(request->pending.data);
+    request->body = (KableRequestBytes){0};
+    request->pending = (KableRequestBytes){0};
 }
 
 /* Borrows the bounded Range value from the live request, or exposes zero bytes. */
@@ -159,15 +178,13 @@ const uint8_t *kable_range_header(KableRequest *request, size_t *length) {
     return request->range;
 }
 
-/* Lends the target and body until release. Range metadata stays on the request. */
+/* Lends the target until release. Range metadata stays on the request. */
 uint8_t kable_request_view(KableRequest *request, uint8_t *http10,
-    uint8_t **target, size_t *target_len, uint8_t **body, size_t *body_len) {
+    uint8_t **target, size_t *target_len) {
     *http10 = llhttp_get_http_major(&request->parser) == 1
         && llhttp_get_http_minor(&request->parser) == 0;
     *target = request->head.data;
     *target_len = request->target_len;
-    *body = request->body.data;
-    *body_len = request->body.len;
     switch (llhttp_get_method(&request->parser)) {
     case HTTP_GET: return METHOD_GET;
     case HTTP_HEAD: return METHOD_HEAD;
@@ -183,10 +200,16 @@ uint16_t kable_request_feed(KableRequest *request, const uint8_t *bytes, size_t 
         size_t budget = limit - request->wire_bytes;
         size_t count = remaining < budget ? remaining : budget;
         llhttp_errno_t result = llhttp_execute(&request->parser, data, count);
-        request->wire_bytes += count;
         if (result == HPE_PAUSED) {
+            if (request->headers_paused) {
+                size_t consumed = (size_t)(llhttp_get_error_pos(&request->parser) - data);
+                request->wire_bytes += consumed;
+                int status = append(&request->pending, data + consumed, remaining - consumed, MAX_WIRE);
+                return status == 0 ? REQUEST_HEADERS : status == ENOBUFS ? 413 : 500;
+            }
             return REQUEST_COMPLETE;
         }
+        request->wire_bytes += count;
         if (result != HPE_OK) {
             if (result == HPE_INVALID_VERSION) return 505;
             return request->rejection ? request->rejection : 400;
@@ -201,6 +224,17 @@ uint16_t kable_request_feed(KableRequest *request, const uint8_t *bytes, size_t 
         data += count;
     }
     return REQUEST_MORE;
+}
+
+uint16_t kable_request_resume(KableRequest *request) {
+    if (!request->headers_paused) return request->complete ? REQUEST_COMPLETE : REQUEST_MORE;
+    request->headers_paused = 0;
+    llhttp_resume(&request->parser);
+    KableRequestBytes pending = request->pending;
+    request->pending = (KableRequestBytes){0};
+    uint16_t result = kable_request_feed(request, pending.data, pending.len);
+    free(pending.data);
+    return result;
 }
 
 uint16_t kable_request_eof(const KableRequest *request) {

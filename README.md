@@ -29,7 +29,7 @@ curl http://127.0.0.1:8080/delay
 
 `GET` and `HEAD` are available at `/`, `/health`, and `/delay`.
 `/delay` waits one second on the event loop while other requests can proceed.
-`POST /echo` returns the request body as `application/octet-stream`.
+`POST /echo` collects the request body and returns it as `application/octet-stream`.
 Kable accepts HTTP/1.0 and
 HTTP/1.1 origin-form requests, including content-length and chunked bodies,
 and serves one request per connection. An `Expect` header receives a 417.
@@ -113,6 +113,13 @@ After the read joins, TCP lends the fragment to the HTTP parser. The parser
 keeps its state across fragments and accepts the same input from memory.
 After queuing a response, the connection has five seconds to write it,
 half-close, and drain peer input.
+
+Handlers run after the headers are validated. `Request!` owns a `Body!` that
+implements `task::Stream` and yields decoded byte chunks. Use
+`body.collect(limit)` for a single bounded result, as in `/echo`, or
+`body.destroy()` to discard it. Body pulls and collection use the original
+request deadline. A reply can finish the request before the peer sends the
+rest of the body.
 
 On SIGINT or SIGTERM the server stops accepting, cancels connections still
 reading or waiting on a timer, and lets connections with queued responses

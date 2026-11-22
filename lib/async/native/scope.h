@@ -25,4 +25,10 @@ size_t kable_scope_add_operation(uint8_t *scope, uint8_t *context,
 /* Records an allocation failure during staging, before any work starts. */
 void kable_scope_fail_allocation(uint8_t *scope);
 
+/* A hosted operation can require a particular live owner before it starts. */
+uint8_t *kable_scope_require_host(uint8_t *scope, uint64_t key);
+uint64_t kable_scope_host_key(uint8_t *scope);
+void kable_scope_set_host(uint8_t *scope, uint8_t *host);
+uint8_t *kable_scope_host(uint8_t *scope);
+
 #endif

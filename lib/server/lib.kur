@@ -2,8 +2,8 @@
 //! every connection. Native callbacks borrow their arguments for one call.
 use async::{OpenedFile!, Scope!};
 use async::host::{HostedPlan!, prepare_handoff};
-use http::{Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
-use package::{file_transfer, static_files};
+use http::{Body!, Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
+use package::{body, file_transfer, static_files};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
@@ -28,6 +28,7 @@ extern "C" fn kable_port(server: *u8) -> u16;
 extern "C" fn kable_range_header(request: *u8, length: *usize) -> *u8;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
 extern "C" fn kable_client_request(client: *u8) -> *u8;
+extern "C" fn kable_client_key(client: *u8) -> u64;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_receive_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
@@ -35,7 +36,8 @@ extern "C" fn kable_receive_schedule(client: *u8, scope: *u8, root: usize, plan:
 extern "C" fn kable_request_feed(request: *u8, bytes: *u8, length: usize) -> u16;
 extern "C" fn kable_request_eof(request: *u8) -> u16;
 extern "C" fn kable_request_view(request: *u8, http10: *u8,
-    target: *(*u8), target_len: *usize, body: *(*u8), body_len: *usize) -> u8;
+    target: *(*u8), target_len: *usize) -> u8;
+extern "C" fn kable_release_request_head(request: *u8) -> ();
 extern "C" fn kable_release_request(request: *u8) -> ();
 extern "C" fn kable_run(server: *u8) -> i32;
 extern "C" fn kable_stop(server: *u8) -> ();
@@ -60,6 +62,7 @@ const RESPONSE_HTTP10: u8 = 4;
 const REQUEST_MORE: u16 = 1;
 const REQUEST_TRUNCATED: u16 = 2;
 const REQUEST_CLOSED: u16 = 3;
+const REQUEST_HEADERS: u16 = 4;
 
 /// Sends a measured file using one write at a time.
 fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
@@ -183,6 +186,7 @@ fn reply_action(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -
 }
 
 unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
+    unsafe kable_release_request(unsafe kable_client_request(client));
     unsafe host::write_final(unsafe kable_client_connection(client), wire, WRITE_TIMEOUT)
 }
 
@@ -203,7 +207,8 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
     let { file, content_type } = reply;
     let total = &file.len();
     let length = unsafe alloca[usize]();
-    let range = unsafe kable_range_header(unsafe kable_client_request(client), length);
+    let parser = unsafe kable_client_request(client);
+    let range = unsafe kable_range_header(parser, length);
     let exists 'k. (brand, access) = Exclusive!::fresh();
     // The span borrows the client's inline header bytes through range selection.
     let range = unsafe Span::from_raw_parts_branded(range, unsafe *length, brand);
@@ -214,6 +219,7 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
         file.close();
         return unsafe write_wire(client, headers);
     }
+    unsafe kable_release_request(parser);
     let raw = unsafe kable_client_connection(client);
     let connection = match unsafe host::begin_stream(raw, STREAM_IDLE) {
         Ok(connection) => connection,
@@ -252,7 +258,7 @@ unsafe fn receive(context: *u8, client: *u8) -> i32 {
         };
         if result == REQUEST_MORE { return unsafe receive(context, client); }
         if result == REQUEST_CLOSED { return -1; }
-        let status = if result == REQUEST_TRUNCATED { 400 } else { result };
+        let status = if result == REQUEST_HEADERS { 0 } else if result == REQUEST_TRUNCATED { 400 } else { result };
         unsafe respond(context, client, status)
     }, |context, completion| completion.discard());
     let submission = unsafe plan.submit(client, 0, kable_receive_schedule);
@@ -272,13 +278,10 @@ unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
     let version = unsafe alloca[u8]();
     let target = unsafe alloca[*u8]();
     let target_len = unsafe alloca[usize]();
-    let body = unsafe alloca[*u8]();
-    let body_len = unsafe alloca[usize]();
-    let method = unsafe kable_request_view(parser, version, target, target_len, body, body_len);
+    let method = unsafe kable_request_view(parser, version, target, target_len);
     let head = method == 2;
     let http10 = (unsafe *version) != 0;
     if status != 0 {
-        unsafe kable_release_request(parser);
         return unsafe write_wire(client, Response!::rejected(status).encode(head, http10));
     }
     let method = match method {
@@ -288,13 +291,12 @@ unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
         _ => Method::Other,
     };
     let target_len = unsafe *target_len;
-    let body_len = unsafe *body_len;
     let request = Request!.{
         method,
         target: unsafe Buffer!::new_with_cap(target_len).push_n(unsafe *target, target_len),
-        body: unsafe Buffer!::new_with_cap(body_len).push_n(unsafe *body, body_len),
+        body: unsafe Body!::from_request(unsafe kable_client_key(client)),
     };
-    unsafe kable_release_request(parser);
+    unsafe kable_release_request_head(parser);
     let { call } = unsafe *(unsafe (context as *Handler));
     unsafe apply(client, call(request), head, http10)
 }

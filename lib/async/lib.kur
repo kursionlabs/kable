@@ -28,6 +28,7 @@ extern "C" fn kable_scope_add_operation(scope: *u8, context: *u8,
     start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
     stop: unsafe fn(*u8) -> u8) -> usize;
 extern "C" fn kable_scope_fail_allocation(scope: *u8) -> ();
+extern "C" fn kable_scope_require_host(scope: *u8, key: u64) -> *u8;
 extern "C" fn kable_scope_run(scope: *u8, root: usize, end_ms: u64, timed: u8) -> u8;
 extern "C" fn kable_runner_new() -> *u8;
 extern "C" fn kable_runner_run(loop: *u8, scope: *u8, root: usize, end_ms: u64, timed: u8) -> u8;
@@ -335,6 +336,14 @@ impl Scope! {
         let raw = unsafe kable_scope_new(policy, add_leaf, add_pair, scope_event);
         if is_null(raw) { unsafe scope_event(policy, 8u8, 0usize); }
         Scope!.{ raw }
+    }
+
+    /// Registers the required host and lends the native scope through collection.
+    unsafe fn require_host(&self, key: u64) -> *u8 {
+        let { raw } = self;
+        let scope = unsafe kable_scope_require_host(raw, key);
+        self = Scope!.{ raw };
+        scope
     }
 
     /// The context lives through collection. Start schedules an asynchronous

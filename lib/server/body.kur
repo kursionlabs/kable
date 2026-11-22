@@ -1,0 +1,81 @@
+//! Request-scoped pulls of decoded HTTP body bytes.
+use async::Scope!;
+use http::Body!;
+use std::buffer::Buffer!;
+use std::mem::alloca;
+use std::option::Option;
+use std::ptr::{is_null, null};
+use task::{Completion, Discard, Failure, Map!, PlanOutput, Stream, StreamOutcome};
+use task::driver::Plan;
+
+extern "C" fn kable_body_new(scope: *u8, limit: usize, collect: u8) -> *u8;
+extern "C" fn kable_body_start(pull: *u8, loop: *u8, done: unsafe fn(*u8) -> (), context: *u8) -> i32;
+extern "C" fn kable_body_stop(pull: *u8) -> u8;
+extern "C" fn kable_body_result(pull: *u8, bytes: *(*u8), length: *usize) -> i32;
+extern "C" fn kable_body_free(pull: *u8) -> ();
+
+struct BodyRead! { body: Body!, limit: usize, all: bool, pull: *u8, id: Option[usize] }
+
+instance Discard[Body!] {
+    fn discard(body: Body!) { body.destroy(); }
+}
+
+impl Body! {
+    /// Collects the remaining decoded bytes under the original request deadline.
+    /// Exceeding the byte limit reports HTTP 413.
+    fn collect(self, limit: usize) -> Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()] {
+        BodyRead!.{ body: self, limit, all: true, pull: null(), id: Option::None }.map(|result| {
+            let (body, outcome) = result;
+            body.discard();
+            match outcome {
+                StreamOutcome::Item(bytes) => Completion::Ready.(bytes),
+                Eof => Completion::Ready.(Buffer!::new()),
+                TimedOut => Completion::TimedOut,
+                Cancelled => Completion::Cancelled,
+                Failed(failure) => Completion::Failed.(failure),
+            }
+        })
+    }
+}
+
+instance Stream[Body! -> BodyRead!] {
+    fn next(body: Body!) -> BodyRead! {
+        BodyRead!.{ body, limit: usize::MAX, all: false, pull: null(), id: Option::None }
+    }
+}
+
+instance PlanOutput[BodyRead! -> (Body!, StreamOutcome[Buffer!])] {}
+
+instance Plan[BodyRead!, Scope! -> (Body!, StreamOutcome[Buffer!])] {
+    fn stage(&task: BodyRead!, &scope: Scope!) -> Option[usize] {
+        let { body, limit, all, pull, id } = task;
+        let raw = unsafe &scope.require_host(&body.request_key());
+        let pull = unsafe kable_body_new(raw, limit, if all { 1 } else { 0 });
+        let id = if is_null(pull) { Option::None }
+            else { unsafe &scope.add_operation(pull, kable_body_start, kable_body_stop) };
+        task = BodyRead!.{ body, limit, all, pull, id };
+        id
+    }
+
+    fn collect(task: BodyRead!, &scope: Scope!) -> (Body!, StreamOutcome[Buffer!]) {
+        let { body, limit, all, pull, id } = task;
+        let outcome = match (&scope.result(id)).completion() {
+            Ready => unsafe pull_outcome(pull),
+            TimedOut => StreamOutcome::TimedOut,
+            Cancelled => StreamOutcome::Cancelled,
+            Failed(failure) => StreamOutcome::Failed.(failure),
+        };
+        unsafe kable_body_free(pull);
+        (body, outcome)
+    }
+}
+
+unsafe fn pull_outcome(pull: *u8) -> StreamOutcome[Buffer!] {
+    let bytes = unsafe alloca[*u8]();
+    let length = unsafe alloca[usize]();
+    let status = unsafe kable_body_result(pull, bytes, length);
+    if status != 0 { return StreamOutcome::Failed.(Failure::Operation.(status)); }
+    let count = unsafe *length;
+    if count == 0 { return StreamOutcome::Eof; }
+    StreamOutcome::Item.(unsafe Buffer!::new_with_cap(count).push_n(unsafe *bytes, count))
+}

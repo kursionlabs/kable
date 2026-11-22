@@ -7,6 +7,7 @@ use std::process::Args;
 use std::raw::Span;
 use std::slice::{ReadBytes, Slice, StaticRead};
 use std::time::Duration;
+use task::{Completion, Failure, PlanOutput};
 
 fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
@@ -24,7 +25,20 @@ fn handle(request: Request!) -> Action! {
 
     if echo {
         match method {
-            Post => return Response!::ok(body).reply(),
+            Post => return body.collect(1024 * 1024).respond(|outcome| {
+                let status = match outcome {
+                    Completion::Ready(bytes) => return Response!::ok(bytes).reply(),
+                    TimedOut | Cancelled => 408,
+                    Failed(failure) => match failure {
+                        Failure::Operation(code) => {
+                            if code < 0 { return Action!::Close; }
+                            if code == 400 || code == 413 { code as u16 } else { 500 }
+                        },
+                        _ => 500,
+                    },
+                };
+                Response!::rejected(status).reply()
+            }).reply(),
             _ => {
                 body.destroy();
                 return Response!::method_not_allowed("POST").reply();

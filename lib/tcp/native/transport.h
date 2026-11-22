@@ -38,11 +38,11 @@ enum { KABLE_TCP_PLAN_ACTIVE = 1 };
    A successful submission owns the plan until finish runs after the scope joins. */
 int32_t kable_tcp_schedule(uint8_t *connection, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags);
-typedef enum { KABLE_TCP_RECEIVE, KABLE_TCP_DEFER_REPLY } KableTcpTimedPlan;
+typedef enum { KABLE_TCP_RECEIVE, KABLE_TCP_DEFER_REPLY, KABLE_TCP_DEFER_INPUT } KableTcpTimedPlan;
 /* Runs under an absolute deadline. The join callback borrows host and receives
    the flags, plus ACTIVE when the socket can reply. RECEIVE reads its own input
-   and permits a timeout reply. DEFER_REPLY watches the peer and suppresses
-   replies after the deadline. */
+   and permits a timeout reply. Deferred plans suppress replies after the
+   deadline. DEFER_REPLY watches the peer and DEFER_INPUT leaves input queued. */
 int32_t kable_tcp_schedule_timed(uint8_t *connection, KableTcpTimedPlan mode, uint8_t *scope,
     size_t root, uint8_t *plan, KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
 /* Starts the fixed deadline for a final write, half-close, and drain.

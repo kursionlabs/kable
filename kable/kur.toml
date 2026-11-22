@@ -12,3 +12,6 @@ path="../lib/http"
 
 [dependencies.server]
 path="../lib/server"
+
+[dependencies.task]
+path="../lib/task"

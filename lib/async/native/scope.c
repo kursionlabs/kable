@@ -40,6 +40,8 @@ struct Scope {
     policy_add_leaf add_leaf;
     policy_add_pair add_pair;
     policy_event event;
+    uint64_t host_key;
+    uint8_t *host;
     int start_error;
     int invalid_plan;
     int driven;
@@ -122,6 +124,29 @@ void kable_scope_fail_allocation(uint8_t *raw) {
     if (scope && !scope->driven && !scope->invalid_plan && scope->start_error == 0) {
         scope->start_error = UV_ENOMEM;
     }
+}
+
+uint8_t *kable_scope_require_host(uint8_t *raw, uint64_t key) {
+    Scope *scope = (Scope *)raw;
+    if (!scope || scope->driven) return NULL;
+    if (scope->host_key || !key) {
+        scope->invalid_plan = 1;
+        return NULL;
+    }
+    scope->host_key = key;
+    return raw;
+}
+
+uint64_t kable_scope_host_key(uint8_t *raw) {
+    return raw ? ((Scope *)raw)->host_key : 0;
+}
+
+void kable_scope_set_host(uint8_t *raw, uint8_t *host) {
+    ((Scope *)raw)->host = host;
+}
+
+uint8_t *kable_scope_host(uint8_t *raw) {
+    return ((Scope *)raw)->host;
 }
 
 size_t kable_scope_add_operation(uint8_t *raw, uint8_t *context,
