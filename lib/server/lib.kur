@@ -1,7 +1,7 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
 use async::{OpenedFile!, Scope!};
-use async::host::{HostedPlan!, prepare_handoff};
+use async::host::{HostedPlan!, discard_owned, prepare_handoff};
 use http::{Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
 use package::{file_transfer, static_files};
 use std::heap::HeapAllocator;
@@ -13,7 +13,7 @@ use std::ptr::is_null;
 use std::raw::Span;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Discard, PlanOutput, sleep};
+use task::{Completion, DeadlineStatus, Discard, PlanOutput, discard, sleep};
 use task::driver::Plan;
 use tcp::host;
 use thunk::Thunk!;
@@ -70,7 +70,7 @@ impl Response! {
 
     /// Sends this response after a request-scoped timer.
     fn after(self, duration: Duration) -> Action! {
-        sleep(duration).respond_with_owned(self, |response, status| {
+        sleep(duration).respond_owned(self, |response, status| {
             let code = match status {
                 Completion::Ready => return response.reply(),
                 TimedOut => 504,
@@ -79,11 +79,13 @@ impl Response! {
             };
             response.destroy();
             Response!::rejected(code).reply()
-        }, discard_delayed_response).reply()
+        }).reply()
     }
 }
 
-fn discard_delayed_response(response: Response!, status: Completion[()]) { response.destroy(); }
+instance Discard[Response!] {
+    fn discard(response: Response!) { response.destroy(); }
+}
 
 struct Handler { call: fn(Request!) -> Action! }
 
@@ -96,6 +98,13 @@ struct ReplyBuilder! {
 
 forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
+    /// Builds a reply that discards the outcome if the callback is skipped.
+    forall Env where Copy[Env], Discard[Output].
+    fn respond(self, respond: closure[Env](Output) -> Action!)
+        -> ReplyBuilder![Task, fn(Output) -> (), Output, (closure[Env](Output) -> Action!,)] {
+        self.respond_with(respond, discard[Output])
+    }
+
     /// Uses `respond` for a completed plan while the request is active.
     /// Uses `discard` to release the joined outcome otherwise.
     /// The reply callback can capture copyable values, since it can be skipped.
@@ -103,6 +112,13 @@ impl Task {
     fn respond_with(self, respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ())
         -> ReplyBuilder![Task, fn(Output) -> (), Output, (closure[Env](Output) -> Action!,)] {
         self.respond_with_owned(discard, |cleanup, outcome| respond(outcome), discard_reply[Output])
+    }
+
+    /// Builds a reply that discards both state and outcome if the callback is skipped.
+    forall State, Env where Copy[Env], Discard[State], Discard[Output].
+    fn respond_owned(self, state: State, respond: closure[Env](State, Output) -> Action!)
+        -> ReplyBuilder![Task, State, Output, Env] {
+        self.respond_with_owned(state, respond, discard_owned[State, Output])
     }
 
     /// Transfers state and the joined outcome to `respond` or `discard`.

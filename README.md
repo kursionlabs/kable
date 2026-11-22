@@ -119,10 +119,9 @@ by a cancelled timer. The loop drains pending callbacks and closes all handles
 before `Server!.run()` releases the Kursal handler.
 
 Handlers run on the event loop and should return promptly. Import
-`task::PlanOutput` and build a deferred reply with `plan.respond_with(...)`
-or `plan.respond_with_owned(...)`. A transport error, the request deadline,
-or shutdown cancels unfinished plans. A client can half-close its sending
-side and still receive the response.
+`task::PlanOutput` and build a deferred reply with `plan.respond(...)`.
+A transport error, the request deadline, or shutdown cancels unfinished
+plans. A client can half-close its sending side and still receive the response.
 
 ### A file response with a deadline
 
@@ -138,19 +137,20 @@ Request `/file-with-timeout` on the printed address to read the bundled
 use async::read_file;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{PlanOutput, discard};
+use task::PlanOutput;
 
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .respond_with(|outcome| file_response(outcome).reply(), discard)
+    .respond(|outcome| file_response(outcome).reply())
     .within(Duration::from_secs(1))
     .reply()
 ```
 
-`respond_with` takes a reply callback and a cleanup function. The reply
-callback consumes the joined outcome and returns an `Action!`. It can capture
-copyable values, such as the content type for a streamed file. `discard`
-releases the outcome when the request ends or the local deadline wins.
+`respond` takes a callback that consumes the joined outcome and returns an
+`Action!`. The callback can capture copyable values, such as the content type
+for a streamed file. When the request ends or the local deadline wins, the
+builder releases the outcome through `Discard`. Use `respond_with` to supply
+a cleanup function, for example to log cancellation.
 `.reply()` builds the action. If the local timer wins while the request is
 active, the server replies 504 after the worker joins. `/file` uses the
 request deadline alone, and `/health` remains available during a pending read.
@@ -171,7 +171,9 @@ any buffer it received. [Parallel file handler](examples/http-file/file_join.kur
 The second read runs under the original request deadline. The handler passes the
 first buffer as state to `respond_with_owned(state, respond, discard)`. After
 the footer read joins, the builder hands the first buffer and the footer outcome
-to `respond` or to `discard` if the request ends or a local deadline wins.
+to the reply callback or to the cleanup function if the request ends or a
+local deadline wins. `respond_owned(state, respond)` uses `Discard` for
+both values.
 [Dependent file handler](examples/http-file/file_sequence.kur)
 
 ### Close without a reply
@@ -501,12 +503,12 @@ pending bytes and tracks whether it has retried an idle read. The read
 continuation uses `Resumable` to feed each chunk into the session. A chunk
 resets the retry flag. When the session returns complete lines, the write
 continuation holds the trailing bytes in a fresh session until the write
-joins. Both plans use `.defer_tcp_owned(state, resume, discard)`. The active
-continuation receives the state and the `(connection, outcome)` pair,
-including after an idle timeout.
-On shutdown, socket closure, or submission rejection, the cleanup function
-receives the state and outcome after collection. The listener closes the
-socket.
+joins. The read uses `.defer_tcp_owned(state, resume, discard)` to log a
+discarded read. The write uses `.defer_tcp_state(state, resume)` to clean up
+its state and outcome through `Discard`. An active continuation receives the
+state and the `(connection, outcome)` pair, including after a local timeout.
+On shutdown, socket closure, or submission rejection, the listener closes
+the socket and the continuation's cleanup runs after collection.
 
 ```sh
 ../kursal/bin/kursal build examples/tcp-session -o bin/tcp-session

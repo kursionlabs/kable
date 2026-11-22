@@ -3,6 +3,7 @@ use package::Scope!;
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
 use std::option::Result;
+use task::Discard;
 use task::driver::{Plan, Prepared!, prepare};
 
 /// Set by the scheduler at join when the host can still resume its continuation.
@@ -48,6 +49,11 @@ fn prepare_handoff(task: Task, state: State,
         discard(state, outcome);
         -1
     })
+}
+
+forall State, Output where Discard[State], Discard[Output].
+fn discard_owned(state: State, outcome: Output) {
+    (state, outcome).discard();
 }
 
 forall Task, Output, Env where Plan[Task, Scope! -> Output].

@@ -1,6 +1,6 @@
 //! Scoped TCP reads and writes on a listener's event loop.
 use async::Scope!;
-use async::host::{HostedPlan!, prepare_handoff, prepare_hosted};
+use async::host::{HostedPlan!, discard_owned, prepare_handoff, prepare_hosted};
 use package::host;
 use package::native::{
     kable_tcp_bind, kable_tcp_port, kable_tcp_run, kable_tcp_stop, kable_tcp_close, kable_tcp_schedule,
@@ -11,7 +11,7 @@ use std::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::Result;
 use std::ptr::is_null;
-use task::PlanOutput;
+use task::{Discard, PlanOutput};
 use task::driver::Plan;
 
 export host;
@@ -36,6 +36,13 @@ impl Task {
 
 forall Task, Output where PlanOutput[Task -> (Connection!, Output)].
 impl Task {
+    /// Runs an owned continuation and discards its state and outcome if the
+    /// listener cannot resume it. The listener closes the socket.
+    forall State, Env where Copy[Env], Discard[State], Discard[Output], Plan[Task, Scope! -> (Connection!, Output)].
+    fn defer_tcp_state(self, state: State, resume: closure[Env](State, (Connection!, Output)) -> Action!) -> Action! {
+        self.defer_tcp_owned(state, resume, discard_owned[State, Output])
+    }
+
     /// Runs a plan that returns the listener's connection with its outcome.
     /// An active connection hands both values and state to resume, including
     /// on local timeout. Shutdown, socket closure, and submission rejection

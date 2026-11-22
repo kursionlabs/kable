@@ -7,22 +7,25 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, Discard, PlanOutput, discard};
+use task::{Completion, Discard, PlanOutput};
 
 const FILE_LIMIT: usize = 65_536;
 
 fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
-    let cleanup: fn(Completion[Buffer!]) -> () = if timed { discard } else { discard_plain_file };
-    let reply = file.respond_with(|outcome| file_response(outcome).reply(), cleanup);
-    if timed { reply.within(Duration::from_secs(1)).reply() } else { reply.reply() }
+    if timed {
+        return file.respond(|outcome| file_response(outcome).reply())
+            .within(Duration::from_secs(1))
+            .reply();
+    }
+    file.respond_with(|outcome| file_response(outcome).reply(), discard_plain_file).reply()
 }
 
 fn close_after_read() -> Action! {
     let access = StaticRead::new();
     read_file(&access, "example.txt", FILE_LIMIT)
-        .respond_with(|outcome| { outcome.discard(); Action!::Close }, discard)
+        .respond(|outcome| { outcome.discard(); Action!::Close })
         .reply()
 }
 

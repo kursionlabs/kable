@@ -6,7 +6,7 @@ use server::Action!;
 use std::buffer::Buffer!;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, Discard, PlanOutput, discard, join};
+use task::{Completion, Discard, PlanOutput, join};
 
 fn serve() -> Action! {
     let access = StaticRead::new();
@@ -14,7 +14,7 @@ fn serve() -> Action! {
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
     join(first, second)
-        .respond_with(|files| joined_response(files).reply(), discard)
+        .respond(|files| joined_response(files).reply())
         .within(Duration::from_secs(1))
         .reply()
 }
