@@ -52,20 +52,27 @@ fn valid_host(&access: C, host: Span['k]) -> bool {
 }
 
 /// The read capability for one request body.
-struct Body! { key: u64 }
+struct Body! { key: u64, length: Option[u64] }
 
 impl Body! {
     /// The server supplies the unique key of its live request.
-    unsafe fn from_request(key: u64) -> Body! { Body!.{ key } }
+    unsafe fn from_request(key: u64, length: Option[u64]) -> Body! { Body!.{ key, length } }
+
+    /// Returns the original declared Content-Length, if present.
+    fn content_length(&self) -> Option[u64] {
+        let { key, length } = self;
+        self = Body!.{ key, length };
+        length
+    }
 
     /// Identifies the host that can drive this body.
     fn request_key(&self) -> u64 {
-        let { key } = self;
-        self = Body!.{ key };
+        let { key, length } = self;
+        self = Body!.{ key, length };
         key
     }
 
-    fn destroy(self) { let { key } = self; }
+    fn destroy(self) { let { key, length } = self; }
 }
 
 exposed struct Request! {

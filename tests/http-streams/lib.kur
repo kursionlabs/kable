@@ -60,6 +60,17 @@ fn serve(request: Request!) -> Action! {
         target.destroy();
         return pull(body, Buffer!::new(), 0);
     }
+    if &request.path_is("/relay") {
+        let { method, target, body } = request;
+        target.destroy();
+        match &body.content_length() {
+            Some(length) => return Response!::stream(200, "application/octet-stream", length, body).reply(),
+            None => {
+                body.discard();
+                return Response!::rejected(400).reply();
+            },
+        }
+    }
     let head_only = &request.path_is("/head");
     let empty = &request.path_is("/empty");
     let length = if &request.path_is("/short") { 7 }

@@ -19,6 +19,11 @@ int uv_write(uv_write_t *request, uv_stream_t *stream, const uv_buf_t buffers[],
     int (*write_fn)(uv_write_t *, uv_stream_t *, const uv_buf_t *, unsigned int, uv_write_cb)
         = dlsym(RTLD_NEXT, "uv_write");
     if (!write_fn || pending_write) abort();
+    if (getenv("KABLE_TEST_RELAY_BACKPRESSURE")) {
+        int size = 4096;
+        if (uv_send_buffer_size((uv_handle_t *)stream, &size) < 0) abort();
+        return write_fn(request, stream, buffers, count, callback);
+    }
     if (++writes == 2) {
         fputs("stream-test: write rejected\n", stderr);
         return UV_EIO;

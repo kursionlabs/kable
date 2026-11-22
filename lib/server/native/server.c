@@ -52,6 +52,14 @@ uint64_t kable_client_key(uint8_t *raw) {
     return ((Client *)raw)->key;
 }
 
+uint64_t kable_client_content_length(uint8_t *raw) {
+    return ((Client *)raw)->request.content_length;
+}
+
+uint8_t kable_client_input_complete(uint8_t *raw) {
+    return ((Client *)raw)->request.complete;
+}
+
 int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
     KablePlanFinish finish, uint8_t flags) {
     Client *client = (Client *)raw;
@@ -72,6 +80,12 @@ int32_t kable_receive_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_
     Client *client = (Client *)raw;
     return kable_tcp_schedule_timed(client->connection, KABLE_TCP_RECEIVE,
         scope, root, plan, finish, 0, raw, client->deadline);
+}
+
+int32_t kable_response_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
+    KablePlanFinish finish, uint8_t flags) {
+    if (kable_scope_host_key(scope)) return kable_schedule(raw, scope, root, plan, finish, flags);
+    return kable_tcp_schedule(((Client *)raw)->connection, scope, root, plan, finish, flags);
 }
 
 static int32_t accept_request(uint8_t *context, uint8_t *connection) {

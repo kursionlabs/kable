@@ -45,8 +45,8 @@ unsafe fn write_final(raw: *u8, bytes: Buffer!, write_ms: u64) -> i32 {
 
 /// Begins a response on the host's idle connection. The host keeps the
 /// pointer valid until the response finishes and gives it one owner.
-unsafe fn begin_stream(raw: *u8, idle_ms: u64) -> Result[Connection!, i32] {
-    let status = unsafe kable_tcp_stream_begin(raw, idle_ms);
+unsafe fn begin_stream(raw: *u8, idle_ms: u64, watch_input: bool) -> Result[Connection!, i32] {
+    let status = unsafe kable_tcp_stream_begin(raw, idle_ms, if watch_input { 1 } else { 0 });
     if status < 0 { Result::Err.(status) }
     else { Result::Ok.(Connection!.{ raw }) }
 }

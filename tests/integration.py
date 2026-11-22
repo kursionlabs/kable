@@ -333,10 +333,15 @@ def check_stream_idle_timeout(port, process, path):
         assert time.monotonic() - start >= 4.75, "stalled stream expired too early"
 
 
-def check_stream_write_order(command, directory, root, body):
+def build_stream_write_order(directory):
     library = directory / "stream-write-order.so"
     subprocess.run(["cc", "-shared", "-fPIC", str(ROOT / "tests/stream_write_order.c"),
                     "-ldl", "-o", str(library)], check=True)
+    return library
+
+
+def check_stream_write_order(command, directory, root, body):
+    library = build_stream_write_order(directory)
     env = os.environ | {"LD_PRELOAD": str(library)}
     with subprocess.Popen([*command, str(root), "0"], env=env,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
@@ -1059,8 +1064,51 @@ def run_checks(command, check_request_timeout):
     print("Kable loopback checks passed")
 
 
-def check_http_streams(binary):
-    with subprocess.Popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
+def check_http_relay(port):
+    def headers(length):
+        return f"POST /relay HTTP/1.1\r\nHost: localhost\r\nContent-Length: {length}\r\n\r\n".encode()
+
+    with connect(port) as client:
+        client.sendall(headers(6) + b"ab")
+        with client.makefile("rb") as stream:
+            version, status, head = read_headers(stream)
+            assert (version, status, head[b"content-length"]) == (b"HTTP/1.1", 200, b"6")
+            assert stream.read(2) == b"ab", "relay waited for the full upload"
+            client.sendall(b"cdef")
+            assert stream.read() == b"cdef"
+
+    version, status, head, body = exchange(port, headers(5), b"ab", eof=True)
+    assert (version, status, head[b"content-length"], body) == (b"HTTP/1.1", 200, b"5", b"ab")
+
+    with connect(port) as client:
+        client.sendall(headers(5) + b"ab")
+        with client.makefile("rb") as stream:
+            read_headers(stream)
+            assert stream.read(2) == b"ab"
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+    payload = bytes(range(256)) * 4096
+    with ThreadPoolExecutor(max_workers=1) as worker, socket.socket() as client:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16_384)
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        client.settimeout(10)
+        client.connect(("127.0.0.1", port))
+        upload = worker.submit(client.sendall, headers(len(payload)) + payload)
+        with client.makefile("rb") as stream:
+            version, status, head = read_headers(stream)
+            assert (version, status, int(head[b"content-length"])) == (b"HTTP/1.1", 200, len(payload))
+            assert stream.read(1) == payload[:1]
+            request = b"GET /memory HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            assert_response(exchange(port, request), 200, b"abcdef")
+            assert not upload.done(), "stalled response did not hold back the upload"
+            assert stream.read() == payload[1:]
+        upload.result(timeout=5)
+
+
+def check_http_streams(binary, directory):
+    library = build_stream_write_order(directory)
+    env = os.environ | {"LD_PRELOAD": str(library), "KABLE_TEST_RELAY_BACKPRESSURE": "1"}
+    with subprocess.Popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, env=env) as process:
         try:
             port = listening_port(process, b"Listening on http://127.0.0.1:")
 
@@ -1076,6 +1124,8 @@ def check_http_streams(binary):
                 assert (version, status, int(headers[b"content-length"]), sent) == (
                     b"HTTP/1.1", 200, length, body
                 )
+
+            check_http_relay(port)
 
             headers = b"POST /pull HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
             with connect(port) as client:
@@ -1147,7 +1197,7 @@ def main():
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
-            check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"))
+            check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"), Path(directory))
             check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
             check_file_copy([str(file_copy)], Path(directory))

@@ -16,5 +16,5 @@ extern "C" fn kable_tcp_collect_scoped_write(request: *u8) -> i32;
 extern "C" fn kable_tcp_schedule(connection: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_tcp_finish_begin(connection: *u8, write_ms: u64) -> i32;
-extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64) -> i32;
+extern "C" fn kable_tcp_stream_begin(connection: *u8, idle_ms: u64, watch_input: u8) -> i32;
 extern "C" fn kable_tcp_stream_end(connection: *u8) -> i32;

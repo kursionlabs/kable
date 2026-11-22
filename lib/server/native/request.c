@@ -107,6 +107,7 @@ static int on_headers(llhttp_t *parser) {
         request->hosts, llhttp_get_upgrade(parser) || llhttp_get_method(parser) == HTTP_CONNECT,
         request->expect, length, MAX_BODY, request->head.data, request->head.len, request->target_len);
     if (request->rejection) return -1;
+    request->content_length = parser->flags & F_CONTENT_LENGTH ? length : UINT64_MAX;
     request->headers_done = 1;
     if (length || (parser->flags & F_CHUNKED)) {
         request->headers_paused = 1;
@@ -149,7 +150,7 @@ static const llhttp_settings_t settings = {
 };
 
 void kable_request_init(KableRequest *request, KableValidateHead validate_head) {
-    *request = (KableRequest){ .validate_head = validate_head, .body_limit = MAX_BODY };
+    *request = (KableRequest){ .validate_head = validate_head, .body_limit = MAX_BODY, .content_length = UINT64_MAX };
     llhttp_init(&request->parser, HTTP_REQUEST, &settings);
     request->parser.data = request;
 }

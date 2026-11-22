@@ -42,15 +42,16 @@ typedef enum { KABLE_TCP_RECEIVE, KABLE_TCP_DEFER_REPLY, KABLE_TCP_DEFER_INPUT }
 /* Runs under an absolute deadline. The join callback borrows host and receives
    the flags, plus ACTIVE when the socket can reply. RECEIVE reads its own input
    and permits a timeout reply. Deferred plans suppress replies after the
-   deadline. DEFER_REPLY watches the peer and DEFER_INPUT leaves input queued. */
+   deadline. DEFER_REPLY watches the peer and DEFER_INPUT leaves input queued.
+   RECEIVE can also run a body pull between writes of a streamed response. */
 int32_t kable_tcp_schedule_timed(uint8_t *connection, KableTcpTimedPlan mode, uint8_t *scope,
     size_t root, uint8_t *plan, KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
 /* Starts the fixed deadline for a final write, half-close, and drain.
    A read-side EOF still permits the write, and listener shutdown lets it finish. */
 int32_t kable_tcp_finish_begin(uint8_t *connection, uint64_t ms);
-/* Keeps the idle timer and peer read active across the response's scopes.
-   A successful scoped write refreshes the idle deadline. */
-int32_t kable_tcp_stream_begin(uint8_t *connection, uint64_t idle_ms);
+/* Keeps the idle timer active across the response's scopes. Watch input only
+   when the host has finished reading the request. */
+int32_t kable_tcp_stream_begin(uint8_t *connection, uint64_t idle_ms, uint8_t watch_input);
 /* Half-closes and drains after the final scope has joined. */
 int32_t kable_tcp_stream_end(uint8_t *connection);
 void kable_tcp_close(uint8_t *connection);

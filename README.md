@@ -121,6 +121,12 @@ implements `task::Stream` and yields decoded byte chunks. Use
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
 
+`body.content_length()` exposes the original declared length. The HTTP
+stream test fixture uses it to pass a fixed-length request body straight to
+`Response!::stream(...).reply()`. The connection alternates one pull with one
+joined write. The client reads as it uploads, and a truncated upload ends the
+response early after its headers have been sent.
+
 On SIGINT or SIGTERM the server stops accepting, cancels connections still
 reading or waiting on a timer, and lets connections with queued responses
 finish within their existing deadlines. Shutdown releases any response held

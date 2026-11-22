@@ -31,6 +31,7 @@ typedef struct {
     size_t body_bytes;
     size_t body_limit;
     size_t wire_bytes;
+    uint64_t content_length;
     uint16_t rejection;
     int headers_done;
     int headers_paused;

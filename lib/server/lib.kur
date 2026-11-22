@@ -29,6 +29,7 @@ extern "C" fn kable_range_header(request: *u8, length: *usize) -> *u8;
 extern "C" fn kable_client_connection(client: *u8) -> *u8;
 extern "C" fn kable_client_request(client: *u8) -> *u8;
 extern "C" fn kable_client_key(client: *u8) -> u64;
+extern "C" fn kable_client_content_length(client: *u8) -> u64;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_receive_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
@@ -254,10 +255,12 @@ unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
         _ => Method::Other,
     };
     let target_len = unsafe *target_len;
+    let declared = unsafe kable_client_content_length(client);
+    let length = if declared == u64::MAX { Option::None } else { Option::Some.(declared) };
     let request = Request!.{
         method,
         target: unsafe Buffer!::new_with_cap(target_len).push_n(unsafe *target, target_len),
-        body: unsafe Body!::from_request(unsafe kable_client_key(client)),
+        body: unsafe Body!::from_request(unsafe kable_client_key(client), length),
     };
     unsafe kable_release_request_head(parser);
     let { call } = unsafe *(unsafe (context as *Handler));

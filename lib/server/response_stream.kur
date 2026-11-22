@@ -1,5 +1,6 @@
 //! Sends a response with a known-length byte stream.
 use async::Scope!;
+use async::host::prepare_hosted;
 use http::{Response!, encode_headers};
 use package::{Action!, kable_client_connection, kable_client_request, kable_release_request, write_wire};
 use std::buffer::Buffer!;
@@ -11,6 +12,10 @@ use task::driver::Plan;
 use tcp::{Connection!, host};
 
 const STREAM_IDLE: u64 = 5000;
+
+extern "C" fn kable_client_input_complete(client: *u8) -> u8;
+extern "C" fn kable_response_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
+    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 
 struct StreamReply! {
     context: *u8,
@@ -78,9 +83,9 @@ unsafe fn start(context: *u8, client: *u8, head: bool, http10: bool) -> i32 {
         source.discard();
         return unsafe write_wire(client, headers);
     }
-    unsafe kable_release_request(unsafe kable_client_request(client));
     let raw = unsafe kable_client_connection(client);
-    let connection = match unsafe host::begin_stream(raw, STREAM_IDLE) {
+    let input_complete = (unsafe kable_client_input_complete(client)) != 0;
+    let connection = match unsafe host::begin_stream(raw, STREAM_IDLE, input_complete) {
         Ok(connection) => connection,
         Err(error) => {
             source.discard();
@@ -88,42 +93,50 @@ unsafe fn start(context: *u8, client: *u8, head: bool, http10: bool) -> i32 {
             return error;
         },
     };
-    unsafe write(raw, connection, source, length, headers)
+    unsafe write(client, connection, source, length, headers)
+}
+
+forall Task, Output, Env where Plan[Task, Scope! -> Output].
+unsafe fn submit(client: *u8, task: Task, resume: closure[Env](Output) -> i32) -> i32 {
+    let hosted = prepare_hosted(task, |outcome, host, flags| resume(outcome));
+    let submission = unsafe hosted.submit(client, 0, kable_response_schedule);
+    submission.unwrap_or_else(|rejection| rejection.scheduler_error)
 }
 
 forall Source, Read where Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-unsafe fn write(raw: *u8, connection: Connection!, source: Source, remaining: u64, bytes: Buffer!) -> i32 {
-    unsafe host::submit_stream_plan(raw, connection.send(bytes), |result| {
+unsafe fn write(client: *u8, connection: Connection!, source: Source, remaining: u64, bytes: Buffer!) -> i32 {
+    unsafe submit(client, connection.send(bytes), |result| {
         let (connection, completion) = result;
         match completion {
-            Completion::Ready => unsafe read_next(raw, connection, source, remaining),
-            _ => unsafe finish(connection, source, false),
+            Completion::Ready => unsafe read_next(client, connection, source, remaining),
+            _ => unsafe finish(client, connection, source, false),
         }
     })
 }
 
 forall Source, Read where Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-unsafe fn read_next(raw: *u8, connection: Connection!, source: Source, remaining: u64) -> i32 {
-    if remaining == 0 { return unsafe finish(connection, source, true); }
-    unsafe host::submit_stream_plan(raw, source.next(), |result| {
+unsafe fn read_next(client: *u8, connection: Connection!, source: Source, remaining: u64) -> i32 {
+    if remaining == 0 { return unsafe finish(client, connection, source, true); }
+    unsafe submit(client, source.next(), |result| {
         let (source, outcome) = result;
         let bytes = match outcome {
             StreamOutcome::Item(bytes) => bytes,
-            _ => return unsafe finish(connection, source, false),
+            _ => return unsafe finish(client, connection, source, false),
         };
         let length = &bytes.len() as u64;
         if length > remaining {
             bytes.destroy();
-            return unsafe finish(connection, source, false);
+            return unsafe finish(client, connection, source, false);
         }
-        unsafe write(raw, connection, source, remaining - length, bytes)
+        unsafe write(client, connection, source, remaining - length, bytes)
     })
 }
 
 forall Source where Discard[Source].
-unsafe fn finish(connection: Connection!, source: Source, complete: bool) -> i32 {
+unsafe fn finish(client: *u8, connection: Connection!, source: Source, complete: bool) -> i32 {
     source.discard();
+    unsafe kable_release_request(unsafe kable_client_request(client));
     unsafe host::end_stream(connection, complete)
 }
