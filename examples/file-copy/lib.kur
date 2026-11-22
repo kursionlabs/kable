@@ -5,37 +5,38 @@ use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::{Slice, StaticRead};
 use std::time::Duration;
-use task::{Completion, Sink, Stream, StreamOutcome};
+use task::{Completion, Sink, Stream, TransferStep};
 
 fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, deadline: Option[Duration]) -> bool {
     while &source.remaining() != 0 {
-        let (next, outcome) = &runner.run(source.next());
+        let (next, step) = &runner.run(source.forward_next(destination));
         source = next;
-        let bytes = match outcome {
-            Item(bytes) => bytes,
-            Eof => { eprint_buffer(f"file-copy: source ended early\n"); return false; },
-            TimedOut => { eprint_buffer(f"file-copy: read timed out\n"); return false; },
-            Cancelled => { eprint_buffer(f"file-copy: read cancelled\n"); return false; },
-            Failed(failure) => {
-                eprint_buffer(f"file-copy: read failed ({failure})\n");
+        let write = match step {
+            Send(write) => write,
+            End(file, outcome) => {
+                destination = file;
+                eprint_buffer(match outcome {
+                    Ready => f"file-copy: source ended early\n",
+                    TimedOut => f"file-copy: read timed out\n",
+                    Cancelled => f"file-copy: read cancelled\n",
+                    Failed(failure) => f"file-copy: read failed ({failure})\n",
+                });
                 return false;
             },
         };
-        let write = destination.send(bytes);
         let (file, outcome) = match deadline {
             Some(duration) => &runner.run_with_deadline(write, duration),
             None => &runner.run(write),
         };
+        let count = &file.position();
         destination = file;
         match outcome {
             Ready => (),
             TimedOut | Cancelled => {
-                let count = &destination.position();
                 eprint_buffer(f"file-copy: write timed out after {count} bytes\n");
                 return false;
             },
             Failed(failure) => {
-                let count = &destination.position();
                 eprint_buffer(f"file-copy: write failed after {count} bytes ({failure})\n");
                 return false;
             },

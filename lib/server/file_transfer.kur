@@ -1,55 +1,37 @@
 //! Sends headers and file chunks on a connection with a response in progress.
-use async::FileChunks!;
+use async::{FileChunks!, Scope!};
 use std::buffer::Buffer!;
-use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
+use task::{Completion, Sink, Stream, TransferStep};
+use task::driver::Plan;
 use tcp::{Connection!, host};
 
-struct FileTransfer! { connection: Connection!, chunks: FileChunks! }
-
-unsafe fn start(connection: Connection!, chunks: FileChunks!, headers: Buffer!) -> i32 {
-    let transfer = FileTransfer!.{ connection, chunks };
-    unsafe transfer.write(headers)
+unsafe fn start(raw: *u8, connection: Connection!, chunks: FileChunks!, headers: Buffer!) -> i32 {
+    unsafe write(raw, chunks, connection.send(headers))
 }
 
-impl FileTransfer! {
-    unsafe fn write(self, bytes: Buffer!) -> i32 {
-        let { connection, chunks } = self;
-        unsafe host::submit_stream(
-            connection,
-            |connection| connection.send(bytes),
-            |result| {
-                let (connection, completion) = result;
-                let transfer = FileTransfer!.{ connection, chunks };
-                match completion {
-                    Completion::Ready => unsafe transfer.read_next(),
-                    _ => unsafe transfer.finish(false),
-                }
-            },
-        )
-    }
+forall Write where Plan[Write, Scope! -> (Connection!, Completion[()])].
+unsafe fn write(raw: *u8, chunks: FileChunks!, plan: Write) -> i32 {
+    unsafe host::submit_stream_plan(raw, plan, |result| {
+        let (connection, completion) = result;
+        match completion {
+            Completion::Ready => unsafe read_next(raw, connection, chunks),
+            _ => unsafe finish(connection, chunks, false),
+        }
+    })
+}
 
-    unsafe fn read_next(self) -> i32 {
-        if &self.chunks.remaining() == 0 { return unsafe self.finish(true); }
-        let { connection, chunks } = self;
-        unsafe host::submit_stream(
-            connection,
-            |connection| chunks.next().map(|result| {
-                let (chunks, outcome) = result;
-                (FileTransfer!.{ connection, chunks }, outcome)
-            }),
-            |result| {
-                let (transfer, outcome) = result;
-                match outcome {
-                    StreamOutcome::Item(bytes) => unsafe transfer.write(bytes),
-                    _ => unsafe transfer.finish(false),
-                }
-            },
-        )
-    }
+unsafe fn read_next(raw: *u8, connection: Connection!, chunks: FileChunks!) -> i32 {
+    if &chunks.remaining() == 0 { return unsafe finish(connection, chunks, true); }
+    unsafe host::submit_stream_plan(raw, chunks.forward_next(connection), |result| {
+        let (chunks, step) = result;
+        match step {
+            TransferStep::Send(plan) => unsafe write(raw, chunks, plan),
+            End(connection, status) => unsafe finish(connection, chunks, false),
+        }
+    })
+}
 
-    unsafe fn finish(self, complete: bool) -> i32 {
-        let { connection, chunks } = self;
-        chunks.close();
-        unsafe host::end_stream(connection, complete)
-    }
+unsafe fn finish(connection: Connection!, chunks: FileChunks!, complete: bool) -> i32 {
+    chunks.close();
+    unsafe host::end_stream(connection, complete)
 }

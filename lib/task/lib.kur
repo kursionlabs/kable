@@ -151,6 +151,38 @@ impl Writer {
     }
 }
 
+/// The result of pulling one item for a sink.
+/// End returns the writer. A ready end means the source reached EOF.
+forall Writer, Send.
+exposed enum TransferStep {
+    Send(Send),
+    End(Writer, Completion[()]),
+}
+
+forall Source, Next, Item, Writer, Write where Stream[Source -> Next],
+    PlanOutput[Next -> (Source, StreamOutcome[Item])], Sink[Writer -> Item, Write],
+    PlanOutput[Write -> (Writer, Item, Completion[()])], Discard[Item].
+impl Source {
+    /// Reads once and returns the source with a send plan or the end of input.
+    /// Drive the send plan to join before pulling another item.
+    fn forward_next(self, writer: Writer)
+        -> Map![Next, (Source, StreamOutcome[Item]),
+            (Source, TransferStep[Writer, Map![Write, (Writer, Item, Completion[()]), (Writer, Completion[()]), ()]]),
+            (Writer,)] {
+        self.next().map(|result| {
+            let (source, outcome) = result;
+            let status = match outcome {
+                StreamOutcome::Item(item) => return (source, TransferStep::Send.(writer.send(item))),
+                Eof => Completion::Ready.(()),
+                TimedOut => Completion::TimedOut,
+                Cancelled => Completion::Cancelled,
+                Failed(failure) => Completion::Failed.(failure),
+            };
+            (source, TransferStep::End.(writer, status))
+        })
+    }
+}
+
 struct Sleep! { duration: Duration, id: Option[usize] }
 
 /// Returns the timer status after the scope joins.

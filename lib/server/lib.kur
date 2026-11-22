@@ -221,7 +221,7 @@ unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -
             return error;
         },
     };
-    unsafe file_transfer::start(connection, file.chunks(start, count), headers)
+    unsafe file_transfer::start(raw, connection, file.chunks(start, count), headers)
 }
 
 unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connect: u8,
