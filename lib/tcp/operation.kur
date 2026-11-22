@@ -87,13 +87,17 @@ fn finish_write(state: (Connection!, Buffer!), request: *u8, completion: Complet
 }
 
 unsafe fn read_result(raw: *u8) -> StreamOutcome[Buffer!] {
+    unsafe with_read_bytes(raw, |data, length| unsafe Buffer!::new_with_cap(length).push_n(data, length))
+}
+
+/// Gives the callback the joined read's bytes for the duration of the call.
+/// The host keeps the connection alive and does not start another read during the callback.
+forall Env, Output where Copy[Env].
+unsafe fn with_read_bytes(raw: *u8, consume: closure[Env](*u8, usize) -> Output) -> StreamOutcome[Output] {
     let data = unsafe alloca[*u8]();
     let count = unsafe kable_tcp_read_result(raw, data);
     if count > 0 {
-        let bytes = unsafe *data;
-        let length = count as usize;
-        let chunk = unsafe Buffer!::new_with_cap(length).push_n(bytes, length);
-        StreamOutcome::Item.(chunk)
+        StreamOutcome::Item.(consume(unsafe *data, count as usize))
     } else if count == 0 {
         StreamOutcome::Eof
     } else {

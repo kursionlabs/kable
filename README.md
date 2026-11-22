@@ -109,9 +109,10 @@ The linear `Server!` in `lib/server/` owns the handler and its TCP listener
 scope. The same transport runs HTTP and the TCP echo example. Each HTTP
 connection attaches its own parser and request buffers to the transport.
 Each request read runs in a TCP scope under the same ten-second deadline.
-After the read joins, llhttp borrows the transport's input buffer. After
-queuing a response, the connection has five seconds to write it, half-close,
-and drain peer input.
+After the read joins, TCP lends the fragment to the HTTP parser. The parser
+keeps its state across fragments and accepts the same input from memory.
+After queuing a response, the connection has five seconds to write it,
+half-close, and drain peer input.
 
 On SIGINT or SIGTERM the server stops accepting, cancels connections still
 reading or waiting on a timer, and lets connections with queued responses

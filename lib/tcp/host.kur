@@ -5,13 +5,14 @@ use package::Connection!;
 use package::native::{
     kable_tcp_close, kable_tcp_schedule, kable_tcp_finish_begin, kable_tcp_stream_begin, kable_tcp_stream_end,
 };
-use package::operation::{OperationPlan!, read_for_host};
+use package::operation::{OperationPlan!, read_for_host, with_read_bytes};
 use std::buffer::Buffer!;
 use std::option::Result;
 use task::{Completion, Sink};
 use task::driver::Plan;
 
 export PLAN_ACTIVE;
+export with_read_bytes;
 
 /// Runs a read for the host, which borrows the native bytes on join.
 /// The host keeps the connection valid and owns it through collection.

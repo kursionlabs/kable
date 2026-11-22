@@ -1079,6 +1079,7 @@ def main():
         run_checks(args.command, args.check_timeout)
     else:
         with tempfile.TemporaryDirectory() as directory:
+            check_http_parser(Path(directory))
             binary = build("kable", Path(directory) / "kable")
             hello = build("examples/hello-server", Path(directory) / "hello-server")
             static_files = build("examples/static-files", Path(directory) / "static-files")
@@ -1254,6 +1255,16 @@ fn main() {
     )
     assert result.returncode != 0, result
     assert "no instance of" in result.stderr and "Plan[FilePathPlan![Buffer!], Virtual!, Completion[Buffer!]]" in result.stderr, result
+
+
+def check_http_parser(directory):
+    binary = directory / "http-parser"
+    subprocess.run([
+        "cc", str(ROOT / "tests/http_parser.c"),
+        str(ROOT / "lib/server/native/request.c"), "-lllhttp", "-o", str(binary),
+    ], check=True)
+    subprocess.run([str(binary)], check=True, timeout=5)
+    print("Kable HTTP parser memory checks passed")
 
 
 def check_native_registration(directory):
