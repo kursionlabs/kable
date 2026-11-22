@@ -54,15 +54,15 @@ deadline. `GET` sends `Content-Length` and reads one 64 KiB chunk after
 each socket write completes. `file.chunks(offset, length)` creates an
 owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
-joins. Only a nonempty chunk advances the cursor. The server sends its headers
-with `connection.send(bytes)` and uses `chunks.forward_next(connection)` for
-each body chunk. The write continuation pulls the next chunk after the send
-joins. The server closes the stream after the final write joins or when a read
-or write is interrupted. An early EOF
+joins. Only a nonempty chunk advances the cursor. The server uses the same
+response writer as `Response!::stream(status, content_type, length, source).reply()`.
+It sends the headers, then pulls and sends one body chunk at a time. The
+writer releases the source after the final write joins or when a read or
+write is interrupted. Early EOF or a chunk that exceeds the declared length
 ends the response with fewer bytes than its declared length. `HEAD`
-uses the file length without reading its body.
-Each completed write restarts the five-second idle timer, so a transfer can
-continue while writes make progress.
+uses the declared length and discards the source without pulling it.
+Each completed nonempty write restarts the five-second idle timer, so a
+transfer can continue while writes make progress.
 
 `GET` accepts a single byte range such as `Range: bytes=0-31`,
 `bytes=32-`, or `bytes=-32`. A satisfiable range returns `206 Partial
@@ -453,8 +453,8 @@ open, create, read, and write operations. Inside the callback,
 `&runner.run(plan)` runs and joins one plan at a time. Use
 `&runner.run_with_deadline(plan, duration)` to set a parent deadline for that operation.
 
-The copy uses the same `source.forward_next(destination)` step as the HTTP
-server. After a read joins, the step returns the source alongside
+The copy uses `source.forward_next(destination)` to prepare a read followed
+by a send. After a read joins, the step returns the source alongside
 `TransferStep::Send(plan)` or `TransferStep::End(writer, status)`. Drive
 the send plan to recover the writer and release the item before pulling
 another chunk. An end returns the writer with a ready status for EOF or the

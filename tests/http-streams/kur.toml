@@ -1,0 +1,17 @@
+[package]
+name="http_streams_test"
+source_root="."
+kind="executable"
+entry="main"
+
+[dependencies.std]
+path="../../../kursal/lib/std"
+
+[dependencies.http]
+path="../../lib/http"
+
+[dependencies.server]
+path="../../lib/server"
+
+[dependencies.task]
+path="../../lib/task"

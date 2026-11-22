@@ -1,8 +1,10 @@
 //! Serves regular files beneath the process working directory.
 use async::{FileErrorKind, OpenedFile!, open_file_beneath_cwd};
-use http::{Method, Request!, Response!};
-use package::{Action!, file_reply};
+use http::{Method, Request!, Response!, encode_file_headers, select_file_range};
+use package::{Action!, kable_client_request, kable_range_header, response_stream};
 use std::buffer::Buffer!;
+use std::cap::Exclusive!;
+use std::mem::alloca;
 use std::option::Option;
 use std::raw::Span;
 use std::slice::Slice;
@@ -47,6 +49,20 @@ fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, '
         },
     };
     Response!::rejected(status).reply()
+}
+
+fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
+    response_stream::prepare(file, |file, client, http10| {
+        let total = &file.len();
+        let length = unsafe alloca[usize]();
+        let range = unsafe kable_range_header(unsafe kable_client_request(client), length);
+        let exists 'k. (brand, access) = Exclusive!::fresh();
+        let range = unsafe Span::from_raw_parts_branded(range, unsafe *length, brand);
+        let (status, start, count) = select_file_range(&access, range, total);
+        access.retire();
+        let headers = encode_file_headers(status, content_type, start, count, total, http10);
+        (file.chunks(start, count), count, headers)
+    }).reply()
 }
 
 fn hex(byte: u8) -> Option[u8] {

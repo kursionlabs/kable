@@ -206,6 +206,10 @@ impl FileChunks! {
     }
 }
 
+instance Discard[FileChunks!] {
+    fn discard(chunks: FileChunks!) { chunks.close(); }
+}
+
 instance Stream[FileChunks! ->
     Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, StreamOutcome[Buffer!]), (u64, u64)]] {
     /// Plans a read of at most 64 KiB and advances only by the bytes read.

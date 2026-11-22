@@ -1,9 +1,10 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
-use async::{OpenedFile!, Scope!};
+use async::Scope!;
 use async::host::{HostedPlan!, prepare_handoff};
-use http::{Body!, Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
-use package::{body, file_transfer, static_files};
+use http::{Body!, Method, Request!, RequestHead, Response!, validate_request_head};
+use package::{body, static_files};
+use package::response_stream::StreamReply!;
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
@@ -11,7 +12,6 @@ use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::raw::Span;
-use std::slice::Slice;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Discard, PlanOutput, StreamOutcome, discard, discard_owned, sleep};
 use task::driver::Plan;
@@ -45,15 +45,12 @@ extern "C" fn kable_stop(server: *u8) -> ();
 exposed enum Action! {
     Reply(Response!),
     Deferred(HostedPlan!),
-    File(FileReply!),
+    Stream(StreamReply!),
     /// Closes the connection without sending an HTTP response.
     Close,
 }
 
-struct FileReply! { file: OpenedFile!, content_type: Slice[u8, 'static] }
-
 const WRITE_TIMEOUT: u64 = 5000;
-const STREAM_IDLE: u64 = 5000;
 
 const RESPONSE_HEAD: u8 = 2;
 const RESPONSE_HTTP10: u8 = 4;
@@ -63,11 +60,6 @@ const REQUEST_MORE: u16 = 1;
 const REQUEST_TRUNCATED: u16 = 2;
 const REQUEST_CLOSED: u16 = 3;
 const REQUEST_HEADERS: u16 = 4;
-
-/// Sends a measured file using one write at a time.
-fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
-    Action!::File.(FileReply!.{ file, content_type })
-}
 
 impl Response! {
     /// Sends this response when the handler returns.
@@ -198,38 +190,9 @@ unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
             let submission = unsafe plan.submit(client, flags, kable_schedule);
             submission.unwrap_or_else(|rejection| rejection.scheduler_error)
         },
-        File(reply) => unsafe write_file(client, reply, head, http10),
+        Stream(reply) => unsafe reply.send(client, head, http10),
         Close => { unsafe host::close(unsafe kable_client_connection(client)); 0 },
     }
-}
-
-unsafe fn write_file(client: *u8, reply: FileReply!, head: bool, http10: bool) -> i32 {
-    let { file, content_type } = reply;
-    let total = &file.len();
-    let length = unsafe alloca[usize]();
-    let parser = unsafe kable_client_request(client);
-    let range = unsafe kable_range_header(parser, length);
-    let exists 'k. (brand, access) = Exclusive!::fresh();
-    // The span borrows the client's inline header bytes through range selection.
-    let range = unsafe Span::from_raw_parts_branded(range, unsafe *length, brand);
-    let (status, start, count) = select_file_range(&access, range, total);
-    access.retire();
-    let headers = encode_file_headers(status, content_type, start, count, total, http10);
-    if head || count == 0 {
-        file.close();
-        return unsafe write_wire(client, headers);
-    }
-    unsafe kable_release_request(parser);
-    let raw = unsafe kable_client_connection(client);
-    let connection = match unsafe host::begin_stream(raw, STREAM_IDLE) {
-        Ok(connection) => connection,
-        Err(error) => {
-            headers.destroy();
-            file.close();
-            return error;
-        },
-    };
-    unsafe file_transfer::start(raw, connection, file.chunks(start, count), headers)
 }
 
 unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connect: u8,

@@ -1,0 +1,82 @@
+use http::{Body!, Request!, Response!};
+use server::{Action!, Server!};
+use std::buffer::Buffer!;
+use std::io::{eprint_buffer, print_buffer};
+use std::process::trap;
+use std::time::Duration;
+use task::{Completion, Discard, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, sleep};
+
+struct Memory! { remaining: u8, may_pull: bool }
+
+instance Discard[Memory!] {
+    fn discard(memory: Memory!) { let { remaining, may_pull } = memory; }
+}
+
+instance Stream[Memory! -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[Buffer!]), (u8, bool)]] {
+    fn next(memory: Memory!) -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[Buffer!]), (u8, bool)] {
+        let { remaining, may_pull } = memory;
+        if !may_pull { trap(); }
+        sleep(Duration::from_nanos(0)).map(|status| {
+            match status {
+                Completion::Ready => (),
+                _ => return (Memory!.{ remaining, may_pull }, StreamOutcome::Cancelled),
+            };
+            if remaining == 0 { return (Memory!.{ remaining, may_pull }, StreamOutcome::Eof); }
+            let bytes = Buffer!::new().push_static(match remaining {
+                3 => "abc",
+                2 => "",
+                _ => "def",
+            });
+            (Memory!.{ remaining: remaining - 1, may_pull }, StreamOutcome::Item.(bytes))
+        })
+    }
+}
+
+fn discard_pull(bytes: Buffer!, result: (Body!, StreamOutcome[Buffer!])) {
+    (bytes, result).discard();
+    eprint_buffer(f"Discarded pending body pull.\n");
+}
+
+fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
+    body.next().respond_owned_with(bytes, |bytes, result| {
+        let (body, outcome) = result;
+        match outcome {
+            StreamOutcome::Item(item) => {
+                eprint_buffer(f"Received body chunk.\n");
+                pull(body, bytes.push_buffer(item), chunks + 1)
+            },
+            Eof => {
+                body.discard();
+                Response!::ok(f"{chunks}:".push_buffer(bytes)).reply()
+            },
+            _ => { (body, bytes).discard(); Response!::rejected(400).reply() },
+        }
+    }, discard_pull).reply()
+}
+
+fn serve(request: Request!) -> Action! {
+    if &request.path_is("/pull") {
+        let { method, target, body } = request;
+        target.destroy();
+        return pull(body, Buffer!::new(), 0);
+    }
+    let head_only = &request.path_is("/head");
+    let empty = &request.path_is("/empty");
+    let length = if &request.path_is("/short") { 7 }
+        else if &request.path_is("/over") { 5 }
+        else if empty { 0 }
+        else { 6 };
+    request.destroy();
+    let memory = Memory!.{ remaining: 3, may_pull: !head_only && !empty };
+    Response!::stream(200, "application/octet-stream", length, memory).reply()
+}
+
+fn main() -> i32 {
+    let server = Server!::bind(0, serve).unwrap();
+    let port = &server.port();
+    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+        server.stop();
+        return 1;
+    }
+    if server.run().is_ok() { 0 } else { 1 }
+}

@@ -198,7 +198,7 @@ uint8_t *kable_tcp_new_scoped_write(uint8_t *raw, uint8_t *bytes, size_t len) {
 static void scoped_write_done(uv_write_t *request, int status) {
     ScopedWrite *write = request->data;
     Connection *connection = write->connection;
-    if (status == 0 && connection->phase == STREAMING && !connection->cancelled) {
+    if (status == 0 && write->buffer.len && connection->phase == STREAMING && !connection->cancelled) {
         status = kable_timer_restart(connection->timer, connection->stream_idle_ms);
     }
     write->status = status;

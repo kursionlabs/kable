@@ -1,0 +1,129 @@
+//! Sends a response with a known-length byte stream.
+use async::Scope!;
+use http::{Response!, encode_headers};
+use package::{Action!, kable_client_connection, kable_client_request, kable_release_request, write_wire};
+use std::buffer::Buffer!;
+use std::heap::HeapAllocator;
+use std::mem::sizeof;
+use std::slice::Slice;
+use task::{Completion, Discard, Sink, Stream, StreamOutcome};
+use task::driver::Plan;
+use tcp::{Connection!, host};
+
+const STREAM_IDLE: u64 = 5000;
+
+struct StreamReply! {
+    context: *u8,
+    start: unsafe fn(*u8, *u8, bool, bool) -> i32,
+    release: unsafe fn(*u8) -> (),
+}
+
+impl StreamReply! {
+    fn reply(self) -> Action! { Action!::Stream.(self) }
+
+    unsafe fn send(self, client: *u8, head: bool, http10: bool) -> i32 {
+        let { context, start, release } = self;
+        unsafe start(context, client, head, http10)
+    }
+}
+
+instance Discard[StreamReply!] {
+    fn discard(reply: StreamReply!) {
+        let { context, start, release } = reply;
+        unsafe release(context);
+    }
+}
+
+forall State, Source, Env.
+struct PendingReply! { state: State, build: closure[Env](State, *u8, bool) -> (Source, u64, Buffer!) }
+
+forall State, Source, Read, Env where Copy[Env], Discard[State], Discard[Source],
+    Stream[Source -> Read], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+fn prepare(state: State, build: closure[Env](State, *u8, bool) -> (Source, u64, Buffer!)) -> StreamReply! {
+    let context = HeapAllocator::alloc(sizeof[PendingReply![State, Source, Env]]()).into_raw();
+    unsafe *(unsafe (context as *PendingReply![State, Source, Env])) = PendingReply!.{ state, build };
+    StreamReply!.{ context, start: start[State, Source, Read, Env], release: release[State, Source, Env] }
+}
+
+forall State, Source, Env.
+unsafe fn take(context: *u8) -> PendingReply![State, Source, Env] {
+    let pending = unsafe *(unsafe (context as *PendingReply![State, Source, Env]));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+    pending
+}
+
+forall State, Source, Env where Copy[Env], Discard[State].
+unsafe fn release(context: *u8) {
+    let { state, build } = unsafe take[State, Source, Env](context);
+    state.discard();
+}
+
+impl Response! {
+    /// Replies with exactly the declared number of bytes from an owned source.
+    forall Source, Read where Discard[Source], Stream[Source -> Read],
+        Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+    fn stream(status: u16, content_type: Slice[u8, 'static], length: u64, source: Source) -> StreamReply! {
+        prepare(source, |source, client, http10| {
+            (source, length, encode_headers(status, content_type, "", length, http10))
+        })
+    }
+}
+
+forall State, Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
+    Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+unsafe fn start(context: *u8, client: *u8, head: bool, http10: bool) -> i32 {
+    let { state, build } = unsafe take[State, Source, Env](context);
+    let (source, length, headers) = build(state, client, http10);
+    if head || length == 0 {
+        source.discard();
+        return unsafe write_wire(client, headers);
+    }
+    unsafe kable_release_request(unsafe kable_client_request(client));
+    let raw = unsafe kable_client_connection(client);
+    let connection = match unsafe host::begin_stream(raw, STREAM_IDLE) {
+        Ok(connection) => connection,
+        Err(error) => {
+            source.discard();
+            headers.destroy();
+            return error;
+        },
+    };
+    unsafe write(raw, connection, source, length, headers)
+}
+
+forall Source, Read where Discard[Source], Stream[Source -> Read],
+    Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+unsafe fn write(raw: *u8, connection: Connection!, source: Source, remaining: u64, bytes: Buffer!) -> i32 {
+    unsafe host::submit_stream_plan(raw, connection.send(bytes), |result| {
+        let (connection, completion) = result;
+        match completion {
+            Completion::Ready => unsafe read_next(raw, connection, source, remaining),
+            _ => unsafe finish(connection, source, false),
+        }
+    })
+}
+
+forall Source, Read where Discard[Source], Stream[Source -> Read],
+    Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+unsafe fn read_next(raw: *u8, connection: Connection!, source: Source, remaining: u64) -> i32 {
+    if remaining == 0 { return unsafe finish(connection, source, true); }
+    unsafe host::submit_stream_plan(raw, source.next(), |result| {
+        let (source, outcome) = result;
+        let bytes = match outcome {
+            StreamOutcome::Item(bytes) => bytes,
+            _ => return unsafe finish(connection, source, false),
+        };
+        let length = &bytes.len() as u64;
+        if length > remaining {
+            bytes.destroy();
+            return unsafe finish(connection, source, false);
+        }
+        unsafe write(raw, connection, source, remaining - length, bytes)
+    })
+}
+
+forall Source where Discard[Source].
+unsafe fn finish(connection: Connection!, source: Source, complete: bool) -> i32 {
+    source.discard();
+    unsafe host::end_stream(connection, complete)
+}

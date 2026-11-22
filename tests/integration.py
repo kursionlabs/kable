@@ -1059,6 +1059,49 @@ def run_checks(command, check_request_timeout):
     print("Kable loopback checks passed")
 
 
+def check_http_streams(binary):
+    with subprocess.Popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0) as process:
+        try:
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
+
+            def request(path, method=b"GET"):
+                return exchange(port, method + b" " + path + b" HTTP/1.1\r\nHost: localhost\r\n\r\n")
+
+            headers = assert_response(request(b"/memory"), 200, b"abcdef")
+            assert headers[b"content-type"] == b"application/octet-stream"
+            assert_response(request(b"/head", b"HEAD"), 200, b"abcdef", head=True)
+            assert_response(request(b"/empty"), 200, b"")
+            for path, length, body in ((b"/short", 7, b"abcdef"), (b"/over", 5, b"abc")):
+                version, status, headers, sent = request(path)
+                assert (version, status, int(headers[b"content-length"]), sent) == (
+                    b"HTTP/1.1", 200, length, body
+                )
+
+            headers = b"POST /pull HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+            with connect(port) as client:
+                client.sendall(headers + b"2\r")
+                assert not select.select([client, process.stderr], [], [], 0.05)[0]
+                client.sendall(b"\na\x00\r\n")
+                read_log_until(process.stderr, b"Received body chunk.")
+                client.sendall(b"1\r\nb\r\n0\r\n")
+                read_log_until(process.stderr, b"Received body chunk.")
+                assert not select.select([client], [], [], 0.05)[0]
+                client.sendall(b"\r\n")
+                assert_response(read_response(client), 200, b"2:a\x00b")
+
+            with connect(port) as client:
+                client.sendall(headers + b"1\r\na\r\n")
+                read_log_until(process.stderr, b"Received body chunk.")
+                process.terminate()
+                assert client.recv(1) == b"", "shutdown resumed a pending body pull"
+                assert process.wait(timeout=5) == 0
+                assert process.stderr.read() == b"Discarded pending body pull.\n"
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable HTTP stream checks passed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-timeout", action="store_true", help="also run the longer deadline checks")
@@ -1104,6 +1147,7 @@ def main():
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
+            check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"))
             check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
             check_file_copy([str(file_copy)], Path(directory))
