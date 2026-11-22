@@ -2,9 +2,8 @@
 //! every connection. Native callbacks borrow their arguments for one call.
 use async::Scope!;
 use async::host::{HostedPlan!, prepare_handoff};
-use http::{Body!, Method, Request!, RequestHead, Response!, validate_request_head};
-use package::{body, static_files};
-use package::response_stream::StreamReply!;
+use http::{Body!, Method, Request!, RequestHead, Response!, ResponseBody!, ResponseFraming, validate_request_head};
+use package::{body, response_stream, static_files};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
@@ -44,7 +43,6 @@ extern "C" fn kable_stop(server: *u8) -> ();
 exposed enum Action! {
     Reply(Response!),
     Deferred(HostedPlan!),
-    Stream(StreamReply!),
     /// Closes the connection without sending an HTTP response.
     Close,
 }
@@ -181,6 +179,22 @@ unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
     unsafe host::write_final(unsafe kable_client_connection(client), wire, WRITE_TIMEOUT)
 }
 
+unsafe fn send_response(client: *u8, response: Response!, head: bool, http10: bool) -> i32 {
+    let (response, body) = response.into_parts();
+    match body {
+        Buffered(bytes) => {
+            let length = &bytes.len() as u64;
+            let headers = response.encode(ResponseFraming::Fixed.(length), http10);
+            let wire = if head {
+                bytes.destroy();
+                headers
+            } else { headers.push_buffer(bytes) };
+            unsafe write_wire(client, wire)
+        },
+        Streamed(stream) => unsafe stream.send(client, response, head, http10),
+    }
+}
+
 unsafe fn submit_request(client: *u8, plan: HostedPlan!, flags: u8) -> i32 {
     let submission = unsafe plan.submit(client, flags, kable_schedule);
     submission.unwrap_or_else(|rejection| rejection.scheduler_error)
@@ -188,12 +202,11 @@ unsafe fn submit_request(client: *u8, plan: HostedPlan!, flags: u8) -> i32 {
 
 unsafe fn apply(client: *u8, action: Action!, head: bool, http10: bool) -> i32 {
     match action {
-        Reply(response) => unsafe write_wire(client, response.encode(head, http10)),
+        Reply(response) => unsafe send_response(client, response, head, http10),
         Deferred(plan) => {
             let flags = (if head { RESPONSE_HEAD } else { 0 }) | (if http10 { RESPONSE_HTTP10 } else { 0 });
             unsafe submit_request(client, plan, flags)
         },
-        Stream(reply) => unsafe reply.send(client, head, http10),
         Close => { unsafe host::close(unsafe kable_client_connection(client)); 0 },
     }
 }
@@ -247,7 +260,7 @@ unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
     let head = method == 2;
     let http10 = (unsafe *version) != 0;
     if status != 0 {
-        return unsafe write_wire(client, Response!::rejected(status).encode(head, http10));
+        return unsafe send_response(client, Response!::rejected(status), head, http10);
     }
     let method = match method {
         1 => Method::Get,

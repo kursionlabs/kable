@@ -79,6 +79,8 @@ This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://ma
 
 `Server!::bind` takes a handler that returns an `Action!`. The hello server
 uses `.reply()` to send one response immediately and `.after(...)` to delay another.
+Both methods accept buffered and streamed `Response!` values. A buffered
+reply sends its headers and body in one write.
 
 ```kursal
 use std::time::Duration;

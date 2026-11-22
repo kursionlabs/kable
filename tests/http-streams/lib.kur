@@ -7,28 +7,31 @@ use std::process::trap;
 use std::time::Duration;
 use task::{Completion, Discard, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, sleep};
 
-struct Memory! { remaining: u8, may_pull: bool }
+struct Memory! { remaining: u8, may_pull: bool, report_discard: bool }
 
 instance Discard[Memory!] {
-    fn discard(memory: Memory!) { let { remaining, may_pull } = memory; }
+    fn discard(memory: Memory!) {
+        let { remaining, may_pull, report_discard } = memory;
+        if report_discard { eprint_buffer(f"Discarded response source.\n"); }
+    }
 }
 
-instance Stream[Memory! -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[Buffer!]), (u8, bool)]] {
-    fn next(memory: Memory!) -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[Buffer!]), (u8, bool)] {
-        let { remaining, may_pull } = memory;
+instance Stream[Memory! -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[Buffer!]), (u8, bool, bool)]] {
+    fn next(memory: Memory!) -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[Buffer!]), (u8, bool, bool)] {
+        let { remaining, may_pull, report_discard } = memory;
         if !may_pull { trap(); }
         sleep(Duration::from_nanos(0)).map(|status| {
             match status {
                 Completion::Ready => (),
-                _ => return (Memory!.{ remaining, may_pull }, StreamOutcome::Cancelled),
+                _ => return (Memory!.{ remaining, may_pull, report_discard }, StreamOutcome::Cancelled),
             };
-            if remaining == 0 { return (Memory!.{ remaining, may_pull }, StreamOutcome::Eof); }
+            if remaining == 0 { return (Memory!.{ remaining, may_pull, report_discard }, StreamOutcome::Eof); }
             let bytes = Buffer!::new().push_static(match remaining {
                 3 => "abc",
                 2 => "",
                 _ => "def",
             });
-            (Memory!.{ remaining: remaining - 1, may_pull }, StreamOutcome::Item.(bytes))
+            (Memory!.{ remaining: remaining - 1, may_pull, report_discard }, StreamOutcome::Item.(bytes))
         })
     }
 }
@@ -70,6 +73,8 @@ fn serve(request: Request!) -> Action! {
     let unknown_head = &request.path_is("/unknown-head");
     let head_only = &request.path_is("/head") || unknown_head;
     let empty = &request.path_is("/empty");
+    let delayed = &request.path_is("/delayed");
+    let cancelled = &request.path_is("/cancel-delayed");
     let unknown = &request.path_is("/unknown") || unknown_head;
     let length = if unknown { Option::None }
         else if &request.path_is("/short") { Option::Some.(7) }
@@ -77,8 +82,15 @@ fn serve(request: Request!) -> Action! {
         else if empty { Option::Some.(0) }
         else { Option::Some.(6) };
     request.destroy();
-    let memory = Memory!.{ remaining: 3, may_pull: !head_only && !empty };
-    Response!::stream(200, "application/octet-stream", length, memory).reply()
+    let memory = Memory!.{ remaining: 3, may_pull: !head_only && !empty && !cancelled,
+        report_discard: head_only || cancelled };
+    let response: Response! = Response!::stream(200, "application/octet-stream", length, memory);
+    if cancelled {
+        eprint_buffer(f"Scheduled delayed response.\n");
+        return response.after(Duration::from_secs(30));
+    }
+    if delayed { return response.after(Duration::from_millis(20)); }
+    response.reply()
 }
 
 fn main() -> i32 {

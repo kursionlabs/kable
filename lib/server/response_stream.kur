@@ -1,8 +1,8 @@
 //! Sends a response from an owned byte stream.
 use async::Scope!;
 use async::host::prepare_hosted;
-use http::{Response!, ResponseFraming, encode_chunk, encode_stream_headers};
-use package::{Action!, kable_client_connection, kable_client_request, kable_release_request, submit_request, write_wire};
+use http::{Response!, ResponseFraming, ResponseHead, encode_chunk};
+use package::{kable_client_connection, kable_client_request, kable_release_request, submit_request, write_wire};
 use std::buffer::Buffer!;
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
@@ -16,42 +16,24 @@ const STREAM_IDLE: u64 = 5000;
 
 extern "C" fn kable_client_input_complete(client: *u8) -> u8;
 
-struct StreamReply! {
-    context: *u8,
-    start: unsafe fn(*u8, *u8, bool, bool) -> i32,
-    release: unsafe fn(*u8) -> (),
-}
-
-impl StreamReply! {
-    fn reply(self) -> Action! { Action!::Stream.(self) }
-
-    unsafe fn send(self, client: *u8, head: bool, http10: bool) -> i32 {
-        let { context, start, release } = self;
-        unsafe start(context, client, head, http10)
-    }
-}
-
-instance Discard[StreamReply!] {
-    fn discard(reply: StreamReply!) {
-        let { context, start, release } = reply;
-        unsafe release(context);
-    }
-}
-
 forall State, Source, Env.
-struct PendingReply! { state: State, build: closure[Env](State, *u8, bool) -> (Source, ResponseFraming, Buffer!) }
+struct PendingBody! {
+    state: State,
+    build: closure[Env](State, ResponseHead, *u8) -> (Source, ResponseHead, Option[u64]),
+}
 
 forall State, Source, Read, Env where Copy[Env], Discard[State], Discard[Source],
     Stream[Source -> Read], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-fn prepare(state: State, build: closure[Env](State, *u8, bool) -> (Source, ResponseFraming, Buffer!)) -> StreamReply! {
-    let context = HeapAllocator::alloc(sizeof[PendingReply![State, Source, Env]]()).into_raw();
-    unsafe *(unsafe (context as *PendingReply![State, Source, Env])) = PendingReply!.{ state, build };
-    StreamReply!.{ context, start: start[State, Source, Read, Env], release: release[State, Source, Env] }
+fn prepare(head: ResponseHead, state: State,
+    build: closure[Env](State, ResponseHead, *u8) -> (Source, ResponseHead, Option[u64])) -> Response! {
+    let context = HeapAllocator::alloc(sizeof[PendingBody![State, Source, Env]]()).into_raw();
+    unsafe *(unsafe (context as *PendingBody![State, Source, Env])) = PendingBody!.{ state, build };
+    unsafe Response!::from_stream(head, context, start[State, Source, Read, Env], release[State, Source, Env])
 }
 
 forall State, Source, Env.
-unsafe fn take(context: *u8) -> PendingReply![State, Source, Env] {
-    let pending = unsafe *(unsafe (context as *PendingReply![State, Source, Env]));
+unsafe fn take(context: *u8) -> PendingBody![State, Source, Env] {
+    let pending = unsafe *(unsafe (context as *PendingBody![State, Source, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
     pending
 }
@@ -66,14 +48,8 @@ impl Response! {
     /// Sends a known-length or EOF-terminated response from an owned source.
     forall Source, Read where Discard[Source], Stream[Source -> Read],
         Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-    fn stream(status: u16, content_type: Slice[u8, 'static], length: Option[u64], source: Source) -> StreamReply! {
-        prepare(source, |source, client, http10| {
-            let framing = match length {
-                Some(length) => ResponseFraming::Fixed.(length),
-                None => if http10 { ResponseFraming::CloseDelimited } else { ResponseFraming::Chunked },
-            };
-            (source, framing, encode_stream_headers(status, content_type, framing, http10))
-        })
+    fn stream(status: u16, content_type: Slice[u8, 'static], length: Option[u64], source: Source) -> Response! {
+        prepare(ResponseHead::new(status, content_type), source, |source, head, client| (source, head, length))
     }
 }
 
@@ -83,9 +59,14 @@ fn complete(framing: ResponseFraming) -> bool {
 
 forall State, Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-unsafe fn start(context: *u8, client: *u8, head: bool, http10: bool) -> i32 {
+unsafe fn start(context: *u8, client: *u8, response: ResponseHead, head: bool, http10: bool) -> i32 {
     let { state, build } = unsafe take[State, Source, Env](context);
-    let (source, framing, headers) = build(state, client, http10);
+    let (source, response, length) = build(state, response, client);
+    let framing = match length {
+        Some(length) => ResponseFraming::Fixed.(length),
+        None => if http10 { ResponseFraming::CloseDelimited } else { ResponseFraming::Chunked },
+    };
+    let headers = response.encode(framing, http10);
     if head || complete(framing) {
         source.discard();
         return unsafe write_wire(client, headers);

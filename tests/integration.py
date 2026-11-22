@@ -340,6 +340,22 @@ def build_stream_write_order(directory):
     return library
 
 
+def check_buffered_write(binary, directory):
+    library = build_stream_write_order(directory)
+    env = os.environ | {"LD_PRELOAD": str(library)}
+    with subprocess.Popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env) as process:
+        try:
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
+            request = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            assert_response(exchange(port, request), 200, b"Hello from Kable!\n")
+            process.terminate()
+            _, stderr = process.communicate(timeout=5)
+            assert process.returncode == 0 and stderr == b"stream-test: wrote\n", stderr
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+
 def check_stream_write_order(command, directory, root, body):
     library = build_stream_write_order(directory)
     env = os.environ | {"LD_PRELOAD": str(library)}
@@ -1174,7 +1190,9 @@ def check_http_streams(binary, directory, check_timeout=False):
             headers = assert_response(request(b"/memory"), 200, b"abcdef")
             assert headers[b"content-type"] == b"application/octet-stream"
             assert_response(request(b"/head", b"HEAD"), 200, b"abcdef", head=True)
+            assert read_log_until(process.stderr, b"Discarded response source.") == b"Discarded response source.\n"
             assert_response(request(b"/empty"), 200, b"")
+            assert_response(request(b"/delayed"), 200, b"abcdef")
             for path, length, body in ((b"/short", 7, b"abcdef"), (b"/over", 5, b"abc")):
                 version, status, headers, sent = request(path)
                 assert (version, status, int(headers[b"content-length"]), sent) == (
@@ -1188,6 +1206,7 @@ def check_http_streams(binary, directory, check_timeout=False):
             assert b"content-length" not in headers
             version, status, headers, sent = request(b"/unknown-head", b"HEAD")
             assert (version, status, headers[b"transfer-encoding"], sent) == (b"HTTP/1.1", 200, b"chunked", b"")
+            assert read_log_until(process.stderr, b"Discarded response source.") == b"Discarded response source.\n"
             version, status, headers, sent = exchange(port, b"GET /unknown HTTP/1.0\r\n\r\n")
             assert (version, status, sent) == (b"HTTP/1.0", 200, b"abcdef")
             assert b"content-length" not in headers and b"transfer-encoding" not in headers
@@ -1207,13 +1226,17 @@ def check_http_streams(binary, directory, check_timeout=False):
                 client.sendall(b"\r\n")
                 assert_response(read_response(client), 200, b"2:a\x00b")
 
-            with connect(port) as client:
+            with connect(port) as client, connect(port) as delayed:
                 client.sendall(headers + b"1\r\na\r\n")
                 read_log_until(process.stderr, b"Received body chunk.")
+                delayed.sendall(b"GET /cancel-delayed HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                read_log_until(process.stderr, b"Scheduled delayed response.")
                 process.terminate()
                 assert client.recv(1) == b"", "shutdown resumed a pending body pull"
+                assert delayed.recv(1) == b"", "shutdown started a delayed response"
                 assert process.wait(timeout=5) == 0
-                assert process.stderr.read() == b"Discarded pending body pull.\n"
+                logs = process.stderr.read().splitlines()
+                assert sorted(logs) == [b"Discarded pending body pull.", b"Discarded response source."], logs
         finally:
             if process.poll() is None:
                 process.kill()
@@ -1265,6 +1288,7 @@ def main():
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
+            check_buffered_write(hello, Path(directory))
             check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"),
                                Path(directory), args.check_timeout)
             check_static_files([str(static_files)], Path(directory), args.check_timeout)

@@ -103,11 +103,75 @@ impl Request! {
     }
 }
 
-struct Response! {
+struct ResponseHead {
     status: u16,
     content_type: Slice[u8, 'static],
     allow: Slice[u8, 'static],
-    body: Buffer!,
+    range: Option[(u64, u64)],
+}
+
+impl ResponseHead {
+    fn new(status: u16, content_type: Slice[u8, 'static]) -> ResponseHead {
+        ResponseHead.{ status, content_type, allow: "", range: Option::None }
+    }
+
+    fn with_range(self, status: u16, offset: u64, total: u64) -> ResponseHead {
+        let { status: previous, content_type, allow, range } = self;
+        let content_type = if status == 416 { "text/plain; charset=utf-8" } else { content_type };
+        ResponseHead.{ status, content_type, allow, range: Option::Some.((offset, total)) }
+    }
+
+    fn encode(self, framing: ResponseFraming, http10: bool) -> Buffer! {
+        let { status, content_type, allow, range } = self;
+        let wire = header_fields(status, content_type, framing, http10);
+        let wire = if allow.is_empty() { wire }
+            else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
+        let wire = match range {
+            Some(info) => {
+                let (offset, total) = info;
+                encode_range(wire, status, offset, total, framing)
+            },
+            None => wire,
+        };
+        wire.push_static("\r\n")
+    }
+}
+
+struct StreamBody! {
+    context: *u8,
+    start: unsafe fn(*u8, *u8, ResponseHead, bool, bool) -> i32,
+    release: unsafe fn(*u8) -> (),
+}
+
+impl StreamBody! {
+    /// Starts the body on the live host that owns this response.
+    unsafe fn send(self, host: *u8, response: ResponseHead, head: bool, http10: bool) -> i32 {
+        let { context, start, release } = self;
+        unsafe start(context, host, response, head, http10)
+    }
+
+    fn destroy(self) {
+        let { context, start, release } = self;
+        unsafe release(context);
+    }
+}
+
+exposed enum ResponseBody! { Buffered(Buffer!), Streamed(StreamBody!) }
+
+struct Response! { head: ResponseHead, body: ResponseBody! }
+
+impl Response! {
+    /// Both callbacks consume the same owned context. The release callback
+    /// handles a response discarded before it starts.
+    unsafe fn from_stream(head: ResponseHead, context: *u8,
+        start: unsafe fn(*u8, *u8, ResponseHead, bool, bool) -> i32, release: unsafe fn(*u8) -> ()) -> Response! {
+        Response!.{ head, body: ResponseBody!::Streamed.(StreamBody!.{ context, start, release }) }
+    }
+
+    fn into_parts(self) -> (ResponseHead, ResponseBody!) {
+        let { head, body } = self;
+        (head, body)
+    }
 }
 
 fn reason(status: u16) -> Slice[u8, 'static] {
@@ -132,8 +196,11 @@ fn reason(status: u16) -> Slice[u8, 'static] {
 
 impl Response! {
     fn destroy(self) {
-        let { status, content_type, allow, body } = self;
-        body.destroy();
+        let { head, body } = self;
+        match body {
+            Buffered(bytes) => bytes.destroy(),
+            Streamed(stream) => stream.destroy(),
+        }
     }
 
     fn ok(body: Buffer!) -> Response! {
@@ -141,56 +208,29 @@ impl Response! {
     }
 
     fn bytes(body: Buffer!, content_type: Slice[u8, 'static]) -> Response! {
-        Response!.{ status: 200, content_type, allow: "", body }
+        Response!.{ head: ResponseHead::new(200, content_type), body: ResponseBody!::Buffered.(body) }
     }
 
     fn text(status: u16, text: Slice[u8, 'static]) -> Response! {
         Response!.{
-            status, content_type: "text/plain; charset=utf-8", allow: "",
-            body: Buffer!::new().push_static(text),
+            head: ResponseHead::new(status, "text/plain; charset=utf-8"),
+            body: ResponseBody!::Buffered.(Buffer!::new().push_static(text)),
         }
     }
 
     fn method_not_allowed(allow: Slice[u8, 'static]) -> Response! {
-        let { status, content_type, allow: empty, body } =
-            Response!::text(405u16, "Method Not Allowed\n");
-        Response!.{ status, content_type, allow, body }
+        let { head, body } = Response!::text(405, "Method Not Allowed\n");
+        let { status, content_type, allow: previous, range } = head;
+        Response!.{ head: ResponseHead.{ status, content_type, allow, range }, body }
     }
 
     fn rejected(status: u16) -> Response! {
-        Response!.{
-            status, content_type: "text/plain; charset=utf-8", allow: "",
-            body: Buffer!::new().push_static(reason(status)).push_static("\n"),
-        }
+        let body = Buffer!::new().push_static(reason(status)).push_static("\n");
+        Response!.{ head: ResponseHead::new(status, "text/plain; charset=utf-8"), body: ResponseBody!::Buffered.(body) }
     }
-
-    fn encode(self, head: bool, http10: bool) -> Buffer! {
-        let { status, content_type, allow, body } = self;
-        let length = &body.len();
-        let wire = encode_headers(status, content_type, allow, length as u64, http10);
-        if head {
-            body.destroy();
-            wire
-        } else {
-            wire.push_buffer(body)
-        }
-    }
-}
-
-fn encode_headers(status: u16, content_type: Slice[u8, 'static], allow: Slice[u8, 'static],
-    length: u64, http10: bool) -> Buffer! {
-    let wire = header_fields(status, content_type, ResponseFraming::Fixed.(length), http10);
-    let wire = if allow.is_empty() { wire }
-        else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
-    wire.push_static("\r\n")
 }
 
 exposed enum ResponseFraming { Fixed(u64), Chunked, CloseDelimited }
-
-fn encode_stream_headers(status: u16, content_type: Slice[u8, 'static],
-    framing: ResponseFraming, http10: bool) -> Buffer! {
-    header_fields(status, content_type, framing, http10).push_static("\r\n")
-}
 
 fn push_hex(wire: Buffer!, value: usize) -> Buffer! {
     let wire = if value >= 16 { push_hex(wire, value / 16) } else { wire };
@@ -267,19 +307,16 @@ fn select_file_range(&access: C, header: Span['k], total: u64) -> (u16, u64, u64
     }
 }
 
-fn encode_file_headers(status: u16, content_type: Slice[u8, 'static], offset: u64,
-    length: u64, total: u64, http10: bool) -> Buffer! {
-    let content_type = if status == 416 { "text/plain; charset=utf-8" } else { content_type };
-    let wire = header_fields(status, content_type, ResponseFraming::Fixed.(length), http10)
-        .push_static("Accept-Ranges: bytes\r\n");
-    let wire = match status {
-        206 => wire.push_static("Content-Range: bytes ")
+fn encode_range(wire: Buffer!, status: u16, offset: u64, total: u64, framing: ResponseFraming) -> Buffer! {
+    let wire = wire.push_static("Accept-Ranges: bytes\r\n");
+    if status == 416 { return wire.push_static("Content-Range: bytes */").push_u64(total).push_static("\r\n"); }
+    if status != 206 { return wire; }
+    match framing {
+        Fixed(length) => wire.push_static("Content-Range: bytes ")
             .push_u64(offset).push_static("-").push_u64(offset + length - 1)
             .push_static("/").push_u64(total).push_static("\r\n"),
-        416 => wire.push_static("Content-Range: bytes */").push_u64(total).push_static("\r\n"),
         _ => wire,
-    };
-    wire.push_static("\r\n")
+    }
 }
 
 fn header_fields(status: u16, content_type: Slice[u8, 'static], framing: ResponseFraming, http10: bool) -> Buffer! {
