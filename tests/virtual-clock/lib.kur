@@ -40,11 +40,11 @@ fn check_skipped_handoffs() -> bool {
 
     let plan = sleep(Duration::from_nanos(10))
         .map(|status| (Tracked!.{ discards: joined_output }, status))
-        .then_state(Tracked!.{ discards: first_state }, |state, output| -> Option[Sleep!] {
+        .then_owned(Tracked!.{ discards: first_state }, |state, output| -> Option[Sleep!] {
             (state, output).discard();
             trap()
         })
-        .then_state(Tracked!.{ discards: later_state }, |state, output| -> Option[Sleep!] {
+        .then_owned(Tracked!.{ discards: later_state }, |state, output| -> Option[Sleep!] {
             (state, output).discard();
             trap()
         });

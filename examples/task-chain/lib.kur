@@ -44,7 +44,7 @@ fn check_early_end(budget: Option[Duration]) {
     let bytes = Buffer!::new();
     let first = sleep(delay).map(|status| (bytes, status));
     let plan = first
-        .then_owned(Buffer!::new(), |state, prior| {
+        .then_owned_with(Buffer!::new(), |state, prior| {
             if !cancelled {
                 stop(state, prior);
                 return Option::None;
@@ -52,7 +52,7 @@ fn check_early_end(budget: Option[Duration]) {
             let bytes = append(state, prior);
             Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
         }, discard)
-        .then_owned(Buffer!::new(), |state, prior| {
+        .then_owned_with(Buffer!::new(), |state, prior| {
             let bytes = append(state, prior);
             Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
         }, discard);
@@ -67,7 +67,7 @@ fn check_chain(budget: Option[Duration], should_finish: bool) {
     let bytes = Buffer!::new().push_static("first");
     let first = sleep(Duration::from_millis(65)).map(|status| (bytes, status));
     let plan = first
-        .then_state(Buffer!::new().push_static("second"), |state, prior| {
+        .then_owned(Buffer!::new().push_static("second"), |state, prior| {
             let bytes = append(state, prior);
             Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
         });

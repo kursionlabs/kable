@@ -67,7 +67,7 @@ fn close_session(connection: Connection!, session: Session!) -> Action! {
 }
 
 fn read_line(connection: Connection!, session: Session!) -> Action! {
-    connection.next_within(Duration::from_secs(1)).defer_tcp_owned(session, |session, result| {
+    connection.next_within(Duration::from_secs(1)).defer_tcp_owned_with(session, |session, result| {
         let (connection, outcome) = result;
         let bytes = match outcome {
             StreamOutcome::Item(bytes) => bytes,
@@ -103,7 +103,7 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
             return connection.close();
         },
     };
-    connection.send(complete).defer_tcp_state(Session!::new(tail), |session, result| {
+    connection.send(complete).defer_tcp_owned(Session!::new(tail), |session, result| {
         let (connection, status) = result;
         match status {
             Completion::Ready => read_line(connection, session),

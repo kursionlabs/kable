@@ -247,7 +247,7 @@ fn discard_expired(state: Buffer!, output: Option[Buffer!]) {
 
 fn check_reported_deadline() -> bool {
     let stage = ExpiredStage!.{ output: Buffer!::new().push_static("output") };
-    let plan = stage.then_owned(Buffer!::new().push_static("state"),
+    let plan = stage.then_owned_with(Buffer!::new().push_static("state"),
         |state, output| unexpected_resume(state, output), discard_expired);
     let engine = EarlyDeadline.{};
     match drive_sequence_until(plan, &engine, Option::Some.(Duration::from_secs(1))) {

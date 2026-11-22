@@ -1,7 +1,7 @@
 //! The linear server owns the event loop and its handler until shutdown joins
 //! every connection. Native callbacks borrow their arguments for one call.
 use async::{OpenedFile!, Scope!};
-use async::host::{HostedPlan!, discard_owned, prepare_handoff};
+use async::host::{HostedPlan!, prepare_handoff};
 use http::{Method, Request!, RequestHead, Response!, encode_file_headers, select_file_range, validate_request_head};
 use package::{file_transfer, static_files};
 use std::heap::HeapAllocator;
@@ -13,7 +13,7 @@ use std::ptr::is_null;
 use std::raw::Span;
 use std::slice::Slice;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Discard, PlanOutput, discard, sleep};
+use task::{Completion, DeadlineStatus, Discard, PlanOutput, discard, discard_owned, sleep};
 use task::driver::Plan;
 use tcp::host;
 use thunk::Thunk!;
@@ -111,20 +111,20 @@ impl Task {
     forall Env where Copy[Env].
     fn respond_with(self, respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ())
         -> ReplyBuilder![Task, fn(Output) -> (), Output, (closure[Env](Output) -> Action!,)] {
-        self.respond_with_owned(discard, |cleanup, outcome| respond(outcome), discard_reply[Output])
+        self.respond_owned_with(discard, |cleanup, outcome| respond(outcome), discard_reply[Output])
     }
 
     /// Builds a reply that discards both state and outcome if the callback is skipped.
     forall State, Env where Copy[Env], Discard[State], Discard[Output].
     fn respond_owned(self, state: State, respond: closure[Env](State, Output) -> Action!)
         -> ReplyBuilder![Task, State, Output, Env] {
-        self.respond_with_owned(state, respond, discard_owned[State, Output])
+        self.respond_owned_with(state, respond, discard_owned[State, Output])
     }
 
     /// Transfers state and the joined outcome to `respond` or `discard`.
     /// Put owned values in `state` and capture copyable configuration in `respond`.
     forall State, Env where Copy[Env].
-    fn respond_with_owned(self, state: State, respond: closure[Env](State, Output) -> Action!,
+    fn respond_owned_with(self, state: State, respond: closure[Env](State, Output) -> Action!,
         discard: fn(State, Output) -> ()) -> ReplyBuilder![Task, State, Output, Env] {
         ReplyBuilder!.{ task: self, handoff: thunk::defer(state, respond, discard), timeout: Option::None }
     }

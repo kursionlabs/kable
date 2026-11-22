@@ -169,7 +169,7 @@ any buffer it received. [Parallel file handler](examples/http-file/file_join.kur
 
 `/file-sequence` reads `example.txt`, then chooses the footer from its contents.
 The second read runs under the original request deadline. The handler passes the
-first buffer as state to `respond_with_owned(state, respond, discard)`. After
+first buffer as state to `respond_owned_with(state, respond, discard)`. After
 the footer read joins, the builder hands the first buffer and the footer outcome
 to the reply callback or to the cleanup function if the request ends or a
 local deadline wins. `respond_owned(state, respond)` uses `Discard` for
@@ -281,8 +281,8 @@ which returns another `Completion`. Timeout, cancellation, and failure pass thro
 with the callback skipped, so its captures must be copyable.
 
 `task::Discard` re-exports the trait from `thunk`. `Buffer!` releases its
-allocation. A `Completion` or `StreamOutcome` discards any value it produced,
-and pairs and triples discard their members in order.
+allocation. An `Option`, `Completion`, or `StreamOutcome` discards any value
+it contains, and pairs and triples discard their members in order.
 Use `task::discard` as a cleanup callback, or `outcome.discard_with(release)`
 when the caller supplies the release function.
 
@@ -383,11 +383,11 @@ and returns `Some(next)` to start another stage or `None` to stop. Both
 the closure captures and the previous outcome must be copyable because
 the handoff can be skipped.
 
-Use `.then_state(state, resume)` for a handoff with owned values that
+Use `.then_owned(state, resume)` for a handoff with owned values that
 implement `Discard`. The closure takes ownership of the state and the
 outcome after the previous stage joins. If the handoff is skipped, it
 discards the state and any available prior outcome. Use
-`.then_owned(state, resume, cancel)` to supply a cleanup function that
+`.then_owned_with(state, resume, cancel)` to supply a cleanup function that
 receives the state and an optional outcome. The `resume` closure’s captures
 must be copyable.
 
@@ -507,8 +507,8 @@ pending bytes and tracks whether it has retried an idle read. The read
 continuation uses `Resumable` to feed each chunk into the session. A chunk
 resets the retry flag. When the session returns complete lines, the write
 continuation holds the trailing bytes in a fresh session until the write
-joins. The read uses `.defer_tcp_owned(state, resume, discard)` to log a
-discarded read. The write uses `.defer_tcp_state(state, resume)` to clean up
+joins. The read uses `.defer_tcp_owned_with(state, resume, discard)` to log
+a discarded read. The write uses `.defer_tcp_owned(state, resume)` to clean up
 its state and outcome through `Discard`. An active continuation receives the
 state and the `(connection, outcome)` pair, including after a local timeout.
 On shutdown, socket closure, or submission rejection, the listener closes

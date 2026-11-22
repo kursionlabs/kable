@@ -24,7 +24,7 @@ fn read_footer(outcome: Completion[Buffer!]) -> Action! {
     let path = footer_path(&first);
     let access = StaticRead::new();
     read_file(&access, path, FILE_LIMIT)
-        .respond_with_owned(first, |first, footer| append_file(first, footer).reply(), discard_footer)
+        .respond_owned_with(first, |first, footer| append_file(first, footer).reply(), discard_footer)
         .reply()
 }
 

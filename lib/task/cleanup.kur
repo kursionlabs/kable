@@ -1,13 +1,30 @@
-//! Disposal for buffers and task outcomes.
+//! Disposal for buffers, optional values, and task outcomes.
 use package::{Completion, StreamOutcome};
 use std::buffer::Buffer!;
+use std::option::Option;
 use thunk::{Discard, discard};
 
 export Discard;
 export discard;
 
+/// Function form for cleanup callbacks that receive owned state and context.
+forall State, Context where Discard[State], Discard[Context].
+fn discard_owned(state: State, context: Context) {
+    (state, context).discard();
+}
+
 instance Discard[Buffer!] {
     fn discard(value: Buffer!) { value.destroy(); }
+}
+
+forall T where Discard[T].
+instance Discard[Option[T]] {
+    fn discard(value: Option[T]) {
+        match value {
+            Some(item) => item.discard(),
+            None => (),
+        }
+    }
 }
 
 forall T where Discard[T].

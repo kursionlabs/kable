@@ -138,7 +138,7 @@ fn check_sequence_loop(error: i32) -> bool {
     let immediate = Duration::from_nanos(0);
     let bytes = Buffer!::new().push_static("owned");
     let plan = sleep(immediate).map(|status| (bytes, status))
-        .then_owned((), |unit, prior| Option::Some.(sleep(immediate).map(|status| (prior, status))), discard_sequence);
+        .then_owned_with((), |unit, prior| Option::Some.(sleep(immediate).map(|status| (prior, status))), discard_sequence);
     unsafe kable_test_loop_begin(error);
     let result = run_sequence(plan, Option::None);
     let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
@@ -201,7 +201,7 @@ fn check_runner_sequence() -> bool {
         let before = &runner.run(sleep(immediate));
         let bytes = Buffer!::new().push_static("output");
         let first = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
-        let chain = first.then_owned((Buffer!::new().push_static("state"), cleaned), |state, prior| {
+        let chain = first.then_owned_with((Buffer!::new().push_static("state"), cleaned), |state, prior| {
             let (state, cleaned) = state;
             state.destroy();
             let (bytes, status) = prior;
@@ -234,7 +234,7 @@ fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Dur
     let bytes = Buffer!::new().push_static("owned");
     let owned = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
     let first = join(owned, FailStart.{ stage_nanos: 0 });
-    let plan = first.then_owned(cleaned, |cleaned, prior| -> Option[Sleep!] {
+    let plan = first.then_owned_with(cleaned, |cleaned, prior| -> Option[Sleep!] {
         let ((bytes, timer), unit, joined) = prior;
         bytes.destroy();
         trap()
