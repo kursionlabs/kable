@@ -29,7 +29,7 @@ fn serve_from_cwd(request: Request!) -> Action! {
     let file = open_file_beneath_cwd(&access, bytes);
     restore.restore(access).destroy();
 
-    file.respond_with(|outcome| opened_file_reply(outcome, content_type), discard_file)
+    file.respond(|outcome| opened_file_reply(outcome, content_type))
         .within(Duration::from_secs(2))
         .reply()
 }
@@ -47,10 +47,6 @@ fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, '
         },
     };
     Response!::rejected(status).reply()
-}
-
-fn discard_file(outcome: Completion[OpenedFile!]) {
-    outcome.discard_with(OpenedFile!::close);
 }
 
 fn hex(byte: u8) -> Option[u8] {

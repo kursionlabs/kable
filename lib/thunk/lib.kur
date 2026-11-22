@@ -1,5 +1,38 @@
 //! Delayed calls and resumable computations with explicit ownership.
 
+/// Releases an owned value when its caller stops using it.
+forall T.
+trait Discard {
+    fn discard(value: T) -> ();
+}
+
+/// Function form of `.discard()` for callbacks.
+forall T where Discard[T].
+fn discard(value: T) { value.discard(); }
+
+instance Discard[()] {
+    fn discard(value: ()) {}
+}
+
+forall A, B where Discard[A], Discard[B].
+instance Discard[(A, B)] {
+    fn discard(value: (A, B)) {
+        let (first, second) = value;
+        first.discard();
+        second.discard();
+    }
+}
+
+forall A, B, C where Discard[A], Discard[B], Discard[C].
+instance Discard[(A, B, C)] {
+    fn discard(value: (A, B, C)) {
+        let (first, second, third) = value;
+        first.discard();
+        second.discard();
+        third.discard();
+    }
+}
+
 /// An owned call that runs once when resumed.
 forall State, Input, Output, Env, Cleanup.
 struct Thunk! {
@@ -63,8 +96,6 @@ forall State -> Input, Output.
 trait Resumable {
     /// Runs one step and transfers ownership of the result to the caller.
     fn resume(state: State, input: Input) -> Step[State, Output];
-    /// Releases the state when the caller stops driving it.
-    fn discard(state: State) -> ();
 }
 
 /// An owned computation paused until its caller supplies the next input.
@@ -92,7 +123,10 @@ instance Resumable[Suspension![State, Input, Output, Env] -> Input, Output] {
             Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
         }
     }
+}
 
+forall State, Input, Output, Env where Copy[Env].
+instance Discard[Suspension![State, Input, Output, Env]] {
     fn discard(suspension: Suspension![State, Input, Output, Env]) {
         let { state, step, cleanup } = suspension;
         cleanup(state);

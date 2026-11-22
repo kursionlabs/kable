@@ -194,15 +194,15 @@ input on `resume(input)`. For an abandoned call, `discard_with(context)`
 passes the state and context to cleanup. Task sequences use the context to
 return any prior result to the skipped handoff's cleanup callback.
 
-Import `thunk::Resumable` to call `resume(input)` and `discard()` on a
-suspended computation. Each resume consumes the current state and returns
-`Step::Done(output)` or `Step::Suspended(next)`. A named state can implement
-`Resumable[State -> Input, Output]` directly.
+Import `thunk::Resumable` to call `resume(input)`. Each resume consumes the
+current state and returns `Step::Done(output)` or `Step::Suspended(next)`.
+Import `thunk::Discard` to release abandoned state with `discard()`. A
+named state can implement both traits directly.
 
 `thunk::suspend(state, step, cleanup)` builds a `Suspension!` that implements
-`Resumable`. The step supplies the updated state and the library packages it
-with the same step and cleanup functions. Put owned values in `state` and
-capture copyable configuration in `evaluate` or `step`.
+`Resumable` and `Discard`. The step supplies the updated state and the
+library packages it with the same step and cleanup functions. Put owned
+values in `state` and capture copyable configuration in `evaluate` or `step`.
 
 The message example reads one line per resume until it sees a line containing
 only `.`. EOF before the dot discards the partial message. `--check` validates
@@ -277,9 +277,9 @@ a missing or unexpected driver result.
 which returns another `Completion`. Timeout, cancellation, and failure pass through
 with the callback skipped, so its captures must be copyable.
 
-Import `task::Discard` to consume an abandoned value with `value.discard()`.
-`Buffer!` releases its allocation. A `Completion` or `StreamOutcome` discards
-any value it produced, and pairs and triples discard their members in order.
+`task::Discard` re-exports the trait from `thunk`. `Buffer!` releases its
+allocation. A `Completion` or `StreamOutcome` discards any value it produced,
+and pairs and triples discard their members in order.
 Use `task::discard` as a cleanup callback, or `outcome.discard_with(release)`
 when the caller supplies the release function.
 

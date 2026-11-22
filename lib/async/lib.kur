@@ -11,7 +11,7 @@ use std::option::{Option, Result};
 use std::ptr::{is_null, null};
 use std::slice::ReadBytes;
 use std::time::Duration;
-use task::{Completion, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome};
+use task::{Completion, Discard, Failure, Map!, PlanOutput, Sink, Stream, StreamOutcome};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
@@ -185,6 +185,10 @@ impl OpenedFile! {
         let { fd, length } = self;
         (fd, length)
     }
+}
+
+instance Discard[OpenedFile!] {
+    fn discard(file: OpenedFile!) { file.close(); }
 }
 
 impl FileChunks! {

@@ -3,20 +3,15 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
-use task::{Completion, Discard, PlanOutput, Sink, Stream, StreamOutcome};
+use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
 use tcp::{Action!, Connection!, Listener!};
-use thunk::{Resumable, Step};
+use thunk::{Discard, Resumable, Step};
 
 struct Session! { pending: Buffer!, retried: bool }
 
 impl Session! {
     fn new(pending: Buffer!) -> Session! {
         Session!.{ pending, retried: false }
-    }
-
-    fn release(self) {
-        let { pending, retried } = self;
-        discard_line(pending);
     }
 }
 
@@ -57,16 +52,17 @@ instance Resumable[Session! -> Buffer!, Lines!] {
             },
         }
     }
-
-    fn discard(session: Session!) { session.release(); }
 }
 
 instance Discard[Session!] {
-    fn discard(session: Session!) { session.release(); }
+    fn discard(session: Session!) {
+        let { pending, retried } = session;
+        discard_line(pending);
+    }
 }
 
 fn close_session(connection: Connection!, session: Session!) -> Action! {
-    session.release();
+    session.discard();
     connection.close()
 }
 
@@ -86,9 +82,9 @@ fn read_line(connection: Connection!, session: Session!) -> Action! {
 }
 
 fn discard_read(session: Session!, outcome: StreamOutcome[Buffer!]) {
-    outcome.discard_with(Buffer!::destroy);
+    outcome.discard();
     eprint_buffer(f"Discarded a read for a closing session.\n");
-    session.release();
+    session.discard();
 }
 
 fn retry_read(connection: Connection!, session: Session!) -> Action! {

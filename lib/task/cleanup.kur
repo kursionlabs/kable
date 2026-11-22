@@ -1,19 +1,10 @@
-//! Explicit disposal for owned values and composed outcomes.
+//! Disposal for buffers and task outcomes.
 use package::{Completion, StreamOutcome};
 use std::buffer::Buffer!;
+use thunk::{Discard, discard};
 
-forall T.
-trait Discard {
-    fn discard(value: T) -> ();
-}
-
-/// Function form of `.discard()` for callbacks.
-forall T where Discard[T].
-fn discard(value: T) { value.discard(); }
-
-instance Discard[()] {
-    fn discard(value: ()) {}
-}
+export Discard;
+export discard;
 
 instance Discard[Buffer!] {
     fn discard(value: Buffer!) { value.destroy(); }
@@ -27,23 +18,4 @@ instance Discard[Completion[T]] {
 forall T where Discard[T].
 instance Discard[StreamOutcome[T]] {
     fn discard(value: StreamOutcome[T]) { value.discard_with(discard[T]); }
-}
-
-forall A, B where Discard[A], Discard[B].
-instance Discard[(A, B)] {
-    fn discard(value: (A, B)) {
-        let (first, second) = value;
-        first.discard();
-        second.discard();
-    }
-}
-
-forall A, B, C where Discard[A], Discard[B], Discard[C].
-instance Discard[(A, B, C)] {
-    fn discard(value: (A, B, C)) {
-        let (first, second, third) = value;
-        first.discard();
-        second.discard();
-        third.discard();
-    }
 }
