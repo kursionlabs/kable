@@ -1,6 +1,6 @@
 //! Serves regular files beneath the process working directory.
 use async::{FileErrorKind, OpenedFile!, open_file_beneath_cwd};
-use http::{Method, Request!, Response!, encode_file_headers, select_file_range};
+use http::{Method, Request!, Response!, ResponseFraming, encode_file_headers, select_file_range};
 use package::{Action!, kable_client_request, kable_range_header, response_stream};
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
@@ -61,7 +61,7 @@ fn file_reply(file: OpenedFile!, content_type: Slice[u8, 'static]) -> Action! {
         let (status, start, count) = select_file_range(&access, range, total);
         access.retire();
         let headers = encode_file_headers(status, content_type, start, count, total, http10);
-        (file.chunks(start, count), count, headers)
+        (file.chunks(start, count), ResponseFraming::Fixed.(count), headers)
     }).reply()
 }
 

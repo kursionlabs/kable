@@ -68,24 +68,10 @@ int32_t kable_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
     if (key) {
         if (key != client->key) return UV_EINVAL;
         kable_scope_set_host(scope, raw);
-        mode = KABLE_TCP_RECEIVE;
     }
-    return kable_tcp_schedule_timed(client->connection, mode,
+    if (key || !client->request.headers_done) mode = KABLE_TCP_RECEIVE;
+    return kable_tcp_schedule_hosted(client->connection, mode,
         scope, root, plan, finish, flags, raw, client->deadline);
-}
-
-int32_t kable_receive_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t flags) {
-    (void)flags;
-    Client *client = (Client *)raw;
-    return kable_tcp_schedule_timed(client->connection, KABLE_TCP_RECEIVE,
-        scope, root, plan, finish, 0, raw, client->deadline);
-}
-
-int32_t kable_response_schedule(uint8_t *raw, uint8_t *scope, size_t root, uint8_t *plan,
-    KablePlanFinish finish, uint8_t flags) {
-    if (kable_scope_host_key(scope)) return kable_schedule(raw, scope, root, plan, finish, flags);
-    return kable_tcp_schedule(((Client *)raw)->connection, scope, root, plan, finish, flags);
 }
 
 static int32_t accept_request(uint8_t *context, uint8_t *connection) {

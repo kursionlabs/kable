@@ -55,7 +55,8 @@ each socket write completes. `file.chunks(offset, length)` creates an
 owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
 joins. Only a nonempty chunk advances the cursor. The server uses the same
-response writer as `Response!::stream(status, content_type, length, source).reply()`.
+response writer as `Response!::stream(status, content_type, length, source).reply()`,
+where `length` is an `Option[u64]`.
 It sends the headers, then pulls and sends one body chunk at a time. The
 writer releases the source after the final write joins or when a read or
 write is interrupted. Early EOF or a chunk that exceeds the declared length
@@ -121,11 +122,13 @@ implements `task::Stream` and yields decoded byte chunks. Use
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
 
-`body.content_length()` exposes the original declared length. The HTTP
-stream test fixture uses it to pass a fixed-length request body straight to
-`Response!::stream(...).reply()`. The connection alternates one pull with one
-joined write. The client reads as it uploads, and a truncated upload ends the
-response early after its headers have been sent.
+`body.content_length()` exposes the original declared length as an option.
+The HTTP stream test fixture passes the body and that option straight to
+`Response!::stream(...).reply()`. A known length sets `Content-Length`.
+An unknown length uses chunked encoding for HTTP/1.1 and ends at connection
+close for HTTP/1.0. The connection alternates one pull with one joined write.
+The client reads as it uploads. For a chunked response, the terminal chunk
+is sent only after a clean EOF from the body stream.
 
 On SIGINT or SIGTERM the server stops accepting, cancels connections still
 reading or waiting on a timer, and lets connections with queued responses

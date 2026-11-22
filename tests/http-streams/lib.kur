@@ -2,6 +2,7 @@ use http::{Body!, Request!, Response!};
 use server::{Action!, Server!};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
+use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
 use task::{Completion, Discard, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, sleep};
@@ -63,20 +64,18 @@ fn serve(request: Request!) -> Action! {
     if &request.path_is("/relay") {
         let { method, target, body } = request;
         target.destroy();
-        match &body.content_length() {
-            Some(length) => return Response!::stream(200, "application/octet-stream", length, body).reply(),
-            None => {
-                body.discard();
-                return Response!::rejected(400).reply();
-            },
-        }
+        let length = &body.content_length();
+        return Response!::stream(200, "application/octet-stream", length, body).reply();
     }
-    let head_only = &request.path_is("/head");
+    let unknown_head = &request.path_is("/unknown-head");
+    let head_only = &request.path_is("/head") || unknown_head;
     let empty = &request.path_is("/empty");
-    let length = if &request.path_is("/short") { 7 }
-        else if &request.path_is("/over") { 5 }
-        else if empty { 0 }
-        else { 6 };
+    let unknown = &request.path_is("/unknown") || unknown_head;
+    let length = if unknown { Option::None }
+        else if &request.path_is("/short") { Option::Some.(7) }
+        else if &request.path_is("/over") { Option::Some.(5) }
+        else if empty { Option::Some.(0) }
+        else { Option::Some.(6) };
     request.destroy();
     let memory = Memory!.{ remaining: 3, may_pull: !head_only && !empty };
     Response!::stream(200, "application/octet-stream", length, memory).reply()

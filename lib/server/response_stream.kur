@@ -1,11 +1,12 @@
-//! Sends a response with a known-length byte stream.
+//! Sends a response from an owned byte stream.
 use async::Scope!;
 use async::host::prepare_hosted;
-use http::{Response!, encode_headers};
-use package::{Action!, kable_client_connection, kable_client_request, kable_release_request, write_wire};
+use http::{Response!, ResponseFraming, encode_chunk, encode_stream_headers};
+use package::{Action!, kable_client_connection, kable_client_request, kable_release_request, submit_request, write_wire};
 use std::buffer::Buffer!;
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
+use std::option::Option;
 use std::slice::Slice;
 use task::{Completion, Discard, Sink, Stream, StreamOutcome};
 use task::driver::Plan;
@@ -14,8 +15,6 @@ use tcp::{Connection!, host};
 const STREAM_IDLE: u64 = 5000;
 
 extern "C" fn kable_client_input_complete(client: *u8) -> u8;
-extern "C" fn kable_response_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
-    finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 
 struct StreamReply! {
     context: *u8,
@@ -40,11 +39,11 @@ instance Discard[StreamReply!] {
 }
 
 forall State, Source, Env.
-struct PendingReply! { state: State, build: closure[Env](State, *u8, bool) -> (Source, u64, Buffer!) }
+struct PendingReply! { state: State, build: closure[Env](State, *u8, bool) -> (Source, ResponseFraming, Buffer!) }
 
 forall State, Source, Read, Env where Copy[Env], Discard[State], Discard[Source],
     Stream[Source -> Read], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-fn prepare(state: State, build: closure[Env](State, *u8, bool) -> (Source, u64, Buffer!)) -> StreamReply! {
+fn prepare(state: State, build: closure[Env](State, *u8, bool) -> (Source, ResponseFraming, Buffer!)) -> StreamReply! {
     let context = HeapAllocator::alloc(sizeof[PendingReply![State, Source, Env]]()).into_raw();
     unsafe *(unsafe (context as *PendingReply![State, Source, Env])) = PendingReply!.{ state, build };
     StreamReply!.{ context, start: start[State, Source, Read, Env], release: release[State, Source, Env] }
@@ -64,22 +63,30 @@ unsafe fn release(context: *u8) {
 }
 
 impl Response! {
-    /// Replies with exactly the declared number of bytes from an owned source.
+    /// Sends a known-length or EOF-terminated response from an owned source.
     forall Source, Read where Discard[Source], Stream[Source -> Read],
         Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-    fn stream(status: u16, content_type: Slice[u8, 'static], length: u64, source: Source) -> StreamReply! {
+    fn stream(status: u16, content_type: Slice[u8, 'static], length: Option[u64], source: Source) -> StreamReply! {
         prepare(source, |source, client, http10| {
-            (source, length, encode_headers(status, content_type, "", length, http10))
+            let framing = match length {
+                Some(length) => ResponseFraming::Fixed.(length),
+                None => if http10 { ResponseFraming::CloseDelimited } else { ResponseFraming::Chunked },
+            };
+            (source, framing, encode_stream_headers(status, content_type, framing, http10))
         })
     }
+}
+
+fn complete(framing: ResponseFraming) -> bool {
+    match framing { Fixed(length) => length == 0, _ => false }
 }
 
 forall State, Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
 unsafe fn start(context: *u8, client: *u8, head: bool, http10: bool) -> i32 {
     let { state, build } = unsafe take[State, Source, Env](context);
-    let (source, length, headers) = build(state, client, http10);
-    if head || length == 0 {
+    let (source, framing, headers) = build(state, client, http10);
+    if head || complete(framing) {
         source.discard();
         return unsafe write_wire(client, headers);
     }
@@ -93,23 +100,22 @@ unsafe fn start(context: *u8, client: *u8, head: bool, http10: bool) -> i32 {
             return error;
         },
     };
-    unsafe write(client, connection, source, length, headers)
+    unsafe write(client, connection, source, framing, headers)
 }
 
 forall Task, Output, Env where Plan[Task, Scope! -> Output].
 unsafe fn submit(client: *u8, task: Task, resume: closure[Env](Output) -> i32) -> i32 {
     let hosted = prepare_hosted(task, |outcome, host, flags| resume(outcome));
-    let submission = unsafe hosted.submit(client, 0, kable_response_schedule);
-    submission.unwrap_or_else(|rejection| rejection.scheduler_error)
+    unsafe submit_request(client, hosted, 0)
 }
 
 forall Source, Read where Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-unsafe fn write(client: *u8, connection: Connection!, source: Source, remaining: u64, bytes: Buffer!) -> i32 {
+unsafe fn write(client: *u8, connection: Connection!, source: Source, framing: ResponseFraming, bytes: Buffer!) -> i32 {
     unsafe submit(client, connection.send(bytes), |result| {
         let (connection, completion) = result;
         match completion {
-            Completion::Ready => unsafe read_next(client, connection, source, remaining),
+            Completion::Ready => unsafe read_next(client, connection, source, framing),
             _ => unsafe finish(client, connection, source, false),
         }
     })
@@ -117,20 +123,33 @@ unsafe fn write(client: *u8, connection: Connection!, source: Source, remaining:
 
 forall Source, Read where Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-unsafe fn read_next(client: *u8, connection: Connection!, source: Source, remaining: u64) -> i32 {
-    if remaining == 0 { return unsafe finish(client, connection, source, true); }
+unsafe fn read_next(client: *u8, connection: Connection!, source: Source, framing: ResponseFraming) -> i32 {
+    if complete(framing) { return unsafe finish(client, connection, source, true); }
     unsafe submit(client, source.next(), |result| {
         let (source, outcome) = result;
         let bytes = match outcome {
             StreamOutcome::Item(bytes) => bytes,
+            Eof => return match framing {
+                Chunked => unsafe write(client, connection, source, ResponseFraming::Fixed.(0),
+                    Buffer!::new().push_static("0\r\n\r\n")),
+                CloseDelimited => unsafe finish(client, connection, source, true),
+                Fixed => unsafe finish(client, connection, source, false),
+            },
             _ => return unsafe finish(client, connection, source, false),
         };
-        let length = &bytes.len() as u64;
-        if length > remaining {
-            bytes.destroy();
-            return unsafe finish(client, connection, source, false);
-        }
-        unsafe write(client, connection, source, remaining - length, bytes)
+        let (framing, bytes) = match framing {
+            Fixed(remaining) => {
+                let length = &bytes.len() as u64;
+                if length > remaining {
+                    bytes.destroy();
+                    return unsafe finish(client, connection, source, false);
+                }
+                (ResponseFraming::Fixed.(remaining - length), bytes)
+            },
+            Chunked => (framing, encode_chunk(bytes)),
+            CloseDelimited => (framing, bytes),
+        };
+        unsafe write(client, connection, source, framing, bytes)
     })
 }
 

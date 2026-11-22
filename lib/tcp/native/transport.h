@@ -43,8 +43,9 @@ typedef enum { KABLE_TCP_RECEIVE, KABLE_TCP_DEFER_REPLY, KABLE_TCP_DEFER_INPUT }
    the flags, plus ACTIVE when the socket can reply. RECEIVE reads its own input
    and permits a timeout reply. Deferred plans suppress replies after the
    deadline. DEFER_REPLY watches the peer and DEFER_INPUT leaves input queued.
-   RECEIVE can also run a body pull between writes of a streamed response. */
-int32_t kable_tcp_schedule_timed(uint8_t *connection, KableTcpTimedPlan mode, uint8_t *scope,
+   During a streamed response, RECEIVE uses the request deadline and other
+   stages run under the stream's idle timer. */
+int32_t kable_tcp_schedule_hosted(uint8_t *connection, KableTcpTimedPlan mode, uint8_t *scope,
     size_t root, uint8_t *plan, KablePlanFinish finish, uint8_t flags, uint8_t *host, uint64_t deadline);
 /* Starts the fixed deadline for a final write, half-close, and drain.
    A read-side EOF still permits the write, and listener shutdown lets it finish. */

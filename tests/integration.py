@@ -1105,7 +1105,63 @@ def check_http_relay(port):
         upload.result(timeout=5)
 
 
-def check_http_streams(binary, directory):
+def check_chunked_relay(port, check_timeout):
+    request = b"POST /relay HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+    chunk = b"abc"
+    wire = b"3\r\n" + chunk + b"\r\n"
+
+    def assert_headers(version, status, headers):
+        assert (version, status, headers[b"transfer-encoding"]) == (b"HTTP/1.1", 200, b"chunked")
+        assert b"content-length" not in headers
+
+    def assert_chunks(stream, expected):
+        received = bytearray()
+        while len(received) < len(expected):
+            size_line = stream.readline()
+            assert size_line.endswith(b"\r\n")
+            size = int(size_line[:-2], 16)
+            assert 0 < size <= len(expected) - len(received)
+            received.extend(stream.read(size))
+            assert stream.read(2) == b"\r\n"
+        assert received == expected
+
+    with connect(port) as client, client.makefile("rb") as stream:
+        client.sendall(request + wire)
+        assert_headers(*read_headers(stream))
+        assert_chunks(stream, chunk)
+        next_chunk = b"0123456789abcdef\x00!"
+        client.sendall(b"12\r\n" + next_chunk + b"\r\n0\r\n\r\n")
+        assert_chunks(stream, next_chunk)
+        assert stream.read() == b"0\r\n\r\n"
+
+    version, status, headers, body = exchange(port, request, b"0\r\n\r\n")
+    assert_headers(version, status, headers)
+    assert body == b"0\r\n\r\n"
+
+    with connect(port) as client, client.makefile("rb") as stream:
+        client.sendall(request + wire)
+        assert_headers(*read_headers(stream))
+        assert_chunks(stream, chunk)
+        client.shutdown(socket.SHUT_WR)
+        assert stream.read() == b"", "truncated input emitted a terminal chunk"
+
+    with connect(port) as client, client.makefile("rb") as stream:
+        client.sendall(request + wire)
+        assert_headers(*read_headers(stream))
+        assert_chunks(stream, chunk)
+        client.sendall(b"invalid\r\n")
+        assert stream.read() == b"", "malformed input emitted a terminal chunk"
+
+    if check_timeout:
+        with connect(port) as client, client.makefile("rb") as stream:
+            client.sendall(request + wire)
+            assert_headers(*read_headers(stream))
+            assert_chunks(stream, chunk)
+            assert select.select([client], [], [], 7)[0], "stalled relay did not close"
+            assert stream.read() == b"", "timed-out input emitted a terminal chunk"
+
+
+def check_http_streams(binary, directory, check_timeout=False):
     library = build_stream_write_order(directory)
     env = os.environ | {"LD_PRELOAD": str(library), "KABLE_TEST_RELAY_BACKPRESSURE": "1"}
     with subprocess.Popen([binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, env=env) as process:
@@ -1125,7 +1181,19 @@ def check_http_streams(binary, directory):
                     b"HTTP/1.1", 200, length, body
                 )
 
+            version, status, headers, sent = request(b"/unknown")
+            assert (version, status, headers[b"transfer-encoding"], sent) == (
+                b"HTTP/1.1", 200, b"chunked", b"3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n"
+            )
+            assert b"content-length" not in headers
+            version, status, headers, sent = request(b"/unknown-head", b"HEAD")
+            assert (version, status, headers[b"transfer-encoding"], sent) == (b"HTTP/1.1", 200, b"chunked", b"")
+            version, status, headers, sent = exchange(port, b"GET /unknown HTTP/1.0\r\n\r\n")
+            assert (version, status, sent) == (b"HTTP/1.0", 200, b"abcdef")
+            assert b"content-length" not in headers and b"transfer-encoding" not in headers
+
             check_http_relay(port)
+            check_chunked_relay(port, check_timeout)
 
             headers = b"POST /pull HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
             with connect(port) as client:
@@ -1197,7 +1265,8 @@ def main():
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
             check_hello_server(hello)
-            check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"), Path(directory))
+            check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"),
+                               Path(directory), args.check_timeout)
             check_static_files([str(static_files)], Path(directory), args.check_timeout)
             check_async_read([str(async_read)], Path(directory))
             check_file_copy([str(file_copy)], Path(directory))

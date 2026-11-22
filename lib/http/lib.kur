@@ -179,10 +179,30 @@ impl Response! {
 
 fn encode_headers(status: u16, content_type: Slice[u8, 'static], allow: Slice[u8, 'static],
     length: u64, http10: bool) -> Buffer! {
-    let wire = header_fields(status, content_type, length, http10);
+    let wire = header_fields(status, content_type, ResponseFraming::Fixed.(length), http10);
     let wire = if allow.is_empty() { wire }
         else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
     wire.push_static("\r\n")
+}
+
+exposed enum ResponseFraming { Fixed(u64), Chunked, CloseDelimited }
+
+fn encode_stream_headers(status: u16, content_type: Slice[u8, 'static],
+    framing: ResponseFraming, http10: bool) -> Buffer! {
+    header_fields(status, content_type, framing, http10).push_static("\r\n")
+}
+
+fn push_hex(wire: Buffer!, value: usize) -> Buffer! {
+    let wire = if value >= 16 { push_hex(wire, value / 16) } else { wire };
+    let digit = (value % 16) as u8;
+    wire.push_byte(if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) })
+}
+
+/// Frames a nonempty payload. Only clean EOF emits the terminal chunk.
+fn encode_chunk(bytes: Buffer!) -> Buffer! {
+    let length = &bytes.len();
+    if length == 0 { return bytes; }
+    push_hex(Buffer!::new(), length).push_static("\r\n").push_buffer(bytes).push_static("\r\n")
 }
 
 fn header_space(byte: u8) -> bool { byte == b' ' || byte == b'\t' }
@@ -250,7 +270,7 @@ fn select_file_range(&access: C, header: Span['k], total: u64) -> (u16, u64, u64
 fn encode_file_headers(status: u16, content_type: Slice[u8, 'static], offset: u64,
     length: u64, total: u64, http10: bool) -> Buffer! {
     let content_type = if status == 416 { "text/plain; charset=utf-8" } else { content_type };
-    let wire = header_fields(status, content_type, length, http10)
+    let wire = header_fields(status, content_type, ResponseFraming::Fixed.(length), http10)
         .push_static("Accept-Ranges: bytes\r\n");
     let wire = match status {
         206 => wire.push_static("Content-Range: bytes ")
@@ -262,11 +282,15 @@ fn encode_file_headers(status: u16, content_type: Slice[u8, 'static], offset: u6
     wire.push_static("\r\n")
 }
 
-fn header_fields(status: u16, content_type: Slice[u8, 'static], length: u64, http10: bool) -> Buffer! {
+fn header_fields(status: u16, content_type: Slice[u8, 'static], framing: ResponseFraming, http10: bool) -> Buffer! {
     let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
-    Buffer!::new().push_static(version)
+    let wire = Buffer!::new().push_static(version)
         .push_usize(status as usize).push_static(" ").push_static(reason(status))
-        .push_static("\r\nContent-Type: ").push_static(content_type)
-        .push_static("\r\nContent-Length: ").push_u64(length)
-        .push_static("\r\nConnection: close\r\n")
+        .push_static("\r\nContent-Type: ").push_static(content_type).push_static("\r\n");
+    let wire = match framing {
+        Fixed(length) => wire.push_static("Content-Length: ").push_u64(length).push_static("\r\n"),
+        Chunked => wire.push_static("Transfer-Encoding: chunked\r\n"),
+        CloseDelimited => wire,
+    };
+    wire.push_static("Connection: close\r\n")
 }
