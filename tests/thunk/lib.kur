@@ -2,12 +2,12 @@ use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::Option;
 use std::process::trap;
-use thunk::{Discard, Resumable, Step, defer, delay, suspend};
+use thunk::{Discard, Resumable, Step, defer, delay_with, suspend_with};
 
 fn check_force() -> bool {
     let calls = unsafe alloca[usize]();
     unsafe *calls = 0;
-    let work = delay(Buffer!::new().push_static("owned"), |bytes| {
+    let work = delay_with(Buffer!::new().push_static("owned"), |bytes| {
         unsafe *calls = (unsafe *calls) + 1;
         bytes
     }, Buffer!::destroy);
@@ -27,7 +27,7 @@ fn discard_line(state: (Buffer!, *usize)) {
 fn check_discard() -> bool {
     let released = unsafe alloca[usize]();
     unsafe *released = 0;
-    let work = delay((Buffer!::new().push_static("delayed"), released), |state| -> () {
+    let work = delay_with((Buffer!::new().push_static("delayed"), released), |state| -> () {
         discard_line(state);
         trap();
     }, discard_line);
@@ -72,7 +72,7 @@ fn check_resume(finish: bool) -> bool {
     let released = unsafe alloca[usize]();
     unsafe *released = 0;
     let delimiter = b'\n';
-    let line = suspend((Buffer!::new(), released),
+    let line = suspend_with((Buffer!::new(), released),
         |state, byte| read_byte(state, byte, delimiter), discard_line);
     let line = match line.resume(b'a') {
         Suspended(line) => line,

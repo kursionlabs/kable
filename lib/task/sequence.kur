@@ -2,7 +2,7 @@
 use package::PlanOutput;
 use std::option::Option;
 use std::time::Duration;
-use thunk::Thunk!;
+use thunk::{Discard, Thunk!};
 
 forall Engine.
 trait Clock {
@@ -53,6 +53,13 @@ impl Task {
         self.then_owned(resume, |resume, input| resume(input), skip_copy[Env, Input, Next])
     }
 
+    /// Starts a sequence and discards the state and any prior output if skipped.
+    forall State, Next, Output, Env where PlanOutput[Next -> Output], Copy[Env], Discard[State], Discard[Input].
+    fn then_state(self, state: State, resume: closure[Env](State, Input) -> Option[Next])
+        -> Sequence![Then![First![Task], State, Input, Next, Env], Output] {
+        self.then_owned(state, resume, discard_skipped[State, Input])
+    }
+
     /// Starts a sequence with explicit cleanup for a skipped first handoff.
     forall State, Next, Output, Env where PlanOutput[Next -> Output], Copy[Env].
     fn then_owned(self, state: State, resume: closure[Env](State, Input) -> Option[Next],
@@ -65,6 +72,15 @@ impl Task {
 forall Env, Input, Task where Copy[Env], Copy[Input].
 fn skip_copy(resume: closure[Env](Input) -> Option[Task], input: Option[Input]) {}
 
+forall State, Input where Discard[State], Discard[Input].
+fn discard_skipped(state: State, input: Option[Input]) {
+    state.discard();
+    match input {
+        Some(outcome) => outcome.discard(),
+        None => (),
+    }
+}
+
 forall Stages, Input.
 impl Sequence![Stages, Input] {
     /// The callback and its input can both be dropped if the handoff is skipped.
@@ -72,6 +88,13 @@ impl Sequence![Stages, Input] {
     fn then(self, resume: closure[Env](Input) -> Option[Task])
         -> Sequence![Then![Stages, closure[Env](Input) -> Option[Task], Input, Task, ()], Output] {
         self.then_owned(resume, |resume, input| resume(input), skip_copy[Env, Input, Task])
+    }
+
+    /// Adds a handoff and discards its state and any prior output if skipped.
+    forall State, Task, Output, Env where PlanOutput[Task -> Output], Copy[Env], Discard[State], Discard[Input].
+    fn then_state(self, state: State, resume: closure[Env](State, Input) -> Option[Task])
+        -> Sequence![Then![Stages, State, Input, Task, Env], Output] {
+        self.then_owned(state, resume, discard_skipped[State, Input])
     }
 
     /// Transfers state to resume after the prior stage joins. If the deadline

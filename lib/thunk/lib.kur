@@ -64,9 +64,16 @@ impl Thunk![State, Input, Output, Env, fn(State, Context) -> ()] {
     }
 }
 
-/// Stores an owned delayed call with no input. Put owned captures in state so cleanup can release them.
+/// Stores a delayed call whose state implements `Discard`.
+forall State, Output, Env where Copy[Env], Discard[State].
+fn delay(state: State, evaluate: closure[Env](State) -> Output)
+    -> Thunk![State, (), Output, (closure[Env](State) -> Output,), fn(State) -> ()] {
+    delay_with(state, evaluate, discard[State])
+}
+
+/// Stores a delayed call with explicit cleanup for its state.
 forall State, Output, Env where Copy[Env].
-fn delay(state: State, evaluate: closure[Env](State) -> Output, cleanup: fn(State) -> ())
+fn delay_with(state: State, evaluate: closure[Env](State) -> Output, cleanup: fn(State) -> ())
     -> Thunk![State, (), Output, (closure[Env](State) -> Output,), fn(State) -> ()] {
     Thunk!.{ state, evaluate: |state, unit| evaluate(state), cleanup }
 }
@@ -106,9 +113,16 @@ struct Suspension! {
     cleanup: fn(State) -> (),
 }
 
-/// Stores the first step's state. The step may capture copyable configuration.
+/// Stores the first step's state and uses `Discard` to release abandoned state.
+forall State, Input, Output, Env where Copy[Env], Discard[State].
+fn suspend(state: State, step: closure[Env](State, Input) -> Step[State, Output])
+    -> Suspension![State, Input, Output, Env] {
+    suspend_with(state, step, discard[State])
+}
+
+/// Stores the first step's state with explicit cleanup.
 forall State, Input, Output, Env where Copy[Env].
-fn suspend(state: State, step: closure[Env](State, Input) -> Step[State, Output], cleanup: fn(State) -> ())
+fn suspend_with(state: State, step: closure[Env](State, Input) -> Step[State, Output], cleanup: fn(State) -> ())
     -> Suspension![State, Input, Output, Env] {
     Suspension!.{ state, step, cleanup }
 }

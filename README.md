@@ -185,9 +185,10 @@ the callback releases its outcome.
 
 ## Delayed and suspended computations
 
-`thunk::delay(state, evaluate, cleanup)` stores an owned call. `force()`
-passes its state to `evaluate` and returns the result. `discard()` passes
-the state to `cleanup`.
+`thunk::delay(state, evaluate)` stores an owned call. `force()` passes its
+state to `evaluate` and returns the result. `discard()` releases the state
+through `Discard`. Use `delay_with(state, evaluate, cleanup)` to supply
+a cleanup function.
 
 `thunk::defer(state, evaluate, cleanup)` stores a one-shot call that takes
 input on `resume(input)`. For an abandoned call, `discard_with(context)`
@@ -199,10 +200,12 @@ current state and returns `Step::Done(output)` or `Step::Suspended(next)`.
 Import `thunk::Discard` to release abandoned state with `discard()`. A
 named state can implement both traits directly.
 
-`thunk::suspend(state, step, cleanup)` builds a `Suspension!` that implements
-`Resumable` and `Discard`. The step supplies the updated state and the
-library packages it with the same step and cleanup functions. Put owned
-values in `state` and capture copyable configuration in `evaluate` or `step`.
+`thunk::suspend(state, step)` builds a `Suspension!` that implements
+`Resumable` and `Discard`. Each step can return updated state, which the
+library packages with the same step and cleanup functions. Use
+`suspend_with(state, step, cleanup)` to supply a cleanup function.
+Put owned values in `state` and capture copyable configuration in
+`evaluate` or `step`.
 
 The message example reads one line per resume until it sees a line containing
 only `.`. EOF before the dot discards the partial message. `--check` validates
@@ -380,12 +383,13 @@ and returns `Some(next)` to start another stage or `None` to stop. Both
 the closure captures and the previous outcome must be copyable because
 the handoff can be skipped.
 
-Use `.then_owned(state, resume, cancel)` when the captures or outcome need
-explicit cleanup. An inline `resume` closure infers its inputs and the next
-plan. It takes ownership of `state` and the outcome after the previous stage
-joins. Put linear values in `state` so the named `cancel` function can
-consume them and any available outcome if the handoff is skipped. The
-`resume` closure’s own captures must be copyable.
+Use `.then_state(state, resume)` for a handoff with owned values that
+implement `Discard`. The closure takes ownership of the state and the
+outcome after the previous stage joins. If the handoff is skipped, it
+discards the state and any available prior outcome. Use
+`.then_owned(state, resume, cancel)` to supply a cleanup function that
+receives the state and an optional outcome. The `resume` closure’s captures
+must be copyable.
 
 `run_sequence(chain, budget)` drives a standalone chain on either engine.
 Inside a libuv `with_runner` callback, `&runner.run_sequence(chain, budget)`
@@ -398,8 +402,8 @@ Match the sequence result using `task::sequence::SequenceOutcome`.
 - `Finished(output)` returns the final stage's joined output, including any
   cancellation or failure reported by that stage.
 - `Stopped` means a continuation returned `None`.
-- `Cancelled` means the shared deadline prevented a handoff. The skipped
-  stages release their owned state through their cleanup callbacks.
+- `Cancelled` means the shared deadline prevented a handoff. Each skipped
+  handoff releases its owned state through `Discard` or its cleanup function.
 
 A stage's local `.within()` timeout is part of the output passed to the next
 continuation while the shared budget remains.
