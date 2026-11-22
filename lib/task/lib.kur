@@ -1,10 +1,12 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
-use std::buffer::Buffer!;
 use std::fmt::{Format, Writable, write_i64};
 use std::option::Option;
 use std::time::Duration;
 use package::{deadline, driver, sequence};
+use package::cleanup::{Discard, discard};
 export deadline::status as deadline_status;
+export Discard;
+export discard;
 export driver;
 export sequence;
 use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
@@ -48,7 +50,7 @@ exposed enum Completion {
 forall T.
 impl Completion[T] {
     /// Releases the owned value if the operation completed successfully.
-    fn discard(self, release: fn(T) -> ()) {
+    fn discard_with(self, release: fn(T) -> ()) {
         match self {
             Completion::Ready(value) => release(value),
             _ => (),
@@ -81,7 +83,7 @@ exposed enum StreamOutcome {
 forall T.
 impl StreamOutcome[T] {
     /// Releases the owned item if the read produced one.
-    fn discard(self, release: fn(T) -> ()) {
+    fn discard_with(self, release: fn(T) -> ()) {
         match self {
             StreamOutcome::Item(item) => release(item),
             _ => (),
@@ -96,12 +98,13 @@ trait Stream {
     fn next(source: Source) -> Next;
 }
 
-forall Source, Next where Stream[Source -> Next], PlanOutput[Next -> (Source, StreamOutcome[Buffer!])].
+forall Source, Next, Item where Stream[Source -> Next],
+    PlanOutput[Next -> (Source, StreamOutcome[Item])], Discard[Item].
 impl Source {
     /// Reads under a local deadline and returns the source after both plans join.
-    /// An interrupted read releases any buffer it produced.
+    /// An interrupted read discards any item it produced.
     fn next_within(self, duration: Duration) -> Map![PairPlan![Sleep!, Next, Side],
-        (Completion[()], (Source, StreamOutcome[Buffer!]), Completion[Side]), (Source, StreamOutcome[Buffer!]), ()] {
+        (Completion[()], (Source, StreamOutcome[Item]), Completion[Side]), (Source, StreamOutcome[Item]), ()] {
         deadline::race(self.next(), duration).map(|result| {
             let ((source, read), status) = deadline::resolve(result);
             let interrupted = match status {
@@ -110,7 +113,7 @@ impl Source {
                 DeadlineStatus::Cancelled => StreamOutcome::Cancelled,
                 DeadlineStatus::Failed(failure) => StreamOutcome::Failed.(failure),
             };
-            read.discard(Buffer!::destroy);
+            read.discard();
             (source, interrupted)
         })
     }
@@ -124,23 +127,24 @@ trait Sink {
     fn write(writer: Writer, item: Item) -> Write;
 }
 
-forall Writer, Write where Sink[Writer -> Buffer!, Write], PlanOutput[Write -> (Writer, Buffer!, Completion[()])].
+forall Writer, Item, Write where Sink[Writer -> Item, Write],
+    PlanOutput[Write -> (Writer, Item, Completion[()])], Discard[Item].
 impl Writer {
-    /// Plans a write that releases the buffer after join on every outcome.
-    fn send(self, bytes: Buffer!) -> Map![Write, (Writer, Buffer!, Completion[()]), (Writer, Completion[()]), ()] {
-        self.write(bytes).map(|result| {
-            let (writer, bytes, completion) = result;
-            bytes.destroy();
+    /// Plans a write that discards the item after join on every outcome.
+    fn send(self, item: Item) -> Map![Write, (Writer, Item, Completion[()]), (Writer, Completion[()]), ()] {
+        self.write(item).map(|result| {
+            let (writer, item, completion) = result;
+            item.discard();
             (writer, completion)
         })
     }
 
     /// Sends under a local deadline, returning the writer and one completion after join.
-    fn send_within(self, bytes: Buffer!, duration: Duration) -> Map![PairPlan![Sleep!, Write, Side],
-        (Completion[()], (Writer, Buffer!, Completion[()]), Completion[Side]), (Writer, Completion[()]), ()] {
-        deadline::race(self.write(bytes), duration).map(|result| {
-            let ((writer, bytes, completion), status) = deadline::resolve(result);
-            bytes.destroy();
+    fn send_within(self, item: Item, duration: Duration) -> Map![PairPlan![Sleep!, Write, Side],
+        (Completion[()], (Writer, Item, Completion[()]), Completion[Side]), (Writer, Completion[()]), ()] {
+        deadline::race(self.write(item), duration).map(|result| {
+            let ((writer, item, completion), status) = deadline::resolve(result);
+            item.discard();
             (writer, deadline::finish(completion, status))
         })
     }

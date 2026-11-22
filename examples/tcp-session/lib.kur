@@ -80,7 +80,7 @@ fn read_line(connection: Connection!, session: Session!) -> Action! {
 }
 
 fn discard_read(session: Session!, outcome: StreamOutcome[Buffer!]) {
-    outcome.discard(Buffer!::destroy);
+    outcome.discard_with(Buffer!::destroy);
     eprint_buffer(f"Discarded a read for a closing session.\n");
     session.discard();
 }

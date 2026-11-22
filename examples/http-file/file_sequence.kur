@@ -1,14 +1,14 @@
 //! Chooses a footer from the first file's contents and appends it.
 use async::read_file;
 use http::Response!;
-use package::{FILE_LIMIT, append_file, discard_file};
+use package::{FILE_LIMIT, append_file};
 use server::Action!;
 use std::buffer::Buffer!;
 use std::io::eprint_buffer;
 use std::option::Option;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
-use task::{Completion, PlanOutput};
+use task::{Completion, Discard, PlanOutput};
 
 fn serve() -> Action! {
     let access = StaticRead::new();
@@ -29,14 +29,13 @@ fn read_footer(outcome: Completion[Buffer!]) -> Action! {
 }
 
 fn discard_first(outcome: Completion[Buffer!]) {
-    discard_file(outcome);
+    outcome.discard();
     eprint_buffer(f"Sequence cancelled before the second read.\n");
 }
 
 fn discard_footer(first: Buffer!, footer: Completion[Buffer!]) {
     let length = &first.len();
-    first.destroy();
-    discard_file(footer);
+    (first, footer).discard();
     eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
 }
 

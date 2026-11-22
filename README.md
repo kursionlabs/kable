@@ -138,18 +138,18 @@ Request `/file-with-timeout` on the printed address to read the bundled
 use async::read_file;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::PlanOutput;
+use task::{PlanOutput, discard};
 
 let access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .respond_with(|outcome| file_response(outcome).reply(), discard_file)
+    .respond_with(|outcome| file_response(outcome).reply(), discard)
     .within(Duration::from_secs(1))
     .reply()
 ```
 
 `respond_with` takes a reply callback and a cleanup function. The reply
 callback consumes the joined outcome and returns an `Action!`. It can capture
-copyable values, such as the content type for a streamed file. `discard_file`
+copyable values, such as the content type for a streamed file. `discard`
 releases the outcome when the request ends or the local deadline wins.
 `.reply()` builds the action. If the local timer wins while the request is
 active, the server replies 504 after the worker joins. `/file` uses the
@@ -275,8 +275,11 @@ a missing or unexpected driver result.
 which returns another `Completion`. Timeout, cancellation, and failure pass through
 with the callback skipped, so its captures must be copyable.
 
-`outcome.discard(release)` consumes a `Completion` or `StreamOutcome` and
-passes any owned value to `release`, such as `Buffer!::destroy`.
+Import `task::Discard` to consume an abandoned value with `value.discard()`.
+`Buffer!` releases its allocation. A `Completion` or `StreamOutcome` discards
+any value it produced, and pairs and triples discard their members in order.
+Use `task::discard` as a cleanup callback, or `outcome.discard_with(release)`
+when the caller supplies the release function.
 
 ```sh
 ../kursal/bin/kursal build examples/timer-race -o bin/timer-race
@@ -347,9 +350,9 @@ File chunks and TCP connections both use this interface. TCP EOF ends the read
 side and the returned connection can still write. A file stream's `remaining()`
 reports any requested bytes left unread at EOF.
 
-For buffer streams, `source.next_within(duration)` races a read against a
-local timer. It returns the source and a `StreamOutcome` after both plans join
-and releases any buffer from an interrupted read.
+`source.next_within(duration)` races a read against a local timer. It returns
+the source and a `StreamOutcome` after both plans join. The item type's
+`Discard` instance releases any item from an interrupted read.
 
 ### Sequential writes
 
@@ -359,10 +362,10 @@ connection. The plan owns both values until it joins and returns
 accepted the full buffer. The caller can release or reuse the buffer on
 every path.
 
-For buffer sinks, `writer.send(bytes)` releases the buffer after join on
-every outcome and returns `(writer, status)`. File output advances its
-position by the bytes written, including during a partial write.
-`writer.send_within(bytes, duration)` uses the same result shape and reports
+`writer.send(item)` uses the item's `Discard` instance after join on every
+outcome and returns `(writer, status)`. File output advances its position by
+the bytes written, including during a partial write.
+`writer.send_within(item, duration)` uses the same result shape and reports
 `Completion::TimedOut` if its local timer wins. Enclosing cancellation still
 reports `Completion::Cancelled`.
 

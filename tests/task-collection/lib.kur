@@ -3,7 +3,8 @@ use std::buffer::Buffer!;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, Map!, PlanOutput, Sink, Sleep!, Stream, StreamOutcome, join, select, sleep};
+use task::{Completion, DeadlineStatus, Discard, Failure, Map!, PlanOutput, Sink, Sleep!, Stream, StreamOutcome,
+    join, select, sleep};
 use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, ScopeState!};
 use task::sequence::{Clock, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
@@ -274,15 +275,23 @@ fn check_local_timeout_handoff() -> bool {
 }
 
 struct TestStream! { marker: Buffer!, delay: Duration }
+struct TestItem! { bytes: Buffer! }
 
-instance Stream[TestStream! -> Map![Sleep!, Completion[()], (TestStream!, StreamOutcome[Buffer!]), (TestStream!,)]] {
+instance Discard[TestItem!] {
+    fn discard(item: TestItem!) {
+        let { bytes } = item;
+        bytes.destroy();
+    }
+}
+
+instance Stream[TestStream! -> Map![Sleep!, Completion[()], (TestStream!, StreamOutcome[TestItem!]), (TestStream!,)]] {
     fn next(source: TestStream!)
-        -> Map![Sleep!, Completion[()], (TestStream!, StreamOutcome[Buffer!]), (TestStream!,)] {
+        -> Map![Sleep!, Completion[()], (TestStream!, StreamOutcome[TestItem!]), (TestStream!,)] {
         let { marker, delay } = source;
         let source = TestStream!.{ marker, delay };
         sleep(delay).map(|status| {
             let outcome = match status {
-                Completion::Ready => StreamOutcome::Item.(Buffer!::new().push_static("item")),
+                Completion::Ready => StreamOutcome::Item.(TestItem!.{ bytes: Buffer!::new().push_static("item") }),
                 Completion::TimedOut => StreamOutcome::TimedOut,
                 Completion::Cancelled => StreamOutcome::Cancelled,
                 Completion::Failed(failure) => StreamOutcome::Failed.(failure),
@@ -292,13 +301,13 @@ instance Stream[TestStream! -> Map![Sleep!, Completion[()], (TestStream!, Stream
     }
 }
 
-instance Sink[TestStream! -> Buffer!,
-    Map![Sleep!, Completion[()], (TestStream!, Buffer!, Completion[()]), (TestStream!, Buffer!)]] {
-    fn write(writer: TestStream!, bytes: Buffer!)
-        -> Map![Sleep!, Completion[()], (TestStream!, Buffer!, Completion[()]), (TestStream!, Buffer!)] {
+instance Sink[TestStream! -> TestItem!,
+    Map![Sleep!, Completion[()], (TestStream!, TestItem!, Completion[()]), (TestStream!, TestItem!)]] {
+    fn write(writer: TestStream!, item: TestItem!)
+        -> Map![Sleep!, Completion[()], (TestStream!, TestItem!, Completion[()]), (TestStream!, TestItem!)] {
         let { marker, delay } = writer;
         let writer = TestStream!.{ marker, delay };
-        sleep(delay).map(|status| (writer, bytes, status))
+        sleep(delay).map(|status| (writer, item, status))
     }
 }
 
@@ -318,7 +327,8 @@ fn check_timed_stream() -> bool {
     let pending = Duration::from_secs(30);
     let (source, outcome) = run(test_stream(immediate).next_within(pending));
     let ready = match outcome {
-        StreamOutcome::Item(bytes) => {
+        StreamOutcome::Item(item) => {
+            let { bytes } = item;
             let valid = &bytes.len() == 4;
             bytes.destroy();
             valid
@@ -330,7 +340,7 @@ fn check_timed_stream() -> bool {
     let (source, outcome) = run(test_stream(pending).next_within(immediate));
     let timed_out = match outcome {
         StreamOutcome::TimedOut => true,
-        StreamOutcome::Item(bytes) => { bytes.destroy(); false },
+        StreamOutcome::Item(item) => { item.discard(); false },
         _ => false,
     };
     let timed_out_source = check_returned_stream(source);
@@ -338,7 +348,7 @@ fn check_timed_stream() -> bool {
     let (source, outcome) = run_with_deadline(test_stream(pending).next_within(pending), immediate);
     let cancelled = match outcome {
         StreamOutcome::Cancelled => true,
-        StreamOutcome::Item(bytes) => { bytes.destroy(); false },
+        StreamOutcome::Item(item) => { item.discard(); false },
         _ => false,
     };
     let cancelled_source = check_returned_stream(source);
@@ -348,7 +358,13 @@ fn check_timed_stream() -> bool {
 fn check_timed_send() -> bool {
     let immediate = Duration::from_millis(0);
     let pending = Duration::from_secs(30);
-    let send = test_stream(pending).send_within(Buffer!::new().push_static("send"), immediate);
+    let item = TestItem!.{ bytes: Buffer!::new().push_static("send") };
+    let (writer, outcome) = run(test_stream(immediate).send(item));
+    let returned = check_returned_stream(writer);
+    match outcome { Completion::Ready => if !returned { return false; }, _ => return false };
+
+    let item = TestItem!.{ bytes: Buffer!::new().push_static("send") };
+    let send = test_stream(pending).send_within(item, immediate);
     let ((writer, outcome), sibling, status) = run(join(send, sleep(immediate)));
     let returned = check_returned_stream(writer);
     match outcome {

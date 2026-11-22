@@ -7,22 +7,22 @@ use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, PlanOutput};
+use task::{Completion, Discard, PlanOutput, discard};
 
 const FILE_LIMIT: usize = 65_536;
 
 fn serve_file(timed: bool) -> Action! {
     let access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
-    let discard: fn(Completion[Buffer!]) -> () = if timed { discard_file } else { discard_plain_file };
-    let reply = file.respond_with(|outcome| file_response(outcome).reply(), discard);
+    let cleanup: fn(Completion[Buffer!]) -> () = if timed { discard } else { discard_plain_file };
+    let reply = file.respond_with(|outcome| file_response(outcome).reply(), cleanup);
     if timed { reply.within(Duration::from_secs(1)).reply() } else { reply.reply() }
 }
 
 fn close_after_read() -> Action! {
     let access = StaticRead::new();
     read_file(&access, "example.txt", FILE_LIMIT)
-        .respond_with(|outcome| { discard_file(outcome); Action!::Close }, discard_file)
+        .respond_with(|outcome| { outcome.discard(); Action!::Close }, discard)
         .reply()
 }
 
@@ -36,10 +36,6 @@ fn file_response(outcome: Completion[Buffer!]) -> Response! {
         },
         Completion::Failed(code) => Response!::rejected(500),
     }
-}
-
-fn discard_file(outcome: Completion[Buffer!]) {
-    outcome.discard(Buffer!::destroy);
 }
 
 fn discard_plain_file(outcome: Completion[Buffer!]) {

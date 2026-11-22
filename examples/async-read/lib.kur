@@ -6,17 +6,17 @@ use std::parse::parse_u64;
 use std::process::Args;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, join};
+use task::{Completion, Discard, join};
 
 fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
     let first = match left {
         Completion::Ready(first) => first,
         Completion::Failed(failure) => {
-            right.discard(Buffer!::destroy);
+            right.discard();
             eprint_buffer(f"async-read: first file failed ({failure})\n");
             return 1;
         },
-        Completion::TimedOut | Completion::Cancelled => { right.discard(Buffer!::destroy); return 1; },
+        Completion::TimedOut | Completion::Cancelled => { right.discard(); return 1; },
     };
     match right {
         Completion::Ready(second) => {
@@ -59,14 +59,12 @@ fn main(args: Args) -> i32 {
     match status {
         Completion::Ready => print_pair(left, right),
         Completion::TimedOut | Completion::Cancelled => {
-            left.discard(Buffer!::destroy);
-            right.discard(Buffer!::destroy);
+            (left, right).discard();
             eprint_buffer(f"async-read: deadline expired\n");
             1i32
         },
         Completion::Failed(failure) => {
-            left.discard(Buffer!::destroy);
-            right.discard(Buffer!::destroy);
+            (left, right).discard();
             eprint_buffer(f"async-read: scope failed ({failure})\n");
             1i32
         },

@@ -1,12 +1,12 @@
 //! Reads two independent files under one local deadline.
 use async::read_file;
 use http::Response!;
-use package::{FILE_LIMIT, append_file, discard_file};
+use package::{FILE_LIMIT, append_file};
 use server::Action!;
 use std::buffer::Buffer!;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, PlanOutput, join};
+use task::{Completion, Discard, PlanOutput, discard, join};
 
 fn serve() -> Action! {
     let access = StaticRead::new();
@@ -14,7 +14,7 @@ fn serve() -> Action! {
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
     join(first, second)
-        .respond_with(|files| joined_response(files).reply(), discard_join)
+        .respond_with(|files| joined_response(files).reply(), discard)
         .within(Duration::from_secs(1))
         .reply()
 }
@@ -32,20 +32,13 @@ fn joined_response(files: (Completion[Buffer!], Completion[Buffer!], Completion[
 fn file_response(first: Completion[Buffer!], second: Completion[Buffer!]) -> Response! {
     match first {
         Completion::Ready(left) => append_file(left, second),
-        Completion::TimedOut => { discard_file(second); Response!::rejected(504) },
-        Completion::Cancelled => { discard_file(second); Response!::rejected(408) },
-        Completion::Failed(code) => { discard_file(second); Response!::rejected(500) },
+        Completion::TimedOut => { second.discard(); Response!::rejected(504) },
+        Completion::Cancelled => { second.discard(); Response!::rejected(408) },
+        Completion::Failed(code) => { second.discard(); Response!::rejected(500) },
     }
 }
 
-fn discard_join(files: (Completion[Buffer!], Completion[Buffer!], Completion[()])) {
-    let (first, second, status) = files;
-    discard_file(first);
-    discard_file(second);
-}
-
 fn reject_files(first: Completion[Buffer!], second: Completion[Buffer!], status: u16) -> Response! {
-    discard_file(first);
-    discard_file(second);
+    (first, second).discard();
     Response!::rejected(status)
 }

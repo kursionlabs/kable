@@ -1138,14 +1138,14 @@ path="{ROOT / 'lib/task'}"
 """)
     (package / "lib.kur").write_text("""
 use std::buffer::Buffer!;
-use task::{PlanOutput, Stream, StreamOutcome};
+use task::{Discard, PlanOutput, Stream, StreamOutcome};
 use tcp::{Action!, Connection!, OperationPlan!};
 
 fn receive(connection: Connection!) -> Action! {
     let read: OperationPlan![Connection!, (Connection!, StreamOutcome[Buffer!])] = connection.next();
     read.defer_tcp(|result| {
         let (connection, outcome) = result;
-        outcome.discard(Buffer!::destroy);
+        outcome.discard();
         connection.close()
     })
 }
