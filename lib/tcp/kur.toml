@@ -12,6 +12,3 @@ path="../async"
 
 [dependencies.task]
 path="../task"
-
-[dependencies.thunk]
-path="../thunk"

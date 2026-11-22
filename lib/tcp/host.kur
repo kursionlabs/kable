@@ -1,6 +1,6 @@
 //! TCP integration for native hosts that own a listener and event loop.
 use async::Scope!;
-use async::host::prepare_hosted;
+use async::host::{PLAN_ACTIVE, prepare_hosted};
 use package::Connection!;
 use package::native::{
     kable_tcp_close, kable_tcp_schedule, kable_tcp_finish_begin, kable_tcp_stream_begin, kable_tcp_stream_end,
@@ -11,8 +11,7 @@ use std::option::Result;
 use task::{Completion, Sink};
 use task::driver::Plan;
 
-/// Set by the native scheduler at join when the connection can still reply.
-const PLAN_ACTIVE: u8 = 1;
+export PLAN_ACTIVE;
 
 /// Runs a read for the host, which borrows the native bytes on join.
 /// The host keeps the connection valid and owns it through collection.

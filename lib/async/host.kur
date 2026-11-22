@@ -5,6 +5,9 @@ use std::mem::sizeof;
 use std::option::Result;
 use task::driver::{Plan, Prepared!, prepare};
 
+/// Set by the scheduler at join when the host can still resume its continuation.
+const PLAN_ACTIVE: u8 = 1;
+
 struct HostedPlan! {
     scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32,
@@ -31,6 +34,20 @@ fn prepare_hosted(task: Task, resume: closure[Env](Output, *u8, u8) -> i32) -> H
     let plan = HeapAllocator::alloc(sizeof[Pending![Task, Output, Env]]()).into_raw();
     unsafe *(unsafe (plan as *Pending![Task, Output, Env])) = Pending!.{ prepared, resume };
     HostedPlan!.{ scope, root, plan, finish: finish_hosted[Task, Output, Env] }
+}
+
+/// Transfers state and output to resume for an active host, or to discard
+/// after shutdown, rejection, or an explicit discard before submission.
+forall Task, State, Output, ResumeEnv, DiscardEnv
+    where Plan[Task, Scope! -> Output], Copy[ResumeEnv], Copy[DiscardEnv].
+fn prepare_handoff(task: Task, state: State,
+    resume: closure[ResumeEnv](State, Output, *u8, u8) -> i32,
+    discard: closure[DiscardEnv](State, Output) -> ()) -> HostedPlan! {
+    prepare_hosted(task, |outcome, host, flags| {
+        if (flags & PLAN_ACTIVE) != 0 { return resume(state, outcome, host, flags); }
+        discard(state, outcome);
+        -1
+    })
 }
 
 forall Task, Output, Env where Plan[Task, Scope! -> Output].

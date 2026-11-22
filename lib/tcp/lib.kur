@@ -1,6 +1,6 @@
 //! Scoped TCP reads and writes on a listener's event loop.
 use async::Scope!;
-use async::host::{HostedPlan!, prepare_hosted};
+use async::host::{HostedPlan!, prepare_handoff, prepare_hosted};
 use package::host;
 use package::native::{
     kable_tcp_bind, kable_tcp_port, kable_tcp_run, kable_tcp_stop, kable_tcp_close, kable_tcp_schedule,
@@ -43,16 +43,13 @@ impl Task {
     forall State, Env where Copy[Env], Plan[Task, Scope! -> (Connection!, Output)].
     fn defer_tcp_owned(self, state: State, resume: closure[Env](State, (Connection!, Output)) -> Action!,
         discard: fn(State, Output) -> ()) -> Action! {
-        let handoff = thunk::defer(state, resume, discard);
-        let hosted = prepare_hosted(self, |result, connection, flags| {
-            if (flags & host::PLAN_ACTIVE) != 0 {
-                return unsafe apply(connection, handoff.resume(result));
-            }
-            let (connection, outcome) = result;
-            let { raw } = connection;
-            handoff.discard_with(outcome);
-            -1
-        });
+        let hosted = prepare_handoff(self, state,
+            |state, result, connection, flags| unsafe apply(connection, resume(state, result)),
+            |state, result| {
+                let (connection, outcome) = result;
+                let { raw } = connection;
+                discard(state, outcome);
+            });
         Action!::Scoped.(hosted)
     }
 }

@@ -1,5 +1,5 @@
 use async::{FileErrorKind, Scope!, open_file, run, run_sequence, run_with_deadline, with_runner};
-use async::host::{HostedPlan!, prepare_hosted};
+use async::host::{HostedPlan!, prepare_handoff, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::{Option, Result};
@@ -7,7 +7,7 @@ use std::ptr::null;
 use std::process::trap;
 use std::slice::StaticRead;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Failure, PlanOutput, Sleep!, join, sleep};
+use task::{Completion, DeadlineStatus, Discard, Failure, PlanOutput, Sleep!, join, sleep};
 use task::driver::Plan;
 use task::sequence::SequenceOutcome;
 
@@ -288,6 +288,36 @@ unsafe fn reject_submission(host: *u8, scope: *u8, root: usize, plan: *u8,
     if flags == 6 && (unsafe *count) == 0 { -42 } else { -1 }
 }
 
+fn check_handoff_rejection() -> bool {
+    let calls = unsafe alloca[usize]();
+    unsafe *calls = 0;
+    let closed_before = unsafe kable_test_scope_closes();
+    let bytes = Buffer!::new().push_static("outcome");
+    let task = sleep(Duration::from_nanos(0)).map(|status| {
+        require_scope_closes(closed_before);
+        (bytes, status)
+    });
+    unsafe kable_test_track_scope();
+    let hosted = prepare_handoff(task, Buffer!::new().push_static("state"),
+        |state, outcome, host, flags| {
+            (state, outcome).discard();
+            trap()
+        },
+        |state, outcome| {
+            let (bytes, status) = outcome;
+            let valid = &state.len() == 5 && &bytes.len() == 7 && not_started(status);
+            (state, bytes).discard();
+            require_scope_closes(closed_before + 1);
+            if !valid { trap(); }
+            unsafe *calls = (unsafe *calls) + 1;
+        });
+    let host = unsafe (calls as *u8);
+    match unsafe hosted.submit(host, 6, reject_submission) {
+        Err(error) => error.scheduler_error == -42 && error.continuation_status == -1 && (unsafe *calls) == 1,
+        Ok => false,
+    }
+}
+
 fn check_synchronous_submission() -> bool {
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
@@ -380,7 +410,8 @@ fn main() -> i32 {
         !check_one_shot_deadline(tiny, Duration::from_millis(1), false) ||
         !check_sequence_loop(0) || !check_sequence_loop(-42) || !check_runner_reuse() || !check_runner_sequence() ||
         !check_sequence_expires_during_setup(setup_time, zero) ||
-        !check_sequence_expires_during_setup(zero, setup_time) || !check_synchronous_submission() { return 1; }
+        !check_sequence_expires_during_setup(zero, setup_time) || !check_synchronous_submission() ||
+        !check_handoff_rejection() { return 1; }
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let host = unsafe (count as *u8);
