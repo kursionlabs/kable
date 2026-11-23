@@ -2,13 +2,14 @@
 use std::fmt::{Format, Writable, write_i64};
 use std::option::Option;
 use std::time::Duration;
-use package::{deadline, driver, sequence};
+use package::{continuation, deadline, driver, sequence};
 use package::cleanup::{Discard, discard, discard_owned};
 export deadline::status as deadline_status;
 export Discard;
 export discard;
 export discard_owned;
 export driver;
+export continuation;
 export sequence;
 use package::driver::{Pair, PairKind, Plan, PlanDriver, Resolution};
 

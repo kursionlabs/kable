@@ -1,11 +1,8 @@
-//! Result-dependent plans on the same libuv loop as their parent.
-use package::{Scope!, kable_scope_add_operation};
-use std::heap::HeapAllocator;
-use std::mem::sizeof;
+//! Registers dependent plans as child scopes on the enclosing libuv loop.
+use package::{Scope!, kable_scope_add_operation, registered};
 use std::option::Option;
-use std::ptr::{is_null, null};
-use task::{Completion, Discard, PlanOutput};
-use task::driver::{Plan, Prepared!, prepare};
+use std::ptr::is_null;
+use task::continuation::{Child, ContinuationDriver, Handoff};
 
 extern "C" fn kable_scope_budget_expired(scope: *u8) -> u8;
 extern "C" fn kable_chain_new(parent: *u8, state: *u8,
@@ -14,171 +11,26 @@ extern "C" fn kable_chain_start(chain: *u8, loop: *u8, done: unsafe fn(*u8) -> (
 extern "C" fn kable_chain_stop(chain: *u8) -> u8;
 extern "C" fn kable_chain_free(chain: *u8) -> ();
 
-/// A dependent plan exposes its result type and owns its pending continuation.
-forall Output.
-struct AndThen! {
-    context: *u8,
-    register: unsafe fn(*u8, *u8) -> Option[usize],
-    finish: unsafe fn(*u8) -> (Completion[Output], Option[usize]),
-}
+instance ContinuationDriver[Scope!] {
+    fn child_scope() -> Scope! { Scope!::new() }
 
-forall First, Input, Next, Output, Env.
-enum State! {
-    Pending(First, closure[Env](Input) -> Next),
-    First(Prepared![First, Scope!], closure[Env](Input) -> Next),
-    Next(Prepared![Next, Scope!]),
-    Done(Completion[Output]),
-}
+    fn close_child(scope: Scope!) { scope.close(); }
 
-forall First, Input, Next, Output, Env.
-struct PendingChain! {
-    parent: *u8, chain: *u8, id: Option[usize],
-    state: State![First, Input, Next, Output, Env],
-}
-
-forall First, Input where PlanOutput[First -> Completion[Input]].
-impl First {
-    /// Runs `next` on success while the enclosing scope can still start work.
-    /// Propagates failures and releases a successful input when the handoff is cancelled.
-    forall Next, Output, Env where Copy[Env], Discard[Input], Discard[Output],
-        Plan[First, Scope! -> Completion[Input]],
-        PlanOutput[Next -> Completion[Output]], Plan[Next, Scope! -> Completion[Output]].
-    fn and_then(self, next: closure[Env](Input) -> Next) -> AndThen![Output] {
-        let context = HeapAllocator::alloc(sizeof[PendingChain![First, Input, Next, Output, Env]]()).into_raw();
-        let pending = unsafe (context as *PendingChain![First, Input, Next, Output, Env]);
-        unsafe *pending = PendingChain!.{ parent: null(), chain: null(), id: Option::None,
-            state: State!::Pending.(self, next) };
-        AndThen!.{ context, register: register[First, Input, Next, Output, Env],
-            finish: finish[First, Input, Next, Output, Env] }
-    }
-}
-
-forall Output.
-instance PlanOutput[AndThen![Output] -> Completion[Output]] {}
-
-forall Task.
-fn child(&prepared: Prepared![Task, Scope!]) -> (*u8, usize) {
-    &prepared.with_scope(|&scope, root| {
+    fn scope_address(&scope: Scope!) -> *u8 {
         let { raw } = scope;
         scope = Scope!.{ raw };
-        (raw, root.unwrap_or(usize::MAX))
-    })
-}
-
-forall First, Input, Next, Output, Env where Copy[Env], Discard[Input], Discard[Output],
-    Plan[First, Scope! -> Completion[Input]], Plan[Next, Scope! -> Completion[Output]].
-unsafe fn advance(raw: *u8, cancelled: u8, scope: *(*u8), root: *usize) -> u8 {
-    let pending = unsafe (raw as *PendingChain![First, Input, Next, Output, Env]);
-    let { parent, chain, id, state } = unsafe *pending;
-    let result = match state {
-        First(prepared, next) => {
-            let result = prepared.collect(Scope!::close);
-            if cancelled != 0 || (unsafe kable_scope_budget_expired(parent)) != 0 {
-                result.discard();
-                Completion::Cancelled
-            } else {
-                match result {
-                    Ready(input) => {
-                        let prepared = prepare(next(input), Scope!::new());
-                        let (raw, root_id) = child(&prepared);
-                        unsafe *pending = PendingChain!.{ parent, chain, id, state: State!::Next.(prepared) };
-                        unsafe *scope = raw;
-                        unsafe *root = root_id;
-                        return 1;
-                    },
-                    TimedOut => Completion::TimedOut,
-                    Cancelled => Completion::Cancelled,
-                    Failed(failure) => Completion::Failed.(failure),
-                }
-            }
-        },
-        Next(prepared) => {
-            let result = prepared.collect(Scope!::close);
-            if cancelled != 0 || (unsafe kable_scope_budget_expired(parent)) != 0 {
-                result.discard();
-                Completion::Cancelled
-            } else { result }
-        },
-        Done(result) => result,
-        Pending(first, next) => {
-            unstarted[First, Input](first);
-            Completion::Failed.(task::Failure::InvalidPlan)
-        },
-    };
-    unsafe *pending = PendingChain!.{ parent, chain, id, state: State!::Done.(result) };
-    0
-}
-
-forall Task, Input where Discard[Input], Plan[Task, Scope! -> Completion[Input]].
-fn unstarted(task: Task) {
-    let scope = Scope!::new();
-    Plan[Task, Scope! -> Completion[Input]]::collect(task, &scope).discard();
-    scope.close();
-}
-
-forall First, Input, Next, Output, Env where Copy[Env], Discard[Input], Discard[Output],
-    Plan[First, Scope! -> Completion[Input]], Plan[Next, Scope! -> Completion[Output]].
-unsafe fn register(raw: *u8, parent: *u8) -> Option[usize] {
-    let pending = unsafe (raw as *PendingChain![First, Input, Next, Output, Env]);
-    let { state, ..previous } = unsafe *pending;
-    let (first, next) = match state {
-        Pending(first, next) => (first, next),
-        First(prepared, next) => {
-            unsafe *pending = PendingChain!.{ state: State!::First.(prepared, next), ..previous };
-            return Option::None;
-        },
-        Next(prepared) => {
-            unsafe *pending = PendingChain!.{ state: State!::Next.(prepared), ..previous };
-            return Option::None;
-        },
-        Done(result) => {
-            unsafe *pending = PendingChain!.{ state: State!::Done.(result), ..previous };
-            return Option::None;
-        },
-    };
-    let prepared = prepare(first, Scope!::new());
-    let (child_scope, root) = child(&prepared);
-    let chain = unsafe kable_chain_new(parent, raw, advance[First, Input, Next, Output, Env], child_scope, root);
-    let id = if is_null(chain) { Option::None }
-        else { package::registered(unsafe kable_scope_add_operation(parent, chain, kable_chain_start, kable_chain_stop)) };
-    unsafe *pending = PendingChain!.{ parent, chain, id, state: State!::First.(prepared, next) };
-    id
-}
-
-forall First, Input, Next, Output, Env where Copy[Env], Discard[Input], Discard[Output],
-    Plan[First, Scope! -> Completion[Input]], Plan[Next, Scope! -> Completion[Output]].
-unsafe fn finish(raw: *u8) -> (Completion[Output], Option[usize]) {
-    let { parent, chain, id, state } = unsafe *(unsafe (raw as *PendingChain![First, Input, Next, Output, Env]));
-    unsafe kable_chain_free(chain);
-    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
-    let result = match state {
-        Pending(first, next) => { unstarted[First, Input](first); Completion::Cancelled },
-        First(prepared, next) => { prepared.collect(Scope!::close).discard(); Completion::Cancelled },
-        Next(prepared) => { prepared.collect(Scope!::close).discard(); Completion::Cancelled },
-        Done(result) => result,
-    };
-    (result, id)
-}
-
-forall Output where Discard[Output].
-instance Plan[AndThen![Output], Scope! -> Completion[Output]] {
-    fn stage(&task: AndThen![Output], &scope: Scope!) -> Option[usize] {
-        let { context, register, finish } = task;
-        let { raw: parent } = scope;
-        let id = unsafe register(context, parent);
-        scope = Scope!.{ raw: parent };
-        task = AndThen!.{ context, register, finish };
-        id
+        raw
     }
 
-    fn collect(task: AndThen![Output], &scope: Scope!) -> Completion[Output] {
-        let { context, register, finish } = task;
-        let (result, id) = unsafe finish(context);
-        match (&scope.result(id)).completion() {
-            Ready => result,
-            TimedOut => { result.discard(); Completion::TimedOut },
-            Cancelled => { result.discard(); Completion::Cancelled },
-            Failed(failure) => { result.discard(); Completion::Failed.(failure) },
-        }
+    unsafe fn register(&parent: Scope!, child: Child, handoff: Handoff) -> (*u8, Option[usize]) {
+        let raw = ContinuationDriver[Scope!]::scope_address(&parent);
+        let chain = unsafe kable_chain_new(raw, handoff.context, handoff.advance, child.scope, child.root);
+        let id = if is_null(chain) { Option::None }
+            else { registered(unsafe kable_scope_add_operation(raw, chain, kable_chain_start, kable_chain_stop)) };
+        (chain, id)
     }
+
+    unsafe fn budget_expired(parent: *u8) -> bool { (unsafe kable_scope_budget_expired(parent)) != 0 }
+
+    unsafe fn release(registration: *u8) { unsafe kable_chain_free(registration); }
 }

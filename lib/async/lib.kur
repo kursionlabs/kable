@@ -16,7 +16,6 @@ use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, Scope
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
-export and_then::AndThen!;
 
 extern "C" fn kable_now_millis() -> u64;
 

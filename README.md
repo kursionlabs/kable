@@ -331,9 +331,11 @@ nested waits.
 `plan.map(transform)` converts the plan's joined outcome. Its closure can
 capture owned state and runs once, including on cancellation or failure.
 
-`plan.and_then(next)` builds an `AndThen![Output]` from two plans that return
-`Completion` values. It can be passed to the libuv runner, `join`, or
-`.within`. Each child plan must be able to run without a connection host.
+`plan.and_then(next)` builds a `ChainPlan![Completion[Output], Scope!]`
+from two plans that return `Completion` values. It composes with `run`,
+`join`, and `.within` on libuv and the virtual clock. Give the resulting
+plan a type annotation to select its driver. A libuv chain can use a
+request body if its first child registers the connection host during staging.
 
 `plan.within(duration)` races the plan against a local timer and returns
 `(output, deadline)` after both join. `DeadlineStatus::Completed` means the
@@ -429,7 +431,9 @@ discards the state and any available prior outcome. Use
 receives the state and an optional outcome. The `resume` closure’s captures
 must be copyable.
 
-`run_sequence(chain, budget)` drives a standalone chain on either engine.
+`chain.into_plan()` lets `run` and `run_with_deadline` drive the sequence on
+either engine. It preserves `Stopped` and the cleanup for skipped handoffs.
+`run_sequence(chain, budget)` also drives a standalone chain on either engine.
 Inside a libuv `with_runner` callback, `&runner.run_sequence(chain, budget)`
 drives the chain on the same loop as other runs in the callback.
 The budget is an `Option[Duration]` that applies to the whole chain and starts

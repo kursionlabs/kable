@@ -1,127 +1,296 @@
 //! Deterministic driver for timer plans. Each step advances to the next event.
 use std::collections::vec::OwnedVec!;
+use std::heap::HeapAllocator;
+use std::mem::{alloca, sizeof};
 use std::option::Option;
+use std::ptr::null;
 use std::time::Duration;
 use task::Failure;
+use task::continuation::{Child, ContinuationDriver, Handoff};
 use task::driver::{Pair, Plan, PlanDriver, Resolution, Resource, ScopeState!, prepare};
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until, remaining_budget};
 
-struct Virtual! {
-    state: ScopeState!,
-    timers: OwnedVec![Option[Duration]],
-    invalid_plan: bool,
+struct Virtual! { raw: *u8 }
+export Virtual! as Scope!;
+
+enum Node { Empty, Timer(Duration), Chain(Child, Handoff) }
+
+struct State! {
+    policy: ScopeState!,
+    nodes: OwnedVec![Node],
+    invalid: bool,
+    clock: *Duration,
+    deadline: Option[Duration],
+}
+
+fn new_scope() -> Virtual! {
+    let raw = HeapAllocator::alloc(sizeof[State!]()).into_raw();
+    unsafe *(unsafe (raw as *State!)) = State!.{ policy: ScopeState!::new(), nodes: OwnedVec!::new(),
+        invalid: false, clock: null(), deadline: Option::None };
+    Virtual!.{ raw }
 }
 
 forall Env where Copy[Env].
-fn register_node(&scope: Virtual!, duration: Option[Duration],
+fn register_node(&scope: Virtual!, node: Node,
     register: closure[Env](&_: ScopeState!) -> Option[usize]) -> Option[usize] {
-    let { state, timers, invalid_plan } = scope;
-    let id = if invalid_plan { Option::None } else { register(&state) };
-    let invalid_plan = id.is_none();
-    let timers = if invalid_plan { timers } else { timers.push(duration) };
-    scope = Virtual!.{ state, timers, invalid_plan };
+    let { raw } = scope;
+    let address = unsafe (raw as *State!);
+    let { policy, nodes, invalid, ..rest } = unsafe *address;
+    let id = if invalid { Option::None } else { register(&policy) };
+    let nodes = if id.is_some() { nodes.push(node) } else { nodes };
+    unsafe *address = State!.{ policy, nodes, invalid: id.is_none(), ..rest };
+    scope = Virtual!.{ raw };
     id
 }
 
 instance PlanDriver[Virtual!] {
     fn timer(&scope: Virtual!, duration: Duration) -> Option[usize] {
-        register_node(&scope, Option::Some.(duration), |&state| &state.add_leaf())
+        register_node(&scope, Node::Timer.(duration), |&policy| &policy.add_leaf())
     }
 
     fn pair(&scope: Virtual!, pair: Pair) -> Option[usize] {
-        register_node(&scope, Option::None, |&state| &state.add_pair(pair))
+        register_node(&scope, Node::Empty, |&policy| &policy.add_pair(pair))
     }
 
     fn result(&scope: Virtual!, id: Option[usize]) -> Resolution {
-        let { state, timers, invalid_plan } = scope;
-        let result = &state.result(id);
-        scope = Virtual!.{ state, timers, invalid_plan };
-        let failure = if invalid_plan { Failure::InvalidPlan } else { Failure::InvalidResult };
+        let { raw } = scope;
+        let address = unsafe (raw as *State!);
+        let { policy, invalid, ..rest } = unsafe *address;
+        let result = &policy.result(id);
+        unsafe *address = State!.{ policy, invalid, ..rest };
+        scope = Virtual!.{ raw };
+        let failure = if invalid { Failure::InvalidPlan } else { Failure::InvalidResult };
         result.unwrap_or(Resolution::Failed.(failure))
     }
 }
 
-fn next_event(&timers: OwnedVec![Option[Duration]], deadline: Option[Duration]) -> Option[(Resource, Duration)] {
-    // A leaf replaces the parent deadline only if it is due sooner.
-    var next = deadline.map(|due| (Resource::ParentTimer, due));
-    var i = 0usize;
-    while i < &timers.len() {
-        match &timers.at(i) {
-            Some(duration) => {
+instance ContinuationDriver[Virtual!] {
+    fn child_scope() -> Virtual! { new_scope() }
+
+    fn close_child(scope: Virtual!) { close_scope(scope); }
+
+    fn scope_address(&scope: Virtual!) -> *u8 {
+        let { raw } = scope;
+        scope = Virtual!.{ raw };
+        raw
+    }
+
+    unsafe fn register(&parent: Virtual!, child: Child, handoff: Handoff) -> (*u8, Option[usize]) {
+        (null(), register_node(&parent, Node::Chain.(child, handoff), |&policy| &policy.add_leaf()))
+    }
+
+    unsafe fn budget_expired(parent: *u8) -> bool {
+        let (clock, deadline) = unsafe time_info(parent);
+        expired(unsafe *clock, deadline)
+    }
+
+    unsafe fn release(registration: *u8) {}
+}
+
+fn expired(now: Duration, limit: Option[Duration]) -> bool {
+    match limit { Some(end) => end.as_nanos() <= now.as_nanos(), None => false }
+}
+
+unsafe fn time_info(raw: *u8) -> (*Duration, Option[Duration]) {
+    let address = unsafe (raw as *State!);
+    let { clock, deadline, ..rest } = unsafe *address;
+    unsafe *address = State!.{ clock, deadline, ..rest };
+    (clock, deadline)
+}
+
+unsafe fn node_at(raw: *u8, id: usize) -> Node {
+    let address = unsafe (raw as *State!);
+    let { nodes, ..rest } = unsafe *address;
+    let node = &nodes.at(id);
+    unsafe *address = State!.{ nodes, ..rest };
+    node
+}
+
+unsafe fn set_node(raw: *u8, id: usize, node: Node) {
+    let address = unsafe (raw as *State!);
+    let { nodes, ..rest } = unsafe *address;
+    &nodes.set(id, node);
+    unsafe *address = State!.{ nodes, ..rest };
+}
+
+unsafe fn joined(raw: *u8) -> bool {
+    let address = unsafe (raw as *State!);
+    let { policy, invalid, ..rest } = unsafe *address;
+    let done = invalid || &policy.joined();
+    unsafe *address = State!.{ policy, invalid, ..rest };
+    done
+}
+
+unsafe fn start(raw: *u8, root: Option[usize], clock: *Duration, deadline: Option[Duration]) {
+    let address = unsafe (raw as *State!);
+    let { policy, nodes, invalid, clock: old_clock, deadline: old_deadline } = unsafe *address;
+    let invalid = invalid || !&policy.begin(root);
+    let now = unsafe *clock;
+    if invalid || expired(now, deadline) {
+        if !invalid { &policy.cancel(); }
+        unsafe *address = State!.{ policy, nodes, invalid, clock, deadline };
+        return;
+    }
+    let count = &nodes.len();
+    var index = 0;
+    while index < count {
+        match &nodes.at(index) {
+            Timer(duration) => {
+                &nodes.set(index, Node::Timer.(now.add(duration)));
+                &policy.started(Resource::Leaf.(index));
+            },
+            Chain => &policy.started(Resource::Leaf.(index)),
+            Empty => (),
+        };
+        index = index + 1;
+    }
+    unsafe *address = State!.{ policy, nodes, invalid, clock, deadline };
+    index = 0;
+    while index < count {
+        match unsafe node_at(raw, index) {
+            Chain(child, handoff) => unsafe drive_child(raw, index, child, handoff, false),
+            _ => (),
+        };
+        index = index + 1;
+    }
+}
+
+unsafe fn advance_child(handoff: Handoff, cancelled: u8) -> Option[Child] {
+    let { context, advance } = handoff;
+    let scope = unsafe alloca[*u8]();
+    let root = unsafe alloca[usize]();
+    if (unsafe advance(context, cancelled, scope, root)) == 0 { return Option::None; }
+    Option::Some.(Child.{ scope: unsafe *scope, root: unsafe *root })
+}
+
+unsafe fn drive_child(raw: *u8, id: usize, first: Child, handoff: Handoff, finished: bool) {
+    let (clock, deadline) = unsafe time_info(raw);
+    var next = if finished { unsafe advance_child(handoff, 0) } else { Option::Some.(first) };
+    while next.is_some() {
+        let child = next.unwrap();
+        unsafe set_node(raw, id, Node::Chain.(child, handoff));
+        let root = if child.root == usize::MAX { Option::None } else { Option::Some.(child.root) };
+        unsafe start(child.scope, root, clock, deadline);
+        if !unsafe joined(child.scope) { return; }
+        next = unsafe advance_child(handoff, 0);
+    }
+    unsafe settle(raw, id);
+}
+
+unsafe fn take_cancel(raw: *u8) -> Option[usize] {
+    let address = unsafe (raw as *State!);
+    let { policy, ..rest } = unsafe *address;
+    let id = &policy.take_cancel();
+    unsafe *address = State!.{ policy, ..rest };
+    id
+}
+
+unsafe fn retire_cancelled(raw: *u8) {
+    var pending = unsafe take_cancel(raw);
+    while pending.is_some() {
+        let id = pending.unwrap();
+        match unsafe node_at(raw, id) {
+            Chain(child, handoff) => {
+                unsafe cancel_scope(child.scope);
+                let ignored = unsafe advance_child(handoff, 1);
+            },
+            _ => (),
+        };
+        let address = unsafe (raw as *State!);
+        let { policy, nodes, ..rest } = unsafe *address;
+        &nodes.set(id, Node::Empty);
+        &policy.retired(Resource::Leaf.(id));
+        unsafe *address = State!.{ policy, nodes, ..rest };
+        pending = unsafe take_cancel(raw);
+    }
+}
+
+unsafe fn cancel_scope(raw: *u8) {
+    let address = unsafe (raw as *State!);
+    let { policy, ..rest } = unsafe *address;
+    &policy.cancel();
+    unsafe *address = State!.{ policy, ..rest };
+    unsafe retire_cancelled(raw);
+}
+
+unsafe fn settle(raw: *u8, id: usize) {
+    let address = unsafe (raw as *State!);
+    let { policy, nodes, ..rest } = unsafe *address;
+    &nodes.set(id, Node::Empty);
+    &policy.complete(id);
+    &policy.retired(Resource::Leaf.(id));
+    unsafe *address = State!.{ policy, nodes, ..rest };
+    unsafe retire_cancelled(raw);
+}
+
+unsafe fn next_event(raw: *u8) -> Option[(usize, Duration)] {
+    let address = unsafe (raw as *State!);
+    let { nodes, ..rest } = unsafe *address;
+    var next = Option::None;
+    var index = 0;
+    while index < &nodes.len() {
+        let due = match &nodes.at(index) {
+            Timer(due) => Option::Some.(due),
+            Chain(child, handoff) => (unsafe next_event(child.scope)).map(|event| { let (id, due) = event; due }),
+            Empty => Option::None,
+        };
+        match due {
+            Some(due) => {
                 let sooner = match next {
-                    Some(event) => { let (resource, due) = event; duration.as_nanos() < due.as_nanos() },
+                    Some(event) => { let (id, prior) = event; due.as_nanos() < prior.as_nanos() },
                     None => true,
                 };
-                if sooner { next = Option::Some.((Resource::Leaf.(i), duration)); }
+                if sooner { next = Option::Some.((index, due)); }
             },
             None => (),
-        }
-        i = i + 1usize;
+        };
+        index = index + 1;
     }
+    unsafe *address = State!.{ nodes, ..rest };
     next
 }
 
-fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> (Duration, bool) {
-    let { state, timers, invalid_plan } = scope;
-    if invalid_plan || !&state.begin(root) {
-        scope = Virtual!.{ state, timers, invalid_plan: true };
-        return (Duration::from_nanos(0), false);
+unsafe fn fire(raw: *u8, id: usize) {
+    match unsafe node_at(raw, id) {
+        Timer => unsafe settle(raw, id),
+        Chain(child, handoff) => {
+            let (index, due) = (unsafe next_event(child.scope)).unwrap();
+            unsafe fire(child.scope, index);
+            if unsafe joined(child.scope) { unsafe drive_child(raw, id, child, handoff, true); }
+        },
+        Empty => (),
     }
-    let expired = match deadline { Some(duration) => duration.is_zero(), None => false, };
-    if expired {
-        &state.cancel();
-        scope = Virtual!.{ state, timers, invalid_plan };
-        return (Duration::from_nanos(0), true);
-    }
-    var limit = deadline;
-    if limit.is_some() { &state.started(Resource::ParentTimer); }
-    var i = 0usize;
-    while i < &timers.len() {
-        if (&timers.at(i)).is_some() { &state.started(Resource::Leaf.(i)); }
-        i = i + 1usize;
-    }
-
-    var elapsed = Duration::from_nanos(0);
-    var deadline_expired = false;
-    while !&state.joined() {
-        let (resource, due) = next_event(&timers, limit).unwrap();
-        elapsed = due;
-        match resource {
-            ParentTimer => {
-                deadline_expired = true;
-                &state.cancel();
-                &state.retired(Resource::ParentTimer);
-                limit = Option::None;
-            },
-            Leaf(id) => {
-                &timers.set(id, Option::None);
-                let finished = &state.complete(id);
-                &state.retired(Resource::Leaf.(id));
-                if finished && limit.is_some() {
-                    &state.retired(Resource::ParentTimer);
-                    limit = Option::None;
-                }
-            },
-        }
-
-        var cancelled = &state.take_cancel();
-        while cancelled.is_some() {
-            let id = cancelled.unwrap();
-            &timers.set(id, Option::None);
-            &state.retired(Resource::Leaf.(id));
-            cancelled = &state.take_cancel();
-        }
-    }
-    scope = Virtual!.{ state, timers, invalid_plan };
-    (elapsed, deadline_expired)
 }
 
-fn ignore_timer(timer: Option[Duration]) {}
+fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> (Duration, bool) {
+    let { raw } = scope;
+    let clock = unsafe alloca[Duration]();
+    unsafe *clock = Duration::from_nanos(0);
+    unsafe start(raw, root, clock, deadline);
+    var deadline_expired = expired(unsafe *clock, deadline);
+    while !unsafe joined(raw) {
+        let (id, due) = (unsafe next_event(raw)).unwrap();
+        if expired(due, deadline) {
+            unsafe *clock = deadline.unwrap();
+            deadline_expired = true;
+            unsafe cancel_scope(raw);
+        } else {
+            unsafe *clock = due;
+            unsafe fire(raw, id);
+        }
+    }
+    scope = Virtual!.{ raw };
+    (unsafe *clock, deadline_expired)
+}
+
+fn ignore_node(node: Node) {}
 
 fn close_scope(scope: Virtual!) {
-    let { state, timers, invalid_plan } = scope;
-    state.destroy();
-    timers.destroy(ignore_timer);
+    let { raw } = scope;
+    let { policy, nodes, invalid, clock, deadline } = unsafe *(unsafe (raw as *State!));
+    policy.destroy();
+    nodes.destroy(ignore_node);
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
 }
 
 forall Task, Output where Plan[Task, Virtual! -> Output].
@@ -132,8 +301,7 @@ fn drive(task: Task, deadline: Option[Duration]) -> Output {
 
 forall Task, Output where Plan[Task, Virtual! -> Output].
 fn drive_timed(task: Task, deadline: Option[Duration]) -> (StageResult[Output], Duration) {
-    let scope = Virtual!.{ state: ScopeState!::new(), timers: OwnedVec!::new(), invalid_plan: false };
-    let (output, (elapsed, deadline_expired)) = prepare(task, scope).drive(
+    let (output, (elapsed, deadline_expired)) = prepare(task, new_scope()).drive(
         |&scope, root| advance(&scope, root, deadline), close_scope);
     (StageResult.{ output, deadline_expired }, elapsed)
 }

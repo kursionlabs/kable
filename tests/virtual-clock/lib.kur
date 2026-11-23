@@ -3,9 +3,10 @@ use std::mem::alloca;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, Discard, PlanOutput, Sleep!, join, sleep};
+use task::{Completion, Discard, PlanOutput, Sleep!, join, select, sleep};
 use task::sequence::SequenceOutcome;
-use virtual_clock::{run_sequence, run_with_deadline};
+use task::continuation::ChainPlan!;
+use virtual_clock::{Virtual!, run, run_sequence, run_with_deadline};
 
 fn check_deadline_order() -> bool {
     let deadline = Duration::from_nanos(2);
@@ -30,7 +31,7 @@ instance Discard[Tracked!] {
     }
 }
 
-fn check_skipped_handoffs() -> bool {
+fn check_skipped_handoffs(as_plan: bool) -> bool {
     let first_state = unsafe alloca[usize]();
     let later_state = unsafe alloca[usize]();
     let joined_output = unsafe alloca[usize]();
@@ -48,13 +49,43 @@ fn check_skipped_handoffs() -> bool {
             (state, output).discard();
             trap()
         });
-    let cancelled = match run_sequence(plan, Option::Some.(Duration::from_nanos(2))) {
+    let budget = Duration::from_nanos(2);
+    let result = if as_plan {
+        let task: ChainPlan![SequenceOutcome[Completion[()]], Virtual!] = plan.into_plan();
+        run_with_deadline(task, budget)
+    } else { run_sequence(plan, Option::Some.(budget)) };
+    let cancelled = match result {
         SequenceOutcome::Cancelled => true,
         _ => false,
     };
     cancelled && (unsafe *first_state) == 1 && (unsafe *later_state) == 1 && (unsafe *joined_output) == 1
 }
 
+fn check_cancelled_dependent_handoff() -> bool {
+    let count = unsafe alloca[usize]();
+    unsafe *count = 0;
+    let deadline = Duration::from_nanos(2);
+    let first = sleep(deadline).map(|status| Completion::Ready.(Tracked!.{ discards: count }));
+    let task: ChainPlan![Completion[()], Virtual!] = first.and_then(|value| -> Sleep! {
+        value.discard();
+        trap()
+    });
+    match run_with_deadline(task, deadline) {
+        Cancelled => (unsafe *count) == 1,
+        _ => false,
+    }
+}
+
+fn check_second_stage_clock() -> bool {
+    let task: ChainPlan![Completion[()], Virtual!] = sleep(Duration::from_nanos(2))
+        .and_then(|unit| sleep(Duration::from_nanos(3)));
+    let (task, timer, status) = run(select(task, sleep(Duration::from_nanos(4))));
+    match task { Cancelled => (), _ => return false };
+    match timer { Ready => (), _ => return false };
+    match status { Ready(side) => match side { Second => true, First => false }, _ => false }
+}
+
 fn main() -> i32 {
-    if check_deadline_order() && check_skipped_handoffs() { 0 } else { 1 }
+    if check_deadline_order() && check_skipped_handoffs(false) && check_skipped_handoffs(true) &&
+        check_cancelled_dependent_handoff() && check_second_stage_clock() { 0 } else { 1 }
 }

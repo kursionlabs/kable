@@ -1,3 +1,4 @@
+use async::Scope!;
 use http::{Body!, Request!, Response!};
 use server::{Action!, Server!};
 use std::ascii::to_upper;
@@ -8,6 +9,7 @@ use std::process::trap;
 use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, Discard, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, sleep};
+use task::continuation::ChainPlan!;
 
 struct Memory! { remaining: u8, may_pull: bool, report_discard: bool }
 
@@ -85,6 +87,33 @@ fn collection_response(outcome: Completion[Buffer!]) -> Action! {
     Response!::rejected(status).reply()
 }
 
+fn pull_completion(result: (Body!, StreamOutcome[Buffer!])) -> Completion[Buffer!] {
+    let (body, outcome) = result;
+    body.discard();
+    match outcome {
+        Item(bytes) => Completion::Ready.(bytes),
+        Eof => Completion::Ready.(Buffer!::new()),
+        TimedOut => Completion::TimedOut,
+        Cancelled => Completion::Cancelled,
+        Failed(failure) => Completion::Failed.(failure),
+    }
+}
+
+fn after_pull(bytes: Buffer!, status: Completion[()]) -> Completion[Buffer!] {
+    match status {
+        Ready => Completion::Ready.(bytes),
+        TimedOut => { bytes.destroy(); Completion::TimedOut },
+        Cancelled => { bytes.destroy(); Completion::Cancelled },
+        Failed(failure) => { bytes.destroy(); Completion::Failed.(failure) },
+    }
+}
+
+fn pull_plan(body: Body!) -> Action! {
+    let task: ChainPlan![Completion[Buffer!], Scope!] = body.next().map(|result| pull_completion(result))
+        .and_then(|bytes| sleep(Duration::from_nanos(0)).map(|status| after_pull(bytes, status)));
+    task.respond(|result| collection_response(result)).reply()
+}
+
 fn collect(body: Body!, observed: bool) -> Action! {
     body.map_items(|bytes| {
         if observed { eprint_buffer(f"Transformed body chunk.\n"); }
@@ -96,6 +125,11 @@ fn collect(body: Body!, observed: bool) -> Action! {
 }
 
 fn serve(request: Request!) -> Action! {
+    if &request.path_is("/pull-plan") {
+        let { method, target, body } = request;
+        target.destroy();
+        return pull_plan(body);
+    }
     if &request.path_is("/pull") {
         let { method, target, body } = request;
         target.destroy();

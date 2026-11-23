@@ -299,6 +299,7 @@ typedef uint8_t (*ChainAdvance)(uint8_t *, uint8_t, uint8_t **, size_t *);
 
 typedef struct {
     Scope *parent;
+    uint64_t host_key;
     uint8_t *state;
     ChainAdvance advance;
     uint8_t *child;
@@ -313,12 +314,16 @@ typedef struct {
 } Chain;
 
 uint8_t *kable_chain_new(uint8_t *parent, uint8_t *state, ChainAdvance advance, uint8_t *child, size_t root) {
+    Scope *first = (Scope *)child;
+    uint64_t key = first ? first->host_key : 0;
+    if (key && !kable_scope_require_host(parent, key)) return NULL;
     Chain *chain = malloc(sizeof *chain);
     if (!chain) {
         kable_scope_fail_allocation(parent);
         return NULL;
     }
-    *chain = (Chain){ .parent = (Scope *)parent, .state = state, .advance = advance, .child = child, .root = root };
+    *chain = (Chain){ .parent = (Scope *)parent, .host_key = key, .state = state,
+        .advance = advance, .child = child, .root = root };
     return (uint8_t *)chain;
 }
 
@@ -331,8 +336,13 @@ static void drive_chain(Chain *chain, uint8_t joined) {
         if (chain->cancelled || kable_scope_budget_expired((uint8_t *)chain->parent)) continue;
         Scope *child = (Scope *)chain->child;
         if (child) {
-            /* The parent host registers its operations before it starts. */
-            if (child->host_key) child->invalid_plan = 1;
+            /* The first child reserves the host before scheduling. Later
+               children may reuse that owner after the previous child joins. */
+            if (child->host_key) {
+                if (child->host_key == chain->host_key && chain->parent->host) {
+                    child->host = chain->parent->host;
+                } else child->invalid_plan = 1;
+            }
             child->deadline_ms = chain->parent->deadline_ms;
         }
         if (kable_scope_start(chain->child, chain->root, chain->loop, 0, 0, child_joined, chain)) {

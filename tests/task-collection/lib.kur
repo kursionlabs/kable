@@ -1,4 +1,5 @@
-use async::{run, run_sequence, run_with_deadline};
+use async::{Scope!, run, run_sequence, run_with_deadline};
+use task::continuation::ChainPlan!;
 use std::buffer::Buffer!;
 use std::option::Option;
 use std::process::trap;
@@ -375,10 +376,29 @@ fn check_timed_send() -> bool {
     match status { Ready => returned, _ => false }
 }
 
+fn check_dependent_plan() -> bool {
+    let step = Duration::from_millis(15);
+    let plan: ChainPlan![Completion[()], Scope!] = sleep(step).and_then(|unit| sleep(step));
+    let (first, second, status) = run(select(plan, sleep(Duration::from_millis(100))));
+    match first { Ready => (), _ => return false };
+    match second { Cancelled => (), _ => return false };
+    match status {
+        Ready(side) => match side { First => true, Second => false },
+        _ => false,
+    }
+}
+
+fn check_sequence_plan() -> bool {
+    let instant = Duration::from_nanos(0);
+    let sequence = sleep(instant).then(|status| -> Option[Sleep!] { Option::None });
+    let plan: ChainPlan![SequenceOutcome[Completion[()]], Scope!] = sequence.into_plan();
+    match run(plan) { Stopped => true, _ => false }
+}
+
 fn main() -> i32 {
     let plan = ReverseSelect!.{ first: sleep(Duration::from_nanos(0)), second: sleep(Duration::from_secs(30)), id: Option::None };
     let rejected_pair = RejectedPair.{ root: Option::None, rejected: false };
     if run(plan) && check_invalid_root(true) && check_invalid_root(false) && run(rejected_pair) && check_cancelled_join() &&
         check_deadline_timer_results() && check_reported_deadline() && check_local_timeout_handoff() &&
-        check_timed_stream() && check_timed_send() { 0 } else { 1 }
+        check_timed_stream() && check_timed_send() && check_dependent_plan() && check_sequence_plan() { 0 } else { 1 }
 }

@@ -1,0 +1,246 @@
+//! A registered continuation joins one child before it can start another.
+use package::{Completion, Discard, PlanOutput};
+use package::driver::{Plan, PlanDriver, Prepared!, Resolution, prepare};
+use std::heap::HeapAllocator;
+use std::mem::sizeof;
+use std::option::Option;
+use std::ptr::null;
+
+exposed struct Child { scope: *u8, root: usize }
+
+exposed struct Handoff {
+    context: *u8,
+    advance: unsafe fn(*u8, u8, *(*u8), *usize) -> u8,
+}
+
+forall Driver.
+trait ContinuationDriver {
+    fn child_scope() -> Driver;
+    fn close_child(scope: Driver);
+    fn scope_address(&scope: Driver) -> *u8;
+    /// Registers one parent leaf. Advance collects the child, so cancellation
+    /// must wait for any started child to retire before calling it.
+    /// An unstarted child can be collected immediately.
+    unsafe fn register(&parent: Driver, child: Child, handoff: Handoff) -> (*u8, Option[usize]);
+    unsafe fn budget_expired(parent: *u8) -> bool;
+    unsafe fn release(registration: *u8);
+}
+
+forall Value, Driver.
+struct ChainPlan! {
+    context: *u8,
+    register: unsafe fn(*u8, &_: Driver) -> Option[usize],
+    finish: unsafe fn(*u8, &_: Driver) -> Value,
+}
+
+forall Task, Driver, Value where Plan[Task, Driver -> Value].
+fn erase(task: Task) -> ChainPlan![Value, Driver] {
+    let context = HeapAllocator::alloc(sizeof[Task]()).into_raw();
+    unsafe *(unsafe (context as *Task)) = task;
+    ChainPlan!.{ context, register: register_task[Task, Driver, Value], finish: finish_task[Task, Driver, Value] }
+}
+
+forall Task, Driver, Value where Plan[Task, Driver -> Value].
+unsafe fn register_task(raw: *u8, &scope: Driver) -> Option[usize] {
+    let address = unsafe (raw as *Task);
+    let task = unsafe *address;
+    let id = Plan[Task, Driver -> Value]::stage(&task, &scope);
+    unsafe *address = task;
+    id
+}
+
+forall Task, Driver, Value where Plan[Task, Driver -> Value].
+unsafe fn finish_task(raw: *u8, &scope: Driver) -> Value {
+    let task = unsafe *(unsafe (raw as *Task));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
+    Plan[Task, Driver -> Value]::collect(task, &scope)
+}
+
+forall Next, Value.
+exposed enum HandoffStep { Start(Next), Finish(Value) }
+
+forall First, Driver, State, Input, Next, Value, Env.
+enum Phase! {
+    Pending(First, State, closure[Env](State, Input) -> HandoffStep[Next, Value]),
+    First(Prepared![First, Driver], State, closure[Env](State, Input) -> HandoffStep[Next, Value]),
+    Next(Prepared![Next, Driver]),
+    Done(Value, bool),
+}
+
+forall First, Driver, State, Input, Next, Value, Env.
+struct Pending! {
+    parent: *u8,
+    registration: *u8,
+    id: Option[usize],
+    phase: Phase![First, Driver, State, Input, Next, Value, Env],
+    cancel: fn(State, Input) -> Value,
+    resolve: fn(Value, Resolution) -> Value,
+}
+
+forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
+    ContinuationDriver[Driver], PlanDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
+fn chain(first: First, state: State, resume: closure[Env](State, Input) -> HandoffStep[Next, Value],
+    cancel: fn(State, Input) -> Value, resolve: fn(Value, Resolution) -> Value) -> ChainPlan![Value, Driver] {
+    let context = HeapAllocator::alloc(sizeof[Pending![First, Driver, State, Input, Next, Value, Env]]()).into_raw();
+    let pending = unsafe (context as *Pending![First, Driver, State, Input, Next, Value, Env]);
+    unsafe *pending = Pending!.{ parent: null(), registration: null(), id: Option::None,
+        phase: Phase!::Pending.(first, state, resume), cancel, resolve };
+    ChainPlan!.{ context, register: register[First, Driver, State, Input, Next, Value, Env],
+        finish: finish[First, Driver, State, Input, Next, Value, Env] }
+}
+
+forall First, Input where PlanOutput[First -> Completion[Input]].
+impl First {
+    /// Uses the successful result to build the next plan under the same scope.
+    forall Driver, Next, Output, Env where Copy[Env], Discard[Input], Discard[Output],
+        ContinuationDriver[Driver], PlanDriver[Driver], Plan[First, Driver -> Completion[Input]],
+        PlanOutput[Next -> Completion[Output]], Plan[Next, Driver -> Completion[Output]].
+    fn and_then(self, next: closure[Env](Input) -> Next) -> ChainPlan![Completion[Output], Driver] {
+        chain(self, next, |next, result| match result {
+            Completion::Ready(input) => HandoffStep::Start.(next(input)),
+            TimedOut => HandoffStep::Finish.(Completion::TimedOut),
+            Cancelled => HandoffStep::Finish.(Completion::Cancelled),
+            Failed(failure) => HandoffStep::Finish.(Completion::Failed.(failure)),
+        }, skip_completion[Input, Next, Output, Env], resolve_completion[Output])
+    }
+}
+
+forall Input, Next, Output, Env where Copy[Env], Discard[Input].
+fn skip_completion(next: closure[Env](Input) -> Next, result: Completion[Input]) -> Completion[Output] {
+    result.discard();
+    Completion::Cancelled
+}
+
+forall Value where Discard[Value].
+fn resolve_completion(result: Completion[Value], resolution: Resolution) -> Completion[Value] {
+    match resolution {
+        Completed => result,
+        Cancelled => { result.discard(); Completion::Cancelled },
+        Failed(failure) => { result.discard(); Completion::Failed.(failure) },
+        First | Second => { result.discard(); Completion::Failed.(package::Failure::InvalidResult) },
+    }
+}
+
+forall Task, Driver where ContinuationDriver[Driver].
+fn child(&prepared: Prepared![Task, Driver]) -> Child {
+    &prepared.with_scope(|&scope, root| Child.{ scope: ContinuationDriver[Driver]::scope_address(&scope),
+        root: root.unwrap_or(usize::MAX) })
+}
+
+forall Driver where ContinuationDriver[Driver].
+fn close_child(scope: Driver) { ContinuationDriver[Driver]::close_child(scope); }
+
+forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
+    ContinuationDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
+unsafe fn advance(raw: *u8, cancelled: u8, scope: *(*u8), root: *usize) -> u8 {
+    let pending = unsafe (raw as *Pending![First, Driver, State, Input, Next, Value, Env]);
+    let { phase, parent, cancel, resolve, ..rest } = unsafe *pending;
+    let (result, interrupted) = match phase {
+        First(prepared, state, resume) => {
+            let input = prepared.collect(close_child[Driver]);
+            if cancelled != 0 || (unsafe ContinuationDriver[Driver]::budget_expired(parent)) {
+                (cancel(state, input), true)
+            } else {
+                match resume(state, input) {
+                    Start(next) => {
+                        let prepared = prepare(next, ContinuationDriver[Driver]::child_scope());
+                        let child = child(&prepared);
+                        unsafe *pending = Pending!.{ parent, cancel, resolve, phase: Phase!::Next.(prepared), ..rest };
+                        unsafe *scope = child.scope;
+                        unsafe *root = child.root;
+                        return 1;
+                    },
+                    Finish(result) => (result, false),
+                }
+            }
+        },
+        Next(prepared) => {
+            let result = prepared.collect(close_child[Driver]);
+            (result, cancelled != 0 || (unsafe ContinuationDriver[Driver]::budget_expired(parent)))
+        },
+        Done(result, interrupted) => (result, interrupted),
+        Pending(first, state, resume) => {
+            let scope = ContinuationDriver[Driver]::child_scope();
+            let input = Plan[First, Driver -> Input]::collect(first, &scope);
+            ContinuationDriver[Driver]::close_child(scope);
+            (cancel(state, input), true)
+        },
+    };
+    unsafe *pending = Pending!.{ parent, cancel, resolve, phase: Phase!::Done.(result, interrupted), ..rest };
+    0
+}
+
+forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
+    ContinuationDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
+unsafe fn register(raw: *u8, &parent: Driver) -> Option[usize] {
+    let pending = unsafe (raw as *Pending![First, Driver, State, Input, Next, Value, Env]);
+    let { phase, cancel, resolve, ..rest } = unsafe *pending;
+    let (first, state, resume) = match phase {
+        Pending(first, state, resume) => (first, state, resume),
+        First(prepared, state, resume) => {
+            unsafe *pending = Pending!.{ cancel, resolve, phase: Phase!::First.(prepared, state, resume), ..rest };
+            return Option::None;
+        },
+        Next(prepared) => {
+            unsafe *pending = Pending!.{ cancel, resolve, phase: Phase!::Next.(prepared), ..rest };
+            return Option::None;
+        },
+        Done(result, interrupted) => {
+            unsafe *pending = Pending!.{ cancel, resolve, phase: Phase!::Done.(result, interrupted), ..rest };
+            return Option::None;
+        },
+    };
+    let prepared = prepare(first, ContinuationDriver[Driver]::child_scope());
+    let (registration, id) = unsafe ContinuationDriver[Driver]::register(&parent, child(&prepared),
+        Handoff.{ context: raw, advance: advance[First, Driver, State, Input, Next, Value, Env] });
+    let parent = ContinuationDriver[Driver]::scope_address(&parent);
+    unsafe *pending = Pending!.{ parent, registration, id, cancel, resolve,
+        phase: Phase!::First.(prepared, state, resume) };
+    id
+}
+
+forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
+    ContinuationDriver[Driver], PlanDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
+unsafe fn finish(raw: *u8, &scope: Driver) -> Value {
+    let { parent, registration, id, phase, cancel, resolve } =
+        unsafe *(unsafe (raw as *Pending![First, Driver, State, Input, Next, Value, Env]));
+    unsafe ContinuationDriver[Driver]::release(registration);
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
+    let (result, interrupted) = match phase {
+        Pending(first, state, resume) => {
+            let scope = ContinuationDriver[Driver]::child_scope();
+            let input = Plan[First, Driver -> Input]::collect(first, &scope);
+            ContinuationDriver[Driver]::close_child(scope);
+            (cancel(state, input), true)
+        },
+        First(prepared, state, resume) => (cancel(state, prepared.collect(close_child[Driver])), true),
+        Next(prepared) => (prepared.collect(close_child[Driver]), true),
+        Done(result, interrupted) => (result, interrupted),
+    };
+    let status = match PlanDriver[Driver]::result(&scope, id) {
+        Completed => if interrupted { Resolution::Cancelled } else { Resolution::Completed },
+        Cancelled => Resolution::Cancelled,
+        Failed(failure) => Resolution::Failed.(failure),
+        First => Resolution::First,
+        Second => Resolution::Second,
+    };
+    resolve(result, status)
+}
+
+forall Value, Driver.
+instance PlanOutput[ChainPlan![Value, Driver] -> Value] {}
+
+forall Value, Driver.
+instance Plan[ChainPlan![Value, Driver], Driver -> Value] {
+    fn stage(&task: ChainPlan![Value, Driver], &scope: Driver) -> Option[usize] {
+        let { context, register, finish } = task;
+        let id = unsafe register(context, &scope);
+        task = ChainPlan!.{ context, register, finish };
+        id
+    }
+
+    fn collect(task: ChainPlan![Value, Driver], &scope: Driver) -> Value {
+        let { context, register, finish } = task;
+        unsafe finish(context, &scope)
+    }
+}

@@ -1238,7 +1238,8 @@ def check_mapped_collection(port, stderr, check_timeout):
                     413, b"Content Too Large\n")
 
     if check_timeout:
-        with connect(port) as client:
+        with connect(port) as client, connect(port) as pull:
+            pull.sendall(b"POST /pull-plan HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\n")
             client.sendall(observed + b"1\r\na\r\n")
             read_log_until(stderr, b"Transformed body chunk.")
             assert not select.select([client], [], [], 5)[0], "collection expired too early"
@@ -1247,6 +1248,8 @@ def check_mapped_collection(port, stderr, check_timeout):
             assert select.select([client], [], [], 7)[0], "a transformed chunk reset the request deadline"
             assert_response(read_response(client), 408, b"Request Timeout\n")
             read_log_until(stderr, b"Finished collecting body.")
+            assert select.select([pull], [], [], 2)[0], "the dependent pull lost its request deadline"
+            assert_response(read_response(pull), 408, b"Request Timeout\n")
 
 
 def check_http_streams(binary, directory, check_timeout=False):
@@ -1289,6 +1292,12 @@ def check_http_streams(binary, directory, check_timeout=False):
             check_http_relay(port, b"/upper", bytes.upper)
             check_chunked_relay(port, b"/upper", bytes.upper, check_timeout)
             check_mapped_collection(port, process.stderr, check_timeout)
+
+            with connect(port) as client:
+                client.sendall(b"POST /pull-plan HTTP/1.1\r\nHost: localhost\r\nContent-Length: 6\r\n\r\n")
+                assert not select.select([client], [], [], 0.05)[0]
+                client.sendall(b"abc")
+                assert_response(read_response(client), 200, b"abc")
 
             headers = b"POST /pull HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
             with connect(port) as client:

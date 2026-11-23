@@ -1,5 +1,7 @@
 //! Explicit sequential adapters. Engines drive one fully scoped stage at a time.
-use package::{Discard, PlanOutput, discard_owned};
+use package::{Discard, Map!, PlanOutput, discard_owned};
+use package::continuation::{ChainPlan!, ContinuationDriver, HandoffStep, chain, erase};
+use package::driver::{Plan, PlanDriver, Resolution};
 use std::option::Option;
 use std::time::Duration;
 use thunk::Thunk!;
@@ -74,6 +76,13 @@ fn skip_copy(resume: closure[Env](Input) -> Option[Task], input: Option[Input]) 
 
 forall Stages, Input.
 impl Sequence![Stages, Input] {
+    /// Uses the sequence as a child of a regular plan on a continuation driver.
+    forall Driver where SequencePlan[Stages, Driver -> Input].
+    fn into_plan(self) -> ChainPlan![SequenceOutcome[Input], Driver] {
+        let { stages } = self;
+        SequencePlan[Stages, Driver -> Input]::build(stages)
+    }
+
     /// The callback and its input can both be dropped if the handoff is skipped.
     forall Env, Task, Output where PlanOutput[Task -> Output], Copy[Env], Copy[Input].
     fn then(self, resume: closure[Env](Input) -> Option[Task])
@@ -99,6 +108,61 @@ impl Sequence![Stages, Input] {
         Sequence!.{ stages: Then!.{ previous: stages, handoff: thunk::defer(state, resume, cancel) } }
     }
 }
+
+forall Stages, Driver -> Output.
+trait SequencePlan { fn build(stages: Stages) -> ChainPlan![SequenceOutcome[Output], Driver]; }
+
+forall Task, Driver, Output where PlanOutput[Task -> Output], Plan[Task, Driver -> Output].
+instance SequencePlan[First![Task], Driver -> Output] {
+    fn build(stages: First![Task]) -> ChainPlan![SequenceOutcome[Output], Driver] {
+        let { task } = stages;
+        erase(task.map(|output| SequenceOutcome::Finished.(output)))
+    }
+}
+
+forall Previous, State, Input, Next, Output, Env, Driver where Copy[Env],
+    ContinuationDriver[Driver], PlanDriver[Driver], SequencePlan[Previous, Driver -> Input],
+    Plan[Next, Driver -> Output], PlanOutput[Next -> Output].
+instance SequencePlan[Then![Previous, State, Input, Next, Env], Driver -> Output] {
+    fn build(stages: Then![Previous, State, Input, Next, Env]) -> ChainPlan![SequenceOutcome[Output], Driver] {
+        let { previous, handoff } = stages;
+        let prior = SequencePlan[Previous, Driver -> Input]::build(previous);
+        chain(prior, handoff, |handoff, input| resume_handoff[State, Input, Next, Output, Env](handoff, input),
+            cancel_handoff[State, Input, Next, Output, Env], resolve_sequence[Output])
+    }
+}
+
+forall State, Input, Next, Output, Env where Copy[Env], PlanOutput[Next -> Output].
+fn resume_handoff(handoff: Thunk![State, Input, Option[Next], Env, fn(State, Option[Input]) -> ()],
+    prior: SequenceOutcome[Input]) -> HandoffStep[Map![Next, Output, SequenceOutcome[Output], ()], SequenceOutcome[Output]] {
+    match prior {
+        Finished(input) => match handoff.resume(input) {
+            Some(task) => HandoffStep::Start.(task.map(|output| SequenceOutcome::Finished.(output))),
+            None => HandoffStep::Finish.(SequenceOutcome::Stopped),
+        },
+        Stopped => {
+            handoff.discard_with(Option::None);
+            HandoffStep::Finish.(SequenceOutcome::Stopped)
+        },
+        Cancelled => {
+            handoff.discard_with(Option::None);
+            HandoffStep::Finish.(SequenceOutcome::Cancelled)
+        },
+    }
+}
+
+forall State, Input, Next, Output, Env where Copy[Env].
+fn cancel_handoff(handoff: Thunk![State, Input, Option[Next], Env, fn(State, Option[Input]) -> ()],
+    prior: SequenceOutcome[Input]) -> SequenceOutcome[Output] {
+    match prior {
+        Finished(input) => { handoff.discard_with(Option::Some.(input)); SequenceOutcome::Cancelled },
+        Stopped => { handoff.discard_with(Option::None); SequenceOutcome::Stopped },
+        Cancelled => { handoff.discard_with(Option::None); SequenceOutcome::Cancelled },
+    }
+}
+
+forall Output.
+fn resolve_sequence(result: SequenceOutcome[Output], status: Resolution) -> SequenceOutcome[Output] { result }
 
 forall Stages, Engine -> Output.
 trait Chain {

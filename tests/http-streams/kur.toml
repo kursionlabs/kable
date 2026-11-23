@@ -7,6 +7,9 @@ entry="main"
 [dependencies.std]
 path="../../../kursal/lib/std"
 
+[dependencies.async]
+path="../../lib/async"
+
 [dependencies.http]
 path="../../lib/http"
 
