@@ -1,0 +1,70 @@
+//! Collects transformed byte streams within the request's existing deadline.
+use async::Scope!;
+use package::Action!;
+use std::buffer::Buffer!;
+use task::{Completion, Discard, Failure, MappedStream!, PlanOutput, Stream, StreamOutcome};
+use task::driver::Plan;
+
+forall Source.
+struct StreamCollection! { source: Source, limit: usize }
+
+forall Source, Env.
+struct CollectionReply! {
+    collection: StreamCollection![Source],
+    respond: closure[Env](Completion[Buffer!]) -> Action!,
+}
+
+forall Source, Item, Env.
+impl MappedStream![Source, Item, Buffer!, Env] {
+    /// Collects the transformed bytes. Exceeding the byte limit reports HTTP 413.
+    fn collect(self, limit: usize) -> StreamCollection![MappedStream![Source, Item, Buffer!, Env]] {
+        StreamCollection!.{ source: self, limit }
+    }
+}
+
+forall Source.
+impl StreamCollection![Source] {
+    /// Uses `respond` once the stream ends or fails while the request is active.
+    forall Env where Copy[Env].
+    fn respond(self, respond: closure[Env](Completion[Buffer!]) -> Action!) -> CollectionReply![Source, Env] {
+        CollectionReply!.{ collection: self, respond }
+    }
+}
+
+forall Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
+    PlanOutput[Read -> (Source, StreamOutcome[Buffer!])], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+impl CollectionReply![Source, Env] {
+    /// Pulls the stream under the original request deadline.
+    fn reply(self) -> Action! {
+        let { collection, respond } = self;
+        let { source, limit } = collection;
+        collect_next(source, Buffer!::new(), limit, respond)
+    }
+}
+
+forall Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
+    PlanOutput[Read -> (Source, StreamOutcome[Buffer!])], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+fn collect_next(source: Source, bytes: Buffer!, limit: usize,
+    respond: closure[Env](Completion[Buffer!]) -> Action!) -> Action! {
+    source.next().respond_owned(bytes, |bytes, result| {
+        let (source, outcome) = result;
+        let failure = match outcome {
+            StreamOutcome::Item(item) => {
+                if &item.len() <= limit - &bytes.len() {
+                    return collect_next(source, bytes.push_buffer(item), limit, respond);
+                }
+                item.destroy();
+                Completion::Failed.(Failure::Operation.(413))
+            },
+            Eof => {
+                source.discard();
+                return respond(Completion::Ready.(bytes));
+            },
+            TimedOut => Completion::TimedOut,
+            Cancelled => Completion::Cancelled,
+            Failed(failure) => Completion::Failed.(failure),
+        };
+        (source, bytes).discard();
+        respond(failure)
+    }).reply()
+}

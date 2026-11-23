@@ -73,11 +73,35 @@ fn uppercase(bytes: Buffer!) -> Buffer! {
     mapped
 }
 
+fn collect(body: Body!, observed: bool) -> Action! {
+    body.map_items(|bytes| {
+        if observed { eprint_buffer(f"Transformed body chunk.\n"); }
+        uppercase(bytes).push_static("!")
+    }).collect(6).respond(|outcome| {
+        if observed { eprint_buffer(f"Finished collecting body.\n"); }
+        let status = match outcome {
+            Completion::Ready(bytes) => return Response!::ok(bytes).reply(),
+            TimedOut | Cancelled => 408,
+            Failed(failure) => match failure {
+                Operation(code) => if code == 400 || code == 413 { code as u16 } else { 500 },
+                _ => 500,
+            },
+        };
+        Response!::rejected(status).reply()
+    }).reply()
+}
+
 fn serve(request: Request!) -> Action! {
     if &request.path_is("/pull") {
         let { method, target, body } = request;
         target.destroy();
         return pull(body, Buffer!::new(), 0);
+    }
+    let observed = &request.path_is("/collect-observed");
+    if observed || &request.path_is("/collect") {
+        let { method, target, body } = request;
+        target.destroy();
+        return collect(body, observed);
     }
     let upper = &request.path_is("/upper");
     if upper || &request.path_is("/relay") {

@@ -1179,6 +1179,43 @@ def check_chunked_relay(port, path, transform, check_timeout):
             assert stream.read() == b"", "timed-out input emitted a terminal chunk"
 
 
+def check_mapped_collection(port, stderr, check_timeout):
+    headers = b"POST /collect HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+    observed = headers.replace(b"/collect", b"/collect-observed")
+    assert_response(exchange(port, headers, b"0\r\n\r\n"), 200, b"")
+
+    with connect(port) as client:
+        client.sendall(observed)
+        for byte in (b"a", b"b", b"c"):
+            client.sendall(b"1\r\n" + byte + b"\r\n")
+            read_log_until(stderr, b"Transformed body chunk.")
+        assert not select.select([client], [], [], 0.05)[0], "reaching the limit finished collection before EOF"
+        client.sendall(b"0\r\n\r\n")
+        assert_response(read_response(client), 200, b"A!B!C!")
+        read_log_until(stderr, b"Finished collecting body.")
+
+    # These decoded bytes fit, but their transformed representation exceeds the limit.
+    with connect(port) as client:
+        client.sendall(observed)
+        for byte in (b"a", b"b", b"c", b"d"):
+            client.sendall(b"1\r\n" + byte + b"\r\n")
+            read_log_until(stderr, b"Transformed body chunk.")
+        assert_response(read_response(client), 413, b"Content Too Large\n")
+        read_log_until(stderr, b"Finished collecting body.")
+    assert_response(exchange(port, headers, b"2\r\nab\r\n", eof=True), 400, b"Bad Request\n")
+
+    if check_timeout:
+        with connect(port) as client:
+            client.sendall(observed + b"1\r\na\r\n")
+            read_log_until(stderr, b"Transformed body chunk.")
+            assert not select.select([client], [], [], 5)[0], "collection expired too early"
+            client.sendall(b"1\r\nb\r\n")
+            read_log_until(stderr, b"Transformed body chunk.")
+            assert select.select([client], [], [], 7)[0], "a transformed chunk reset the request deadline"
+            assert_response(read_response(client), 408, b"Request Timeout\n")
+            read_log_until(stderr, b"Finished collecting body.")
+
+
 def check_http_streams(binary, directory, check_timeout=False):
     library = build_stream_write_order(directory)
     env = os.environ | {"LD_PRELOAD": str(library), "KABLE_TEST_RELAY_BACKPRESSURE": "1"}
@@ -1217,6 +1254,7 @@ def check_http_streams(binary, directory, check_timeout=False):
             check_chunked_relay(port, b"/relay", bytes, False)
             check_http_relay(port, b"/upper", bytes.upper)
             check_chunked_relay(port, b"/upper", bytes.upper, check_timeout)
+            check_mapped_collection(port, process.stderr, check_timeout)
 
             headers = b"POST /pull HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
             with connect(port) as client:
@@ -1230,14 +1268,17 @@ def check_http_streams(binary, directory, check_timeout=False):
                 client.sendall(b"\r\n")
                 assert_response(read_response(client), 200, b"2:a\x00b")
 
-            with connect(port) as client, connect(port) as delayed:
+            with connect(port) as client, connect(port) as delayed, connect(port) as collected:
                 client.sendall(headers + b"1\r\na\r\n")
                 read_log_until(process.stderr, b"Received body chunk.")
+                collected.sendall(headers.replace(b"/pull", b"/collect-observed") + b"1\r\na\r\n")
+                read_log_until(process.stderr, b"Transformed body chunk.")
                 delayed.sendall(b"GET /cancel-delayed HTTP/1.1\r\nHost: localhost\r\n\r\n")
                 read_log_until(process.stderr, b"Scheduled delayed response.")
                 process.terminate()
                 assert client.recv(1) == b"", "shutdown resumed a pending body pull"
                 assert delayed.recv(1) == b"", "shutdown started a delayed response"
+                assert collected.recv(1) == b"", "shutdown resumed a pending body collection"
                 assert process.wait(timeout=5) == 0
                 logs = process.stderr.read().splitlines()
                 assert sorted(logs) == [b"Discarded pending body pull.", b"Discarded response source."], logs

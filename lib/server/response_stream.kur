@@ -57,6 +57,34 @@ fn complete(framing: ResponseFraming) -> bool {
     match framing { Fixed(length) => length == 0, _ => false }
 }
 
+enum ResponseStep! {
+    Send(ResponseFraming, Buffer!),
+    Finish(bool),
+}
+
+fn frame(framing: ResponseFraming, outcome: StreamOutcome[Buffer!]) -> ResponseStep! {
+    let bytes = match outcome {
+        StreamOutcome::Item(bytes) => bytes,
+        Eof => return match framing {
+            Chunked => ResponseStep!::Send.(ResponseFraming::Fixed.(0), Buffer!::new().push_static("0\r\n\r\n")),
+            CloseDelimited => ResponseStep!::Finish.(true),
+            Fixed => ResponseStep!::Finish.(false),
+        },
+        _ => return ResponseStep!::Finish.(false),
+    };
+    match framing {
+        Fixed(remaining) => {
+            let length = &bytes.len() as u64;
+            if length > remaining {
+                bytes.destroy();
+                ResponseStep!::Finish.(false)
+            } else { ResponseStep!::Send.(ResponseFraming::Fixed.(remaining - length), bytes) }
+        },
+        Chunked => ResponseStep!::Send.(framing, encode_chunk(bytes)),
+        CloseDelimited => ResponseStep!::Send.(framing, bytes),
+    }
+}
+
 forall State, Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
 unsafe fn start(context: *u8, client: *u8, response: ResponseHead, head: bool, http10: bool) -> i32 {
@@ -108,29 +136,10 @@ unsafe fn read_next(client: *u8, connection: Connection!, source: Source, framin
     if complete(framing) { return unsafe finish(client, connection, source, true); }
     unsafe submit(client, source.next(), |result| {
         let (source, outcome) = result;
-        let bytes = match outcome {
-            StreamOutcome::Item(bytes) => bytes,
-            Eof => return match framing {
-                Chunked => unsafe write(client, connection, source, ResponseFraming::Fixed.(0),
-                    Buffer!::new().push_static("0\r\n\r\n")),
-                CloseDelimited => unsafe finish(client, connection, source, true),
-                Fixed => unsafe finish(client, connection, source, false),
-            },
-            _ => return unsafe finish(client, connection, source, false),
-        };
-        let (framing, bytes) = match framing {
-            Fixed(remaining) => {
-                let length = &bytes.len() as u64;
-                if length > remaining {
-                    bytes.destroy();
-                    return unsafe finish(client, connection, source, false);
-                }
-                (ResponseFraming::Fixed.(remaining - length), bytes)
-            },
-            Chunked => (framing, encode_chunk(bytes)),
-            CloseDelimited => (framing, bytes),
-        };
-        unsafe write(client, connection, source, framing, bytes)
+        match frame(framing, outcome) {
+            Send(framing, bytes) => unsafe write(client, connection, source, framing, bytes),
+            Finish(complete) => unsafe finish(client, connection, source, complete),
+        }
     })
 }
 

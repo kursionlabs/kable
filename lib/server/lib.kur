@@ -3,7 +3,7 @@
 use async::Scope!;
 use async::host::{HostedPlan!, prepare_handoff};
 use http::{Body!, Method, Request!, RequestHead, Response!, ResponseBody!, ResponseFraming, validate_request_head};
-use package::{body, response_stream, static_files};
+use package::{body, response_stream, static_files, stream_collect};
 use std::heap::HeapAllocator;
 use std::buffer::Buffer!;
 use std::cap::Exclusive!;
