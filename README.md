@@ -124,10 +124,11 @@ implements `task::Stream` and yields decoded byte chunks. Use
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
 
-`body.map_items(transform).collect(limit).respond(...).reply()` collects
-transformed chunks through EOF under the same request deadline. The limit
-counts the transformed bytes. Exceeding it yields `Failure::Operation` with
-HTTP status 413.
+The server's `collect(limit).respond(...).reply()` works with owned byte
+streams through EOF under the same request deadline. It counts the bytes
+yielded by the stream, so `body.map_items(transform).collect(limit)` counts
+transformed bytes. Exceeding the collection limit yields `Failure::Operation`
+with HTTP status 413. The HTTP parser also enforces its own input cap.
 
 `body.content_length()` exposes the original declared length as an option.
 The HTTP stream test fixture passes the body and that option straight to

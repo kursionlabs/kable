@@ -184,11 +184,14 @@ uint8_t kable_body_stop(uint8_t *raw) {
     return kable_tcp_stop_scoped_read(pull->client->connection);
 }
 
-int32_t kable_body_result(uint8_t *raw, uint8_t **bytes, size_t *length) {
+int32_t kable_body_take(uint8_t *raw, uint8_t **bytes, size_t *length, size_t *capacity) {
     BodyPull *pull = (BodyPull *)raw;
+    if (pull->status) return pull->status;
     *bytes = pull->output.data;
     *length = pull->output.len;
-    return pull->status;
+    *capacity = pull->output.capacity;
+    if (*length) pull->output = (KableRequestBytes){0};
+    return 0;
 }
 
 void kable_body_free(uint8_t *raw) {

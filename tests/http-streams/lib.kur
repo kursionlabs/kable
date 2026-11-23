@@ -73,21 +73,25 @@ fn uppercase(bytes: Buffer!) -> Buffer! {
     mapped
 }
 
+fn collection_response(outcome: Completion[Buffer!]) -> Action! {
+    let status = match outcome {
+        Ready(bytes) => return Response!::ok(bytes).reply(),
+        TimedOut | Cancelled => 408,
+        Failed(failure) => match failure {
+            Operation(code) => if code == 400 || code == 413 { code as u16 } else { 500 },
+            _ => 500,
+        },
+    };
+    Response!::rejected(status).reply()
+}
+
 fn collect(body: Body!, observed: bool) -> Action! {
     body.map_items(|bytes| {
         if observed { eprint_buffer(f"Transformed body chunk.\n"); }
         uppercase(bytes).push_static("!")
     }).collect(6).respond(|outcome| {
         if observed { eprint_buffer(f"Finished collecting body.\n"); }
-        let status = match outcome {
-            Completion::Ready(bytes) => return Response!::ok(bytes).reply(),
-            TimedOut | Cancelled => 408,
-            Failed(failure) => match failure {
-                Operation(code) => if code == 400 || code == 413 { code as u16 } else { 500 },
-                _ => 500,
-            },
-        };
-        Response!::rejected(status).reply()
+        collection_response(outcome)
     }).reply()
 }
 
@@ -102,6 +106,12 @@ fn serve(request: Request!) -> Action! {
         let { method, target, body } = request;
         target.destroy();
         return collect(body, observed);
+    }
+    if &request.path_is("/collect-shrink") {
+        let { method, target, body } = request;
+        target.destroy();
+        return body.map_items(|bytes| bytes.truncate(0)).collect(0)
+            .respond(|outcome| collection_response(outcome)).reply();
     }
     let upper = &request.path_is("/upper");
     if upper || &request.path_is("/relay") {
@@ -119,6 +129,7 @@ fn serve(request: Request!) -> Action! {
     let empty = &request.path_is("/empty");
     let delayed = &request.path_is("/delayed");
     let cancelled = &request.path_is("/cancel-delayed");
+    let collect_memory = &request.path_is("/collect-memory");
     let unknown = &request.path_is("/unknown") || unknown_head;
     let length = if unknown { Option::None }
         else if &request.path_is("/short") { Option::Some.(7) }
@@ -128,6 +139,9 @@ fn serve(request: Request!) -> Action! {
     request.destroy();
     let memory = Memory!.{ remaining: 3, may_pull: !head_only && !empty && !cancelled,
         report_discard: head_only || cancelled };
+    if collect_memory {
+        return memory.collect(6).respond(|outcome| collection_response(outcome)).reply();
+    }
     let response: Response! = Response!::stream(200, "application/octet-stream", length, memory);
     if cancelled {
         eprint_buffer(f"Scheduled delayed response.\n");

@@ -2,6 +2,7 @@
 use async::Scope!;
 use http::Body!;
 use std::buffer::Buffer!;
+use std::heap::HeapAllocator;
 use std::mem::alloca;
 use std::option::Option;
 use std::ptr::{is_null, null};
@@ -11,7 +12,7 @@ use task::driver::Plan;
 extern "C" fn kable_body_new(scope: *u8, limit: usize, collect: u8) -> *u8;
 extern "C" fn kable_body_start(pull: *u8, loop: *u8, done: unsafe fn(*u8) -> (), context: *u8) -> i32;
 extern "C" fn kable_body_stop(pull: *u8) -> u8;
-extern "C" fn kable_body_result(pull: *u8, bytes: *(*u8), length: *usize) -> i32;
+extern "C" fn kable_body_take(pull: *u8, bytes: *(*u8), length: *usize, capacity: *usize) -> i32;
 extern "C" fn kable_body_free(pull: *u8) -> ();
 
 struct BodyRead! { body: Body!, limit: usize, all: bool, pull: *u8, id: Option[usize] }
@@ -22,6 +23,7 @@ instance Discard[Body!] {
 
 impl Body! {
     /// Collects the remaining decoded bytes under the original request deadline.
+    /// The parser accumulates them within one plan, which can use a local deadline.
     /// Exceeding the byte limit reports HTTP 413.
     fn collect(self, limit: usize) -> Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()] {
         BodyRead!.{ body: self, limit, all: true, pull: null(), id: Option::None }.map(|result| {
@@ -73,9 +75,12 @@ instance Plan[BodyRead!, Scope! -> (Body!, StreamOutcome[Buffer!])] {
 unsafe fn pull_outcome(pull: *u8) -> StreamOutcome[Buffer!] {
     let bytes = unsafe alloca[*u8]();
     let length = unsafe alloca[usize]();
-    let status = unsafe kable_body_result(pull, bytes, length);
+    let capacity = unsafe alloca[usize]();
+    let status = unsafe kable_body_take(pull, bytes, length, capacity);
     if status != 0 { return StreamOutcome::Failed.(Failure::Operation.(status)); }
     let count = unsafe *length;
     if count == 0 { return StreamOutcome::Eof; }
-    StreamOutcome::Item.(unsafe Buffer!::new_with_cap(count).push_n(unsafe *bytes, count))
+    // A nonempty result transfers the parser's allocation and its capacity.
+    let storage = unsafe HeapAllocator::adopt_raw_sized(unsafe *bytes, unsafe *capacity);
+    StreamOutcome::Item.(unsafe Buffer!::from_initialized_allocation(storage, count))
 }

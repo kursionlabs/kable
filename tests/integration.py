@@ -1204,6 +1204,11 @@ def check_mapped_collection(port, stderr, check_timeout):
         read_log_until(stderr, b"Finished collecting body.")
     assert_response(exchange(port, headers, b"2\r\nab\r\n", eof=True), 400, b"Bad Request\n")
 
+    shrink = headers.replace(b"/collect", b"/collect-shrink")
+    assert_response(exchange(port, shrink, b"1\r\nx\r\n0\r\n\r\n"), 200, b"")
+    assert_response(exchange(port, shrink, b"100000\r\n", b"x" * (1024 * 1024), b"\r\n1\r\ny\r\n0\r\n\r\n"),
+                    413, b"Content Too Large\n")
+
     if check_timeout:
         with connect(port) as client:
             client.sendall(observed + b"1\r\na\r\n")
@@ -1228,6 +1233,7 @@ def check_http_streams(binary, directory, check_timeout=False):
 
             headers = assert_response(request(b"/memory"), 200, b"abcdef")
             assert headers[b"content-type"] == b"application/octet-stream"
+            assert_response(request(b"/collect-memory"), 200, b"abcdef")
             assert_response(request(b"/head", b"HEAD"), 200, b"abcdef", head=True)
             assert read_log_until(process.stderr, b"Discarded response source.") == b"Discarded response source.\n"
             assert_response(request(b"/empty"), 200, b"")
