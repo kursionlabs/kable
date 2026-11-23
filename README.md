@@ -375,6 +375,10 @@ File chunks and TCP connections both use this interface. TCP EOF ends the read
 side and the returned connection can still write. A file stream's `remaining()`
 reports any requested bytes left unread at EOF.
 
+`source.map_items(transform)` passes each owned item to the transform as it
+is pulled. It forwards EOF, timeout, cancellation, and failure. The HTTP
+stream test fixture uses it to uppercase relay data one chunk at a time.
+
 `source.next_within(duration)` races a read against a local timer. It returns
 the source and a `StreamOutcome` after both plans join. The item type's
 `Discard` instance releases any item from an interrupted read.

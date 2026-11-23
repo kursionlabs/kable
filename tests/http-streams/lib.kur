@@ -1,9 +1,11 @@
 use http::{Body!, Request!, Response!};
 use server::{Action!, Server!};
+use std::ascii::to_upper;
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Option;
 use std::process::trap;
+use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, Discard, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, sleep};
 
@@ -58,16 +60,34 @@ fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
     }, discard_pull).reply()
 }
 
+fn uppercase(bytes: Buffer!) -> Buffer! {
+    let exists 'k. (access, bytes, restore) = bytes.open();
+    let span = Span::from_slice(bytes);
+    var mapped = Buffer!::new_with_cap(span.len());
+    var index = 0;
+    while index < span.len() {
+        mapped = mapped.push_byte(to_upper(span.at(&access, index)));
+        index = index + 1;
+    }
+    restore.restore(access).destroy();
+    mapped
+}
+
 fn serve(request: Request!) -> Action! {
     if &request.path_is("/pull") {
         let { method, target, body } = request;
         target.destroy();
         return pull(body, Buffer!::new(), 0);
     }
-    if &request.path_is("/relay") {
+    let upper = &request.path_is("/upper");
+    if upper || &request.path_is("/relay") {
         let { method, target, body } = request;
         target.destroy();
         let length = &body.content_length();
+        if upper {
+            let source = body.map_items(|bytes| uppercase(bytes));
+            return Response!::stream(200, "application/octet-stream", length, source).reply();
+        }
         return Response!::stream(200, "application/octet-stream", length, body).reply();
     }
     let unknown_head = &request.path_is("/unknown-head");

@@ -1080,30 +1080,32 @@ def run_checks(command, check_request_timeout):
     print("Kable loopback checks passed")
 
 
-def check_http_relay(port):
+def check_http_relay(port, path, transform):
     def headers(length):
-        return f"POST /relay HTTP/1.1\r\nHost: localhost\r\nContent-Length: {length}\r\n\r\n".encode()
+        return (b"POST " + path + b" HTTP/1.1\r\nHost: localhost\r\nContent-Length: "
+                + str(length).encode() + b"\r\n\r\n")
 
     with connect(port) as client:
         client.sendall(headers(6) + b"ab")
         with client.makefile("rb") as stream:
             version, status, head = read_headers(stream)
             assert (version, status, head[b"content-length"]) == (b"HTTP/1.1", 200, b"6")
-            assert stream.read(2) == b"ab", "relay waited for the full upload"
+            assert stream.read(2) == transform(b"ab"), "relay waited for the full upload"
             client.sendall(b"cdef")
-            assert stream.read() == b"cdef"
+            assert stream.read() == transform(b"cdef")
 
     version, status, head, body = exchange(port, headers(5), b"ab", eof=True)
-    assert (version, status, head[b"content-length"], body) == (b"HTTP/1.1", 200, b"5", b"ab")
+    assert (version, status, head[b"content-length"], body) == (b"HTTP/1.1", 200, b"5", transform(b"ab"))
 
     with connect(port) as client:
         client.sendall(headers(5) + b"ab")
         with client.makefile("rb") as stream:
             read_headers(stream)
-            assert stream.read(2) == b"ab"
+            assert stream.read(2) == transform(b"ab")
         client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
 
     payload = bytes(range(256)) * 4096
+    expected = transform(payload)
     with ThreadPoolExecutor(max_workers=1) as worker, socket.socket() as client:
         client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16_384)
         client.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
@@ -1113,16 +1115,16 @@ def check_http_relay(port):
         with client.makefile("rb") as stream:
             version, status, head = read_headers(stream)
             assert (version, status, int(head[b"content-length"])) == (b"HTTP/1.1", 200, len(payload))
-            assert stream.read(1) == payload[:1]
+            assert stream.read(1) == expected[:1]
             request = b"GET /memory HTTP/1.1\r\nHost: localhost\r\n\r\n"
             assert_response(exchange(port, request), 200, b"abcdef")
             assert not upload.done(), "stalled response did not hold back the upload"
-            assert stream.read() == payload[1:]
+            assert stream.read() == expected[1:]
         upload.result(timeout=5)
 
 
-def check_chunked_relay(port, check_timeout):
-    request = b"POST /relay HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+def check_chunked_relay(port, path, transform, check_timeout):
+    request = b"POST " + path + b" HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
     chunk = b"abc"
     wire = b"3\r\n" + chunk + b"\r\n"
 
@@ -1139,7 +1141,7 @@ def check_chunked_relay(port, check_timeout):
             assert 0 < size <= len(expected) - len(received)
             received.extend(stream.read(size))
             assert stream.read(2) == b"\r\n"
-        assert received == expected
+        assert received == transform(expected)
 
     with connect(port) as client, client.makefile("rb") as stream:
         client.sendall(request + wire)
@@ -1211,8 +1213,10 @@ def check_http_streams(binary, directory, check_timeout=False):
             assert (version, status, sent) == (b"HTTP/1.0", 200, b"abcdef")
             assert b"content-length" not in headers and b"transfer-encoding" not in headers
 
-            check_http_relay(port)
-            check_chunked_relay(port, check_timeout)
+            check_http_relay(port, b"/relay", bytes)
+            check_chunked_relay(port, b"/relay", bytes, False)
+            check_http_relay(port, b"/upper", bytes.upper)
+            check_chunked_relay(port, b"/upper", bytes.upper, check_timeout)
 
             headers = b"POST /pull HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
             with connect(port) as client:

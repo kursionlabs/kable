@@ -99,6 +99,48 @@ trait Stream {
     fn next(source: Source) -> Next;
 }
 
+forall Source, Item, Output, Env.
+struct MappedStream! { source: Source, transform: closure[Env](Item) -> Output }
+
+forall Source, Next, Item where Stream[Source -> Next], PlanOutput[Next -> (Source, StreamOutcome[Item])].
+impl Source {
+    /// Applies the transform to each owned item as it is pulled.
+    /// The stream keeps its transform for later pulls, so captures must be copyable.
+    forall Output, Env where Copy[Env].
+    fn map_items(self, transform: closure[Env](Item) -> Output) -> MappedStream![Source, Item, Output, Env] {
+        MappedStream!.{ source: self, transform }
+    }
+}
+
+forall Source, Item, Output, Env where Copy[Env], Discard[Source].
+instance Discard[MappedStream![Source, Item, Output, Env]] {
+    fn discard(stream: MappedStream![Source, Item, Output, Env]) {
+        let { source, transform } = stream;
+        source.discard();
+    }
+}
+
+forall Source, Next, Item, Output, Env where Copy[Env], Stream[Source -> Next],
+    PlanOutput[Next -> (Source, StreamOutcome[Item])].
+instance Stream[MappedStream![Source, Item, Output, Env] -> Map![Next, (Source, StreamOutcome[Item]),
+    (MappedStream![Source, Item, Output, Env], StreamOutcome[Output]), (closure[Env](Item) -> Output,)]] {
+    fn next(stream: MappedStream![Source, Item, Output, Env]) -> Map![Next, (Source, StreamOutcome[Item]),
+        (MappedStream![Source, Item, Output, Env], StreamOutcome[Output]), (closure[Env](Item) -> Output,)] {
+        let { source, transform } = stream;
+        source.next().map(|result| {
+            let (source, outcome) = result;
+            let mapped = match outcome {
+                StreamOutcome::Item(item) => StreamOutcome::Item.(transform(item)),
+                Eof => StreamOutcome::Eof,
+                TimedOut => StreamOutcome::TimedOut,
+                Cancelled => StreamOutcome::Cancelled,
+                Failed(failure) => StreamOutcome::Failed.(failure),
+            };
+            (MappedStream!.{ source, transform }, mapped)
+        })
+    }
+}
+
 forall Source, Next, Item where Stream[Source -> Next],
     PlanOutput[Next -> (Source, StreamOutcome[Item])], Discard[Item].
 impl Source {
