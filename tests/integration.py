@@ -818,6 +818,10 @@ def check_http_sequence(command, directory, library, payload, check_request_time
     first_cancelled = b"Sequence cancelled before the second read."
     second_cancelled = f"Sequence cancelled with {len(payload)} bytes from the first read.".encode()
 
+    for flag, copies in (("--read-page", 1), ("--join-pages", 2)):
+        result = subprocess.run([*command, flag], cwd=directory, capture_output=True, timeout=5, check=True)
+        assert result.stdout == (payload + suffix) * copies, result
+
     with gated_file_server(command, directory, library, gates=7) as (process, port, started, permit):
         document.unlink()
         with connect(port) as client:
@@ -872,6 +876,20 @@ def check_http_sequence(command, directory, library, payload, check_request_time
                 assert process.stderr.read().count(expected) == 1
                 assert not select.select([started], [], [], 0)[0], "shutdown started another stage"
 
+    timed = request.replace(b"/file-sequence ", b"/file-sequence-with-timeout ")
+    with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
+        with connect(port) as client:
+            start_held_read(client, timed, started)
+            assert not select.select([client], [], [], 0.65)[0]
+            assert os.write(permit, b"R") == 1
+            wait_for_held_read(started, b"B")
+            assert not select.select([client], [], [], 0.55)[0], "deadline replied before the footer read retired"
+            assert os.write(permit, b"R") == 1
+            assert_response(read_response(client), 504, b"Gateway Timeout\n")
+            read_log_until(process.stderr, second_cancelled)
+        process.terminate()
+        assert process.wait(timeout=5) == 0, process.stderr.read()
+
     if check_request_timeout:
         with gated_file_server(command, directory, library, gates=3) as (process, port, started, permit):
             with connect(port) as client:
@@ -915,6 +933,16 @@ def check_http_reset(command, directory, library):
     finally:
         os.close(observed)
         os.close(notify)
+
+
+def check_dependent_handoff(directory):
+    fixture = directory / "dependent-handoff"
+    fixture.mkdir()
+    (fixture / "example.txt").write_bytes(b"prefix")
+    (fixture / "footer.txt").write_bytes(b"footer")
+    binary = build("tests/dependent-task", directory / "dependent-task")
+    result = subprocess.run([binary], cwd=fixture, capture_output=True, timeout=5, check=True)
+    assert result.stderr == b"Discarded the joined prefix.\n", result
 
 
 def assert_received(client, data):
@@ -1330,6 +1358,7 @@ def main():
             subprocess.run([thunk], check=True, timeout=5)
             check_thunk_message(build("examples/thunk-message", Path(directory) / "thunk-message"))
             check_timer_engines(Path(directory))
+            check_dependent_handoff(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
             file_copy = build("examples/file-copy", Path(directory) / "file-copy")
             file_position = build("tests/file-position", Path(directory) / "file-position")

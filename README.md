@@ -194,13 +194,17 @@ any buffer it received. [Parallel file handler](examples/http-file/file_join.kur
 ### Dependent file reads
 
 `/file-sequence` reads `example.txt`, then chooses the footer from its contents.
-The second read runs under the original request deadline. The handler passes the
-first buffer as state to `respond_owned_with(state, respond, discard)`. After
-the footer read joins, the builder hands the first buffer and the footer outcome
-to the reply callback or to the cleanup function if the request ends or a
-local deadline wins. `respond_owned(state, respond)` uses `Discard` for
-both values.
-[Dependent file handler](examples/http-file/file_sequence.kur)
+`plan.and_then(next)` calls `next` with the successful result and uses the
+plan it returns to finish the computation. Both stages share the enclosing
+deadline. A failure skips `next`, and cancellation releases any joined value
+that cannot be handed over. `/file-sequence-with-timeout` puts a one-second
+deadline around both reads. The CLI uses the same plan with `run` and `join`.
+[Dependent file computation](examples/http-file/file_sequence.kur)
+
+```sh
+(cd examples/http-file && ../../bin/http-file --read-page)
+(cd examples/http-file && ../../bin/http-file --join-pages)
+```
 
 ### Close without a reply
 
@@ -326,6 +330,10 @@ nested waits.
 
 `plan.map(transform)` converts the plan's joined outcome. Its closure can
 capture owned state and runs once, including on cancellation or failure.
+
+`plan.and_then(next)` builds an `AndThen![Output]` from two plans that return
+`Completion` values. It can be passed to the libuv runner, `join`, or
+`.within`. Each child plan must be able to run without a connection host.
 
 `plan.within(duration)` races the plan against a local timer and returns
 `(output, deadline)` after both join. `DeadlineStatus::Completed` means the

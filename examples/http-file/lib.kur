@@ -1,13 +1,14 @@
-use async::read_file;
+use async::{read_file, run};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
 use server::{Action!, Server!};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
-use std::slice::StaticRead;
+use std::process::Args;
+use std::slice::{Slice, StaticRead};
 use std::time::Duration;
-use task::{Completion, Discard, PlanOutput};
+use task::{Completion, Discard, PlanOutput, join};
 
 const FILE_LIMIT: usize = 65_536;
 
@@ -58,13 +59,14 @@ fn append_file(first: Buffer!, second: Completion[Buffer!]) -> Response! {
     }
 }
 
-enum Route { File, TimedFile, FileJoin, FileSequence, Close, CloseAfterRead, Health, Missing }
+enum Route { File, TimedFile, FileJoin, FileSequence, TimedSequence, Close, CloseAfterRead, Health, Missing }
 
 fn route(&request: Request!) -> Route {
     if &request.path_is("/file") { return Route::File; }
     if &request.path_is("/file-with-timeout") { return Route::TimedFile; }
     if &request.path_is("/file-join") { return Route::FileJoin; }
     if &request.path_is("/file-sequence") { return Route::FileSequence; }
+    if &request.path_is("/file-sequence-with-timeout") { return Route::TimedSequence; }
     if &request.path_is("/close") { return Route::Close; }
     if &request.path_is("/close-after-read") { return Route::CloseAfterRead; }
     if &request.path_is("/health") { return Route::Health; }
@@ -85,7 +87,9 @@ fn handle(request: Request!) -> Action! {
         File => serve_file(false),
         TimedFile => serve_file(true),
         FileJoin => file_join::serve(),
-        FileSequence => file_sequence::serve(),
+        FileSequence => file_sequence::load().respond(|outcome| file_response(outcome).reply()).reply(),
+        TimedSequence => file_sequence::load().respond(|outcome| file_response(outcome).reply())
+            .within(Duration::from_secs(1)).reply(),
         Close => Action!::Close,
         CloseAfterRead => close_after_read(),
         Health => Response!::text(200, "ok\n").reply(),
@@ -93,7 +97,37 @@ fn handle(request: Request!) -> Action! {
     }
 }
 
-fn main() -> i32 {
+fn print_page(outcome: Completion[Buffer!]) -> i32 {
+    match outcome {
+        Ready(bytes) => if print_buffer(bytes).is_ok() { 0 } else { 1 },
+        _ => {
+            eprint_buffer(f"http-file: could not read page and footer\n");
+            1
+        },
+    }
+}
+
+fn main(args: Args) -> i32 {
+    if args.len() == 2 {
+        let access = StaticRead::new();
+        let arg = args.bytes(1).unwrap();
+        if arg.is(&access, "--read-page") { return print_page(run(file_sequence::load())); }
+        if arg.is(&access, "--join-pages") {
+            let (first, second, status) = run(join(file_sequence::load(), file_sequence::load()));
+            return match status {
+                Ready => {
+                    let first_status = print_page(first);
+                    let second_status = print_page(second);
+                    if first_status == 0 && second_status == 0 { 0 } else { 1 }
+                },
+                _ => { (first, second).discard(); 1 },
+            };
+        }
+    }
+    if args.len() != 1 {
+        eprint_buffer(f"usage: http-file [--read-page | --join-pages]\n");
+        return 2;
+    }
     let server = match Server!::bind(0, handle) {
         Ok(server) => server,
         Err(code) => {

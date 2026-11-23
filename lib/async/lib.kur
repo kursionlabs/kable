@@ -1,5 +1,5 @@
 //! Structured waits, joins, and bounded file operations on libuv.
-use package::host;
+use package::{and_then, host};
 use package::file_request::{
     FileRequest!, collect_chunk_count, collect_descriptor, collect_read, kable_file_chunk, kable_file_new,
     kable_file_write_chunk,
@@ -16,6 +16,7 @@ use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, Scope
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
+export and_then::AndThen!;
 
 extern "C" fn kable_now_millis() -> u64;
 

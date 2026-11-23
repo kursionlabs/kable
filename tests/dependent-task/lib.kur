@@ -1,0 +1,46 @@
+use async::{read_file, run_with_deadline};
+use std::buffer::Buffer!;
+use std::io::eprint_buffer;
+use std::slice::StaticRead;
+use std::time::Duration;
+use task::{Completion, Discard, PlanOutput};
+
+extern "C" fn usleep(microseconds: u32) -> i32;
+
+struct Prefix! { bytes: Buffer! }
+
+instance Discard[Prefix!] {
+    fn discard(prefix: Prefix!) {
+        let { bytes } = prefix;
+        bytes.destroy();
+        eprint_buffer(f"Discarded the joined prefix.\n");
+    }
+}
+
+fn hold_handoff(outcome: Completion[Buffer!]) -> Completion[Prefix!] {
+    match outcome {
+        Ready(bytes) => {
+            // Hold the driver in collection until the enclosing budget expires.
+            unsafe usleep(350_000);
+            Completion::Ready.(Prefix!.{ bytes })
+        },
+        TimedOut => Completion::TimedOut,
+        Cancelled => Completion::Cancelled,
+        Failed(failure) => Completion::Failed.(failure),
+    }
+}
+
+fn main() -> i32 {
+    let access = StaticRead::new();
+    let task = read_file(&access, "example.txt", 1024).map(|outcome| hold_handoff(outcome)).and_then(|prefix| {
+        eprint_buffer(f"Started the footer continuation.\n");
+        prefix.discard();
+        let access = StaticRead::new();
+        read_file(&access, "footer.txt", 1024)
+    });
+    match run_with_deadline(task, Duration::from_millis(250)) {
+        Cancelled => 0,
+        Ready(bytes) => { bytes.destroy(); 1 },
+        _ => 1,
+    }
+}

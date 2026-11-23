@@ -1,42 +1,43 @@
 //! Chooses a footer from the first file's contents and appends it.
-use async::read_file;
-use http::Response!;
-use package::{FILE_LIMIT, append_file};
-use server::Action!;
+use async::{AndThen!, read_file};
+use package::FILE_LIMIT;
 use std::buffer::Buffer!;
 use std::io::eprint_buffer;
-use std::option::Option;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
-use task::{Completion, Discard, PlanOutput};
+use task::{Completion, PlanOutput};
 
-fn serve() -> Action! {
+fn load() -> AndThen![Buffer!] {
     let access = StaticRead::new();
-    let first = read_file(&access, "example.txt", FILE_LIMIT);
-    first.respond_with(|outcome| read_footer(outcome), discard_first).reply()
+    read_file(&access, "example.txt", FILE_LIMIT).map(|outcome| {
+        match outcome {
+            Completion::Cancelled => {
+                eprint_buffer(f"Sequence cancelled before the second read.\n");
+                Completion::Cancelled
+            },
+            Ready(bytes) => Completion::Ready.(bytes),
+            TimedOut => Completion::TimedOut,
+            Failed(failure) => Completion::Failed.(failure),
+        }
+    }).and_then(|first| {
+        let path = footer_path(&first);
+        let access = StaticRead::new();
+        read_file(&access, path, FILE_LIMIT).map(|outcome| append_footer(first, outcome))
+    })
 }
 
-fn read_footer(outcome: Completion[Buffer!]) -> Action! {
-    let first = match outcome {
-        Ready(first) => first,
-        _ => return Response!::rejected(500).reply(),
-    };
-    let path = footer_path(&first);
-    let access = StaticRead::new();
-    read_file(&access, path, FILE_LIMIT)
-        .respond_owned_with(first, |first, footer| append_file(first, footer).reply(), discard_footer)
-        .reply()
-}
-
-fn discard_first(outcome: Completion[Buffer!]) {
-    outcome.discard();
-    eprint_buffer(f"Sequence cancelled before the second read.\n");
-}
-
-fn discard_footer(first: Buffer!, footer: Completion[Buffer!]) {
-    let length = &first.len();
-    (first, footer).discard();
-    eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+fn append_footer(first: Buffer!, footer: Completion[Buffer!]) -> Completion[Buffer!] {
+    match footer {
+        Ready(bytes) => Completion::Ready.(first.push_buffer(bytes)),
+        Cancelled => {
+            let length = &first.len();
+            first.destroy();
+            eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+            Completion::Cancelled
+        },
+        TimedOut => { first.destroy(); Completion::TimedOut },
+        Failed(failure) => { first.destroy(); Completion::Failed.(failure) },
+    }
 }
 
 fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {

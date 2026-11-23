@@ -1,1 +1,1 @@
-This file was read in the HTTP request's scope.
+This file was read in the enclosing task's scope.

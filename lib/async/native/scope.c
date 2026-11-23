@@ -41,6 +41,7 @@ struct Scope {
     policy_add_pair add_pair;
     policy_event event;
     uint64_t host_key;
+    uint64_t deadline_ms;
     uint8_t *host;
     int start_error;
     int invalid_plan;
@@ -240,11 +241,19 @@ uint64_t kable_now_millis(void) {
     return uv_hrtime() / 1000000;
 }
 
+uint8_t kable_scope_budget_expired(uint8_t *raw) {
+    Scope *scope = (Scope *)raw;
+    if (!scope || !scope->deadline_ms || kable_now_millis() < scope->deadline_ms) return 0;
+    scope->deadline_expired = 1;
+    return 1;
+}
+
 int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t end_ms,
     uint8_t timed, void (*done)(void *), void *context) {
     Scope *scope = (Scope *)raw;
     if (!scope || scope->driven) return 0;
     scope->driven = 1;
+    if (timed) scope->deadline_ms = end_ms;
     if (scope->start_error < 0 || scope->invalid_plan) return 0;
     if (!report(scope, BEGIN, root)) {
         scope->invalid_plan = 1;
@@ -283,6 +292,93 @@ int kable_scope_start(uint8_t *raw, size_t root, uv_loop_t *loop, uint64_t end_m
     if (scope->start_error < 0) cancel_scope(scope);
     return !report(scope, JOINED, 0);
 }
+
+/* A chain is one operation in its parent's scope. The continuation owns
+   each child scope and collects it before returning the next one. */
+typedef uint8_t (*ChainAdvance)(uint8_t *, uint8_t, uint8_t **, size_t *);
+
+typedef struct {
+    Scope *parent;
+    uint8_t *state;
+    ChainAdvance advance;
+    uint8_t *child;
+    size_t root;
+    uv_loop_t *loop;
+    KableTimer *kickoff;
+    void (*done)(uint8_t *);
+    uint8_t *context;
+    uint8_t active;
+    uint8_t cancelled;
+    uint8_t stopping;
+} Chain;
+
+uint8_t *kable_chain_new(uint8_t *parent, uint8_t *state, ChainAdvance advance, uint8_t *child, size_t root) {
+    Chain *chain = malloc(sizeof *chain);
+    if (!chain) {
+        kable_scope_fail_allocation(parent);
+        return NULL;
+    }
+    *chain = (Chain){ .parent = (Scope *)parent, .state = state, .advance = advance, .child = child, .root = root };
+    return (uint8_t *)chain;
+}
+
+static void child_joined(void *context);
+
+static void drive_chain(Chain *chain, uint8_t joined) {
+    chain->active = 0;
+    while (!joined || chain->advance(chain->state, chain->cancelled, &chain->child, &chain->root)) {
+        joined = 1;
+        if (chain->cancelled || kable_scope_budget_expired((uint8_t *)chain->parent)) continue;
+        Scope *child = (Scope *)chain->child;
+        if (child) {
+            /* The parent host registers its operations before it starts. */
+            if (child->host_key) child->invalid_plan = 1;
+            child->deadline_ms = chain->parent->deadline_ms;
+        }
+        if (kable_scope_start(chain->child, chain->root, chain->loop, 0, 0, child_joined, chain)) {
+            chain->active = 1;
+            return;
+        }
+    }
+    if (!chain->stopping) chain->done(chain->context);
+}
+
+static void child_joined(void *context) {
+    drive_chain(context, 1);
+}
+
+static void chain_started(void *context, int fired) {
+    (void)fired;
+    Chain *chain = context;
+    chain->kickoff = NULL;
+    drive_chain(chain, 0);
+}
+
+int32_t kable_chain_start(uint8_t *raw, uint8_t *loop, void (*done)(uint8_t *), uint8_t *context) {
+    Chain *chain = (Chain *)raw;
+    chain->loop = (uv_loop_t *)loop;
+    chain->done = done;
+    chain->context = context;
+    /* The parent must finish registering active leaves before a child can join. */
+    return kable_timer_start(chain->loop, 0, NULL, chain_started, chain, &chain->kickoff);
+}
+
+uint8_t kable_chain_stop(uint8_t *raw) {
+    Chain *chain = (Chain *)raw;
+    chain->cancelled = 1;
+    if (chain->kickoff) {
+        kable_timer_cancel(chain->kickoff);
+        return 1;
+    }
+    /* A child can join inside cancel. In that case the parent retires this
+       operation from stop's return value, without a reentrant callback. */
+    chain->stopping = 1;
+    kable_scope_cancel(chain->child);
+    chain->stopping = 0;
+    return chain->active;
+}
+
+void kable_chain_free(uint8_t *raw) { free(raw); }
 
 static void require_closed_handle(uv_handle_t *handle, void *context) {
     (void)handle;
