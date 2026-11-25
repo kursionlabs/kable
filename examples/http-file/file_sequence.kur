@@ -4,8 +4,7 @@ use async::{Task!, read_file};
 use package::FILE_LIMIT;
 use std::buffer::Buffer!;
 use std::io::eprint;
-use std::raw::Span;
-use std::slice::{Slice, StaticRead};
+use std::str::{StaticRead, Str};
 use task::{Completion, PlanOutput};
 
 fn load() -> Task![Buffer!] {
@@ -43,9 +42,9 @@ fn append_footer(first: Buffer!, footer: Completion[Buffer!]) -> Completion[Buff
     }
 }
 
-fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {
+fn footer_path(&first: Buffer!) -> Str['static] {
     var exists 'k. (access, bytes, restore) = first.open();
-    let text = Span::from_slice(bytes);
+    let text = bytes.as_str();
     let line = match text.find_byte(&access, b'\n', 0) {
         Some(end) => text.take(end),
         None => text,

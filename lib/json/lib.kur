@@ -6,7 +6,8 @@ use std::cursor::Cursor;
 use std::fmt::Writer;
 use std::hash::Eq;
 use std::option::{Option, Result};
-use std::slice::{Slice, Str, byte_or_zero};
+use std::str::Str;
+use std::slice::byte_or_zero;
 use std::ascii::is_digit;
 use std::utf8;
 
@@ -132,7 +133,7 @@ impl Json! {
         while !&obj.members.is_empty() {
             let { key, value } = &obj.members.pop().unwrap();
             var exists 'k. (tag, bytes, restore) = key.into_bytes().open();
-            let found = bytes.is(&tag, name);
+            let found = bytes.as_str().is(&tag, name);
             restore.restore(tag).destroy();
             if found { obj.members.destroy_with(free_member); return Option::Some.(value); }
             value.destroy();
@@ -198,7 +199,7 @@ fn space(b: u8) -> bool { b == 32 || b == 9 || b == 10 || b == 13 }
 
 fn decode(input: Buffer!) -> Result[Json!, JsonError] {
     var exists 'k. (tag, bytes, restore) = input.open();
-    let parsed = document(&tag, Cursor::new(bytes));
+    let parsed = document(&tag, Cursor::new(bytes.as_str()));
     restore.restore(tag).destroy();
     parsed
 }
@@ -227,14 +228,14 @@ fn skip(cur: Cursor['t], count: usize) -> Cursor['t] {
 // The source text from `start` up to the cursor, as an owned buffer.
 forall 't.
 fn text_since(&tag: Exclusive!['t], cur: Cursor['t], start: usize) -> Buffer! {
-    let text = match cur.span_since(start) {
+    let text = match cur.text_since(start) {
         Some(bytes) => Buffer!::new().write(&tag, bytes),
         None => Buffer!::new(),
     };
     text
 }
 
-fn fail(at: usize, expected: Slice[u8, 'static]) -> JsonError {
+fn fail(at: usize, expected: Str['static]) -> JsonError {
     JsonError.{ at, expected }
 }
 

@@ -6,7 +6,7 @@ use std::buffer::Buffer!;
 use std::io::{eprint, print};
 use std::option::Result;
 use std::process::Args;
-use std::slice::{Slice, StaticRead};
+use std::str::StaticRead;
 use std::time::Duration;
 use task::{Completion, Discard, PlanOutput, join};
 

@@ -3,7 +3,7 @@ use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 
 extern "C" fn uv_chdir(path: *u8) -> i32;
 

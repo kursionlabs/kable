@@ -8,7 +8,6 @@ use std::buffer::Buffer!;
 use std::io::{eprint, print};
 use std::option::Option;
 use std::process::trap;
-use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, Discard, Map!, PlanOutput, Sleep!, Stream, StreamOutcome, sleep};
 use task::continuation::ChainPlan!;
@@ -66,11 +65,10 @@ fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
 
 fn uppercase(bytes: Buffer!) -> Buffer! {
     var exists 'k. (access, bytes, restore) = bytes.open();
-    let span = Span::from_slice(bytes);
-    var mapped = Buffer!::with_capacity(span.len());
+    var mapped = Buffer!::with_capacity(bytes.len());
     var index = 0;
-    while index < span.len() {
-        mapped = mapped.write_byte(to_upper(span.at(&access, index)));
+    while index < bytes.len() {
+        mapped = mapped.write_byte(to_upper(bytes.at(&access, index)));
         index = index + 1;
     }
     restore.restore(access).destroy();

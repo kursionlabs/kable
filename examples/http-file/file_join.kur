@@ -3,7 +3,7 @@ use std::fmt::Writer;
 use async::read_file;
 use package::{FILE_LIMIT, file_response};
 use server::Action!;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use std::time::Duration;
 use task::{Completion, PlanOutput, zip};
 

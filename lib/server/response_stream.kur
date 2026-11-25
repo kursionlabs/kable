@@ -8,7 +8,7 @@ use std::buffer::Buffer!;
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
 use std::option::Option;
-use std::slice::Slice;
+use std::str::Str;
 use task::{Completion, Discard, Sink, Stream, StreamOutcome};
 use task::driver::Plan;
 use tcp::{Connection!, host};
@@ -48,7 +48,7 @@ unsafe fn release(context: *u8) {
 /// Sends a known-length or EOF-terminated response from an owned source.
 forall Source, Read where Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-fn stream(status: u16, content_type: Slice[u8, 'static], length: Option[u64], source: Source) -> Response! {
+fn stream(status: u16, content_type: Str['static], length: Option[u64], source: Source) -> Response! {
     prepare(ResponseHead::new(status, content_type), source, |source, head, client| (source, head, length))
 }
 

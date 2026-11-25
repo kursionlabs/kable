@@ -6,7 +6,7 @@ use std::mem::alloca;
 use std::option::{Option, Result};
 use std::ptr::null;
 use std::process::trap;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, Discard, Failure, PlanOutput, Sleep!, join, sleep};
 use task::driver::Plan;

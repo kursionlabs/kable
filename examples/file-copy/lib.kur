@@ -3,7 +3,7 @@ use std::io::eprint;
 use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
-use std::slice::{Slice, StaticRead};
+use std::str::{StaticRead, Str};
 use std::time::Duration;
 use task::{Completion, Sink, Stream, TransferStep};
 
@@ -45,7 +45,7 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
     true
 }
 
-fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'static], deadline: Option[Duration]) -> i32 {
+fn copy(&runner: Runner!, source: Str['static], destination: Str['static], deadline: Option[Duration]) -> i32 {
     var access = StaticRead::new();
     var input = match &runner.run(open_file(&access, source)) {
         Ready(file) => file,

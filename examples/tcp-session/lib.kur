@@ -2,7 +2,6 @@ use std::fmt::Writer;
 use std::buffer::Buffer!;
 use std::io::{eprint, print};
 use std::option::{Option, Result};
-use std::raw::Span;
 use std::time::Duration;
 use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
 use tcp::{Action!, Connection!, Listener!};
@@ -37,7 +36,7 @@ instance Resumable[Session! -> Buffer!, Lines!] {
         let { pending, retried } = session;
         let pending = pending.put(bytes);
         var exists 'k. (access, bytes, restore) = pending.open();
-        let span = Span::from_slice(bytes);
+        let span = bytes.as_str();
         match span.rfind_byte(&access, b'\n') {
             None => {
                 var pending = restore.restore(access);

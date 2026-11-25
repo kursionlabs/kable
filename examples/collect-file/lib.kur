@@ -4,7 +4,7 @@ use std::io::{eprint, print};
 use std::option::Option;
 use std::parse::{parse_usize, parse_u64};
 use std::process::Args;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use std::time::Duration;
 
 fn usage() -> i32 {

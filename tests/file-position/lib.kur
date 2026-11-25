@@ -2,7 +2,7 @@ use async::{create_file, open_file, run};
 use std::buffer::Buffer!;
 use std::io::print;
 use std::process::{Args, trap};
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use std::time::Duration;
 use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
 

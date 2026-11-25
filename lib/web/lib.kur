@@ -8,7 +8,7 @@ use std::collections::vec::OwnedVec!;
 use std::heap::HeapAllocator;
 use std::mem::sizeof;
 use std::option::{Option, Result};
-use std::slice::Str;
+use std::str::Str;
 use task::{Completion, Discard, Failure, Map!, PlanOutput};
 use task::driver::Plan;
 

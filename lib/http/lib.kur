@@ -4,8 +4,8 @@ use std::ascii::{is_digit, to_lower};
 use std::buffer::Buffer!;
 use std::cmp::min;
 use std::option::Option;
-use std::raw::Span;
-use std::slice::{ReadBytes, Slice, StaticRead};
+use std::str::{StaticRead, Str};
+use std::slice::ReadBytes;
 
 exposed enum Method { Other, Get, Head, Post }
 
@@ -14,15 +14,15 @@ exposed struct RequestHead {
     major: u8,
     minor: u8,
     host_count: u32,
-    host: Span['k],
+    host: Str['k],
     upgrade_or_connect: bool,
-    target: Span['k],
+    target: Str['k],
     expect: bool,
     content_length: u64,
 }
 
 /// Checks the request before reading its body and returns any rejection status.
-forall C, 'k where ReadBytes[C, Span['k]].
+forall C, 'k where ReadBytes[C, Str['k]].
 fn validate_request_head(&access: C, head: RequestHead['k], body_limit: u64) -> Option[u16] {
     var { major, minor, host_count, host, upgrade_or_connect, target, expect, content_length } = head;
     if major != 1 || minor > 1 { return Option::Some.(505); }
@@ -38,8 +38,8 @@ fn validate_request_head(&access: C, head: RequestHead['k], body_limit: u64) -> 
     Option::None
 }
 
-forall C, 'k where ReadBytes[C, Span['k]].
-fn valid_host(&access: C, host: Span['k]) -> bool {
+forall C, 'k where ReadBytes[C, Str['k]].
+fn valid_host(&access: C, host: Str['k]) -> bool {
     let host = skip_header_space(&access, host);
     if host.is_empty() { return false; }
     var i = 0;
@@ -103,10 +103,10 @@ exposed struct Request! {
 
 impl Request! {
     /// Checks the request path before the query string.
-    fn path_is(&self, path: Slice[u8, 'static]) -> bool {
+    fn path_is(&self, path: Str['static]) -> bool {
         var { method, target, body } = self;
         var exists 'k. (access, bytes, restore) = target.open();
-        let raw = Span::from_slice(bytes);
+        let raw = bytes.as_str();
         let raw = match raw.find_byte(&access, b'?', 0usize) {
             Some(end) => raw.take(end),
             None => raw,
@@ -130,13 +130,13 @@ impl Request! {
 
 struct ResponseHead {
     status: u16,
-    content_type: Slice[u8, 'static],
-    allow: Slice[u8, 'static],
+    content_type: Str['static],
+    allow: Str['static],
     range: Option[(u64, u64)],
 }
 
 impl ResponseHead {
-    fn new(status: u16, content_type: Slice[u8, 'static]) -> ResponseHead {
+    fn new(status: u16, content_type: Str['static]) -> ResponseHead {
         ResponseHead.{ status, content_type, allow: "", range: Option::None }
     }
 
@@ -199,7 +199,7 @@ impl Response! {
     }
 }
 
-fn reason(status: u16) -> Slice[u8, 'static] {
+fn reason(status: u16) -> Str['static] {
     match status {
         200u16 => "OK",
         201 => "Created",
@@ -234,22 +234,22 @@ impl Response! {
         Response!::bytes(body, "application/octet-stream")
     }
 
-    fn bytes(body: Buffer!, content_type: Slice[u8, 'static]) -> Response! {
+    fn bytes(body: Buffer!, content_type: Str['static]) -> Response! {
         Response!::buffered(200, content_type, body)
     }
 
-    fn buffered(status: u16, content_type: Slice[u8, 'static], body: Buffer!) -> Response! {
+    fn buffered(status: u16, content_type: Str['static], body: Buffer!) -> Response! {
         Response!.{ head: ResponseHead::new(status, content_type), body: ResponseBody!::Buffered.(body) }
     }
 
-    fn text(status: u16, text: Slice[u8, 'static]) -> Response! {
+    fn text(status: u16, text: Str['static]) -> Response! {
         Response!.{
             head: ResponseHead::new(status, "text/plain; charset=utf-8"),
             body: ResponseBody!::Buffered.(Buffer!::new().put(text)),
         }
     }
 
-    fn method_not_allowed(allow: Slice[u8, 'static]) -> Response! {
+    fn method_not_allowed(allow: Str['static]) -> Response! {
         var { head, body } = Response!::text(405, "Method Not Allowed\n");
         var { status, content_type, allow: previous, range } = head;
         Response!.{ head: ResponseHead.{ status, content_type, allow, range }, body }
@@ -279,16 +279,16 @@ fn encode_chunk(bytes: Buffer!) -> Buffer! {
 
 fn header_space(byte: u8) -> bool { byte == b' ' || byte == b'\t' }
 
-forall C, 'k where ReadBytes[C, Span['k]].
-fn skip_header_space(&access: C, bytes: Span['k]) -> Span['k] {
+forall C, 'k where ReadBytes[C, Str['k]].
+fn skip_header_space(&access: C, bytes: Str['k]) -> Str['k] {
     var start = 0;
     while header_space(bytes.byte_or_zero(&access, start)) { start = start + 1; }
     bytes.skip(start)
 }
 
 // Saturate oversized positions while continuing to validate the decimal digits.
-forall C, 'k where ReadBytes[C, Span['k]].
-fn decimal_prefix(&access: C, bytes: Span['k]) -> (u64, usize) {
+forall C, 'k where ReadBytes[C, Str['k]].
+fn decimal_prefix(&access: C, bytes: Str['k]) -> (u64, usize) {
     var number = 0;
     var count = 0;
     var byte = bytes.byte_or_zero(&access, count);
@@ -303,13 +303,13 @@ fn decimal_prefix(&access: C, bytes: Span['k]) -> (u64, usize) {
 
 /// Selects the status, offset, and length for a file and an eligible Range value.
 /// An empty or unsupported header selects the whole file.
-forall C, 'k where ReadBytes[C, Span['k]].
-fn select_file_range(&access: C, header: Span['k], total: u64) -> (u16, u64, u64) {
+forall C, 'k where ReadBytes[C, Str['k]].
+fn select_file_range(&access: C, header: Str['k], total: u64) -> (u16, u64, u64) {
     let whole = (200u16, 0u64, total);
     let header = skip_header_space(&access, header);
     var end = header.len();
     while end > 0 && header_space(header.at(&access, end - 1)) { end = end - 1; }
-    let unit: Slice[u8, 'static] = "bytes=";
+    let unit: Str['static] = "bytes=";
     if end < unit.len() { return whole; }
     var static_access = StaticRead::new();
     var i = 0;
@@ -351,7 +351,7 @@ fn encode_range(wire: Buffer!, status: u16, offset: u64, total: u64, framing: Re
     }
 }
 
-fn header_fields(status: u16, content_type: Slice[u8, 'static], framing: ResponseFraming, http10: bool) -> Buffer! {
+fn header_fields(status: u16, content_type: Str['static], framing: ResponseFraming, http10: bool) -> Buffer! {
     let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
     let wire = Buffer!::new().put(version)
         .put(status as usize).put(" ").put(reason(status))

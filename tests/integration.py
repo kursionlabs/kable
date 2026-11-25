@@ -1647,7 +1647,7 @@ path="{ROOT / 'lib/virtual_clock'}"
 """)
     (package / "lib.kur").write_text("""
 use async::read_file;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use task::PlanOutput;
 
 fn main() {

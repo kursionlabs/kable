@@ -1,8 +1,8 @@
 use json::decode;
-use std::io::{eprint, print, read_all_stdin};
+use std::io::{eprint, print, stdin};
 
 fn main() -> i32 {
-    let bytes = match read_all_stdin() {
+    let bytes = match stdin().and_then(|input| input.read_to_end()) {
         Ok(bytes) => bytes,
         Err(error) => { eprint(f"{error}\n"); return 2; },
     };

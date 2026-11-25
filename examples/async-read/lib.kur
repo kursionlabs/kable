@@ -5,7 +5,7 @@ use std::io::{eprint, print};
 use std::option::Option;
 use std::parse::parse_u64;
 use std::process::Args;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use std::time::Duration;
 use task::{Completion, Discard, join};
 

@@ -3,7 +3,8 @@ use server::{Action!, Server!, after, reply};
 use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::process::Args;
-use std::slice::{ReadBytes, Slice, StaticRead};
+use std::str::{StaticRead, Str};
+use std::parse::parse_u64;
 use std::time::Duration;
 use task::{Completion, Failure, PlanOutput};
 
@@ -54,22 +55,10 @@ fn handle(request: Request!) -> Action! {
     }
 }
 
-fn parse_port(bytes: Slice[u8, 'static]) -> Option[u16] {
-    if bytes.is_empty() { return Option::None; }
+fn parse_port(bytes: Str['static]) -> Option[u16] {
     var access = StaticRead::new();
-    var port = 0u32;
-    var i = 0usize;
-    while i < bytes.len() {
-        let digit = match ReadBytes[StaticRead, Slice[u8, 'static]]::get(&access, bytes, i) {
-            Some(digit) => digit,
-            None => return Option::None,
-        };
-        if digit < b'0' || digit > b'9' { return Option::None; }
-        port = port * 10u32 + ((digit - b'0') as u32);
-        if port > 65535u32 { return Option::None; }
-        i = i + 1usize;
-    }
-    Option::Some.(port as u16)
+    let port = parse_u64(&access, bytes)?;
+    if port <= 65535 { Option::Some.(port as u16) } else { Option::None }
 }
 
 fn usage() -> i32 {

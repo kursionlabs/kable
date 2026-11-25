@@ -11,7 +11,7 @@ use std::cap::Exclusive!;
 use std::mem::{alloca, sizeof};
 use std::option::{Option, Result};
 use std::ptr::is_null;
-use std::raw::Span;
+use std::str::Str;
 use std::time::Duration;
 use task::{Completion, Discard, PlanOutput, StreamOutcome, discard, discard_owned, sleep};
 use task::driver::Plan;
@@ -192,8 +192,8 @@ unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connec
     expect: u8, content_length: u64, body_limit: u64, bytes: *u8, len: usize, target_len: usize) -> u16 {
     var exists 'k. (brand, access) = Exclusive!::fresh();
     // The parser lends these bytes until the callback returns.
-    var bytes = if len == 0 { Span::empty(&access) }
-        else { unsafe Span::from_raw_parts_branded(bytes, len, brand) };
+    var bytes = if len == 0 { Str::empty(&access) }
+        else { unsafe Str::from_raw_parts_branded(bytes, len, brand) };
     let head = RequestHead.{
         major, minor, host_count, content_length,
         target: bytes.take(target_len), host: bytes.skip(target_len),

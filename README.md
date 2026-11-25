@@ -5,7 +5,7 @@ connection lifetimes and llhttp for incremental HTTP request parsing.
 
 ## Build and run
 
-Use Kursal revision `81df605` to reproduce the integration build.
+Use Kursal revision `aea7a8d` to reproduce the integration build.
 Build the adjacent `../kursal` checkout with `scripts/bootstrap.sh` and
 install the libuv and llhttp development packages. Rebuild the compiler
 after updating Kursal so format strings use the same standard-library
@@ -222,7 +222,7 @@ Request `/file-with-timeout` on the printed address to read the bundled
 
 ```kursal
 use async::read_file;
-use std::slice::StaticRead;
+use std::str::StaticRead;
 use std::time::Duration;
 use task::PlanOutput;
 
