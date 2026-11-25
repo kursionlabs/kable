@@ -34,6 +34,7 @@ extern "C" fn kable_client_content_length(client: *u8) -> u64;
 extern "C" fn kable_schedule(client: *u8, scope: *u8, root: usize, plan: *u8,
     finish: unsafe fn(*u8, *u8, u8) -> i32, flags: u8) -> i32;
 extern "C" fn kable_request_feed(request: *u8, bytes: *u8, length: usize) -> u16;
+extern "C" fn kable_request_is_json(request: *u8) -> u8;
 extern "C" fn kable_request_eof(request: *u8) -> u16;
 extern "C" fn kable_request_view(request: *u8, http10: *u8,
     target: *(*u8), target_len: *usize) -> u8;
@@ -94,6 +95,26 @@ instance IntoAction[Action!] {
 
 forall R.
 struct Handler { call: fn(Request!) -> R }
+
+struct Dispatch {
+    data: *u8,
+    call: unsafe fn(*u8, Request!) -> Action!,
+    release: unsafe fn(*u8) -> (),
+}
+
+forall R where IntoAction[R].
+unsafe fn simple_call(data: *u8, request: Request!) -> Action! {
+    let { call } = unsafe *(unsafe (data as *Handler[R]));
+    call(request).into_action()
+}
+
+unsafe fn free_data(data: *u8) { HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(data)); }
+
+unsafe fn release_handler(context: *u8) {
+    let { data, call, release } = unsafe *(unsafe (context as *Dispatch));
+    unsafe release(data);
+    unsafe free_data(context);
+}
 
 forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
@@ -183,7 +204,6 @@ unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connec
     status
 }
 
-forall R where IntoAction[R].
 unsafe fn receive(context: *u8, client: *u8) -> i32 {
     let raw = unsafe kable_client_connection(client);
     let plan = prepare_handoff(unsafe host::read(raw), context, |context, completion, client, flags| {
@@ -192,10 +212,10 @@ unsafe fn receive(context: *u8, client: *u8) -> i32 {
             TimedOut | Cancelled => 408,
             Failed => return -1,
         };
-        if result == REQUEST_MORE { return unsafe receive[R](context, client); }
+        if result == REQUEST_MORE { return unsafe receive(context, client); }
         if result == REQUEST_CLOSED { return -1; }
         let status = if result == REQUEST_HEADERS { 0 } else if result == REQUEST_TRUNCATED { 400 } else { result };
-        unsafe respond[R](context, client, status)
+        unsafe respond(context, client, status)
     }, |context, completion| completion.discard());
     unsafe submit_request(client, plan, 0)
 }
@@ -208,7 +228,6 @@ unsafe fn feed_request(raw: *u8, request: *u8) -> u16 {
     }
 }
 
-forall R where IntoAction[R].
 unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
     let parser = unsafe kable_client_request(client);
     let version = unsafe alloca[u8]();
@@ -232,11 +251,13 @@ unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
     let request = Request!.{
         method,
         target: unsafe Buffer!::with_capacity(target_len).write_raw(unsafe *target, target_len),
-        body: unsafe Body!::from_request(unsafe kable_client_key(client), length),
+        body: unsafe Body!::from_typed_request(unsafe kable_client_key(client), length,
+            (unsafe kable_request_is_json(parser)) != 0),
     };
     unsafe kable_release_request_head(parser);
-    var { call } = unsafe *(unsafe (context as *Handler[R]));
-    unsafe apply(client, call(request).into_action(), head, http10)
+    let { data, call, release } = unsafe *(unsafe (context as *Dispatch));
+    let action = unsafe call(data, request);
+    unsafe apply(client, action, head, http10)
 }
 
 struct Server! { raw: *u8, context: *u8 }
@@ -248,10 +269,19 @@ impl Server! {
         let context = HeapAllocator::alloc(sizeof[Handler[R]]()).into_raw();
         unsafe *(unsafe (context as *Handler[R])) = Handler.{ call };
 
+        unsafe Server!::bind_context(port, context, simple_call[R], free_data)
+    }
+
+    /// Takes ownership of data on every path. The callbacks must agree on its type;
+    /// release runs once, after the last joined request or after bind failure.
+    unsafe fn bind_context(port: u16, data: *u8, call: unsafe fn(*u8, Request!) -> Action!,
+        release: unsafe fn(*u8) -> ()) -> Result[Server!, i32] {
+        let context = HeapAllocator::alloc(sizeof[Dispatch]()).into_raw();
+        unsafe *(unsafe (context as *Dispatch)) = Dispatch.{ data, call, release };
         let error = unsafe alloca[i32]();
-        let raw = unsafe kable_bind(port, validate_head, receive[R], context, error);
+        let raw = unsafe kable_bind(port, validate_head, receive, context, error);
         if is_null(raw) {
-            HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+            unsafe release_handler(context);
             Result::Err.(unsafe *error)
         } else {
             Result::Ok.(Server!.{ raw, context })
@@ -269,14 +299,14 @@ impl Server! {
     fn stop(self) {
         var { raw, context } = self;
         unsafe kable_stop(raw);
-        HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+        unsafe release_handler(context);
     }
 
     /// Runs until interrupted or a listener error shuts down the scope.
     fn run(self) -> Result[(), i32] {
         var { raw, context } = self;
         let status = unsafe kable_run(raw);
-        HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
+        unsafe release_handler(context);
         if status == 0i32 { Result::Ok.(()) } else { Result::Err.(status) }
     }
 }

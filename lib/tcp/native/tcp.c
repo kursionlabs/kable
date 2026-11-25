@@ -52,6 +52,7 @@ typedef struct {
     int socket_closed;
     int read_eof;
     int32_t read_count;
+    size_t read_size;
     char input[READ_SIZE];
 } Connection;
 
@@ -141,7 +142,9 @@ void kable_tcp_attach(uint8_t *raw, uint8_t *attachment, void (*destroy)(uint8_t
 static void allocate_read(uv_handle_t *handle, size_t suggested, uv_buf_t *buffer) {
     (void)suggested;
     Connection *connection = handle->data;
-    *buffer = uv_buf_init(connection->input, sizeof connection->input);
+    size_t size = connection->read_size;
+    if (!size || size > sizeof connection->input) size = sizeof connection->input;
+    *buffer = uv_buf_init(connection->input, (unsigned int)size);
 }
 
 static void read_done(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer) {
@@ -161,6 +164,11 @@ static void read_done(uv_stream_t *stream, ssize_t count, const uv_buf_t *buffer
 
 int32_t kable_tcp_start_scoped_read(uint8_t *raw, uint8_t *loop,
     void (*ready)(uint8_t *), uint8_t *context) {
+    return kable_tcp_start_sized_read(raw, loop, 0, ready, context);
+}
+
+int32_t kable_tcp_start_sized_read(uint8_t *raw, uint8_t *loop, size_t read_size,
+    void (*ready)(uint8_t *), uint8_t *context) {
     Connection *connection = (Connection *)raw;
     int can_read = connection->phase == SCOPED || connection->phase == RECEIVING ||
         (connection->phase == STREAMING && connection->pending.timed);
@@ -168,6 +176,7 @@ int32_t kable_tcp_start_scoped_read(uint8_t *raw, uint8_t *loop,
         loop != (uint8_t *)&connection->listener->loop) return UV_EINVAL;
     int status = uv_read_start((uv_stream_t *)&connection->socket, allocate_read, read_done);
     if (status == 0) {
+        connection->read_size = read_size;
         connection->read_ready = ready;
         connection->read_context = context;
     }
@@ -177,6 +186,7 @@ int32_t kable_tcp_start_scoped_read(uint8_t *raw, uint8_t *loop,
 uint8_t kable_tcp_stop_scoped_read(uint8_t *raw) {
     Connection *connection = (Connection *)raw;
     uv_read_stop((uv_stream_t *)&connection->socket);
+    connection->read_size = 0;
     connection->read_ready = NULL;
     connection->read_context = NULL;
     return 0;

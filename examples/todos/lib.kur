@@ -1,0 +1,81 @@
+//! An in-memory todo API. A POST reads JSON, updates the shared list, then replies.
+use http::{Request!, Response!};
+use std::buffer::Buffer!;
+use std::collections::vec::OwnedVec!;
+use std::fmt::Writer;
+use std::io::{eprint, print};
+use std::mem::alloca;
+use std::option::{Option, Result};
+use std::ptr::is_null;
+use task::Discard;
+use web::{App!, AppAction!, JsonBody};
+
+struct Todos! { titles: OwnedVec![Buffer!] }
+
+instance Discard[Todos!] {
+    fn discard(todos: Todos!) {
+        let { titles } = todos;
+        titles.destroy_with(Buffer!::destroy);
+    }
+}
+
+extern "C" fn todo_title(bytes: *u8, length: usize, size: *usize) -> *u8;
+extern "C" fn todo_title_free(title: *u8) -> ();
+
+fn decode_title(input: Buffer!) -> Option[Buffer!] {
+    var input = input;
+    let size = unsafe alloca[usize]();
+    let length = &input.len();
+    let raw = unsafe todo_title(unsafe &input.as_ptr(), length, size);
+    input.destroy();
+    if is_null(raw) { return Option::None; }
+    let title = unsafe Buffer!::with_capacity(unsafe *size).write_raw(raw, unsafe *size);
+    unsafe todo_title_free(raw);
+    Option::Some.(title)
+}
+
+fn insert(&todos: Todos!, title: Buffer!) -> usize {
+    &todos.titles.push(title);
+    &todos.titles.len()
+}
+
+fn created(id: usize) -> Response! {
+    Response!::buffered(201, "application/json", Buffer!::new().put("{\"id\":").put(id).put("}"))
+}
+
+fn create(request: Request!) -> AppAction![Todos!] {
+    request.json(decode_title)
+        .update(insert)
+        .reply_with(created)
+}
+
+fn list(&todos: Todos!, request: Request!) -> Response! {
+    request.destroy();
+    var wire = Buffer!::new().put("[");
+    var index = 0usize;
+    while index < &todos.titles.len() {
+        if index > 0 { wire = wire.put(","); }
+        wire = wire.put("{\"id\":").put(index + 1).put(",\"title\":");
+        let quoted = &todos.titles.with(index, |title| {
+            var title = title;
+            let copy = &title.clone();
+            (title, copy)
+        }).unwrap();
+        wire = wire.put(quoted).put("}");
+        index = index + 1;
+    }
+    Response!::bytes(wire.put("]"), "application/json")
+}
+
+fn main() -> i32 {
+    let app = App!::new(Todos!.{ titles: OwnedVec!::new[Buffer!]() })
+        .get("/todos", list)
+        .post("/todos", create);
+    var server = match app.bind(0) {
+        Ok(server) => server,
+        Err(code) => { eprint(f"todos: bind failed ({code})\n"); return 1; },
+    };
+    let port = &server.port();
+    if print(f"Listening on http://127.0.0.1:{port}\n").is_err() { server.stop(); return 1; }
+    if server.run().is_ok() { 0 } else { 1 }
+}

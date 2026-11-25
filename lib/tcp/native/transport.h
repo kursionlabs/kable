@@ -21,6 +21,8 @@ void kable_tcp_stop(uint8_t *listener);
 void kable_tcp_attach(uint8_t *connection, uint8_t *attachment, void (*destroy)(uint8_t *));
 int32_t kable_tcp_start_scoped_read(uint8_t *connection, uint8_t *loop,
     void (*ready)(uint8_t *), uint8_t *context);
+int32_t kable_tcp_start_sized_read(uint8_t *connection, uint8_t *loop, size_t read_size,
+    void (*ready)(uint8_t *), uint8_t *context);
 uint8_t kable_tcp_stop_scoped_read(uint8_t *connection);
 /* After a read completes and joins, returns the byte count, zero for EOF,
    or a negative transport error. The bytes are borrowed until the next

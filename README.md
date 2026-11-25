@@ -5,6 +5,7 @@ connection lifetimes and llhttp for incremental HTTP request parsing.
 
 ## Build and run
 
+Use Kursal revision `81df605` to reproduce the integration build.
 Build the adjacent `../kursal` checkout with `scripts/bootstrap.sh` and
 install the libuv and llhttp development packages. Rebuild the compiler
 after updating Kursal so format strings use the same standard-library
@@ -36,6 +37,45 @@ and serves one request per connection. An `Expect` header receives a 417.
 The limits are 128 active connections, 16 KiB for the request line and
 headers, 1 MiB for the decoded body, and 1088 KiB for the full request on the
 wire.
+
+## A todo application
+
+The [todo API](examples/todos/lib.kur) uses exact-path GET and POST routes and an
+in-memory store shared by the listener. A create handler returns a request-scoped
+pipeline when the headers arrive:
+
+```kursal
+fn create(request: Request!) -> AppAction![Todos!] {
+    request.json(decode_title)
+        .update(insert)
+        .reply_with(created)
+}
+```
+
+`json` checks the media type, collects at most 4096 bytes, and gives the owned
+buffer to the application's decoder. The decoder returns an optional typed value.
+For a route with different limits, use
+`request.json_with_options(decode_title, JsonOptions.{ max_bytes: 8192, read_size: 1024 })`.
+`max_bytes` bounds the whole payload. `read_size` caps each subsequent socket read
+after headers and defaults to the transport's buffer size. The decoder receives the
+assembled body once, including bytes already read with the headers.
+
+Only a successful decode enables `update`. It lends the current store for one
+synchronous call, then `reply_with` renders its output. Independent requests can
+finish in any order. A reset before handoff skips the update. A reset after an
+update can lose the response to that update.
+
+The example's JSON decoder uses the Jansson development library. The core
+`web` library takes its decoder as a function. Build and start the example,
+then use the printed loopback address:
+
+```sh
+../kursal/bin/kursal build examples/todos -o bin/todos
+bin/todos
+# In another terminal, set URL to the printed address.
+curl -i -H 'Content-Type: application/json' -d '{"title":"Try Kable"}' "$URL/todos"
+curl "$URL/todos"
+```
 
 ## Serve a directory
 

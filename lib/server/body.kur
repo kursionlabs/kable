@@ -9,13 +9,13 @@ use std::ptr::{is_null, null};
 use task::{Completion, Discard, Failure, Map!, PlanOutput, Stream, StreamOutcome};
 use task::driver::Plan;
 
-extern "C" fn kable_body_new(scope: *u8, limit: usize, collect: u8) -> *u8;
+extern "C" fn kable_body_new(scope: *u8, limit: usize, read_size: usize, collect: u8) -> *u8;
 extern "C" fn kable_body_start(pull: *u8, loop: *u8, done: unsafe fn(*u8) -> (), context: *u8) -> i32;
 extern "C" fn kable_body_stop(pull: *u8) -> u8;
 extern "C" fn kable_body_take(pull: *u8, bytes: *(*u8), length: *usize, capacity: *usize) -> i32;
 extern "C" fn kable_body_free(pull: *u8) -> ();
 
-struct BodyRead! { body: Body!, limit: usize, all: bool, pull: *u8, id: Option[usize] }
+struct BodyRead! { body: Body!, limit: usize, read_size: usize, all: bool, pull: *u8, id: Option[usize] }
 
 instance Discard[Body!] {
     fn discard(body: Body!) { body.destroy(); }
@@ -30,7 +30,12 @@ instance BodyCollection[Body! -> CollectedBody!] {
 
 /// Collects decoded bytes in the parser under the request deadline.
 fn collect(body: Body!, limit: usize) -> CollectedBody! {
-    BodyRead!.{ body, limit, all: true, pull: null(), id: Option::None }.map(|result| {
+    collect_with_read_size(body, limit, 0)
+}
+
+/// Caps subsequent transport reads. Already-buffered input is consumed immediately.
+fn collect_with_read_size(body: Body!, limit: usize, read_size: usize) -> CollectedBody! {
+    BodyRead!.{ body, limit, read_size, all: true, pull: null(), id: Option::None }.map(|result| {
         let (body, outcome) = result;
         body.discard();
         match outcome {
@@ -45,7 +50,7 @@ fn collect(body: Body!, limit: usize) -> CollectedBody! {
 
 instance Stream[Body! -> BodyRead!] {
     fn next(body: Body!) -> BodyRead! {
-        BodyRead!.{ body, limit: usize::MAX, all: false, pull: null(), id: Option::None }
+        BodyRead!.{ body, limit: usize::MAX, read_size: 0, all: false, pull: null(), id: Option::None }
     }
 }
 
@@ -53,17 +58,17 @@ instance PlanOutput[BodyRead! -> (Body!, StreamOutcome[Buffer!])] {}
 
 instance Plan[BodyRead!, Scope! -> (Body!, StreamOutcome[Buffer!])] {
     fn stage(&task: BodyRead!, &scope: Scope!) -> Option[usize] {
-        var { body, limit, all, pull, id } = task;
+        var { body, limit, read_size, all, pull, id } = task;
         let raw = unsafe &scope.require_host(&body.request_key());
-        let pull = unsafe kable_body_new(raw, limit, if all { 1 } else { 0 });
+        let pull = unsafe kable_body_new(raw, limit, read_size, if all { 1 } else { 0 });
         let id = if is_null(pull) { Option::None }
             else { unsafe &scope.add_operation(pull, kable_body_start, kable_body_stop) };
-        task = BodyRead!.{ body, limit, all, pull, id };
+        task = BodyRead!.{ body, limit, read_size, all, pull, id };
         id
     }
 
     fn collect(task: BodyRead!, &scope: Scope!) -> (Body!, StreamOutcome[Buffer!]) {
-        var { body, limit, all, pull, id } = task;
+        var { body, limit, read_size, all, pull, id } = task;
         let outcome = match (&scope.result(id)).completion() {
             Ready => unsafe pull_outcome(pull),
             TimedOut => StreamOutcome::TimedOut,

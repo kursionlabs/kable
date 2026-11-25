@@ -1,0 +1,219 @@
+//! Request-scoped application pipelines. The listener owns the state until all updates join.
+use http::{Body!, Method, Request!, Response!};
+use server::{Action!, Server!, reply};
+use server::body::{CollectedBody!, collect_with_read_size};
+use async::Scope!;
+use std::buffer::Buffer!;
+use std::collections::vec::OwnedVec!;
+use std::heap::HeapAllocator;
+use std::mem::sizeof;
+use std::option::{Option, Result};
+use std::slice::Str;
+use task::{Completion, Discard, Failure, Map!, PlanOutput};
+use task::driver::Plan;
+
+forall P.
+enum Pipeline! { Run(P), Reject(u16) }
+
+forall P, T where PlanOutput[P -> Completion[T]].
+fn pipeline(plan: P) -> Pipeline![P] { Pipeline!::Run.(plan) }
+
+forall T.
+type JsonPlan! = Map![CollectedBody!, Completion[Buffer!], Completion[T], (fn(Buffer!) -> Option[T],)];
+
+/// Limits apply to decoded HTTP body bytes. A zero read size uses the transport default.
+exposed struct JsonOptions { max_bytes: usize, read_size: usize }
+
+impl JsonOptions {
+    fn default() -> JsonOptions { JsonOptions.{ max_bytes: 4096, read_size: 0 } }
+}
+
+forall Source.
+trait JsonBody { fn body_for_json(source: Source) -> Body!; }
+
+instance JsonBody[Request!] {
+    fn body_for_json(request: Request!) -> Body! { request.into_body() }
+}
+
+forall Source where JsonBody[Source].
+impl Source {
+    forall T.
+    fn json(self, decode: fn(Buffer!) -> Option[T]) -> Pipeline![JsonPlan![T]] {
+        self.json_with_options(decode, JsonOptions::default())
+    }
+
+    forall T.
+    fn json_with_options(self, decode: fn(Buffer!) -> Option[T], options: JsonOptions) -> Pipeline![JsonPlan![T]] {
+        let { max_bytes, read_size } = options;
+        var body = self.body_for_json();
+        if !&body.is_json() { body.destroy(); return Pipeline!::Reject.(415); }
+        match &body.content_length() {
+            Some(length) => if length > max_bytes as u64 { body.destroy(); return Pipeline!::Reject.(413); },
+            None => (),
+        };
+        pipeline(collect_with_read_size(body, max_bytes, read_size).map(|outcome| outcome.and_then(|bytes| match decode(bytes) {
+            Some(value) => Completion::Ready.(value),
+            None => Completion::Failed.(Failure::Operation.(400)),
+        })))
+    }
+}
+
+forall P, S, T, U.
+struct Update! { input: Pipeline![P], change: fn(&_: S, T) -> U }
+
+forall P, T where PlanOutput[P -> Completion[T]].
+impl Pipeline![P] {
+    forall S, U.
+    fn update(self, change: fn(&_: S, T) -> U) -> Update![P, S, T, U] {
+        Update!.{ input: self, change }
+    }
+}
+
+// The route table binds a recipe to its own stable state address. Application
+// code never receives that address, and the host drains pending plans before release.
+forall S.
+struct AppAction! { data: *u8, start: unsafe fn(*u8, *App![S]) -> Action! }
+
+forall P, S, T, U.
+struct Pending! { update: Update![P, S, T, U], render: fn(U) -> Response! }
+
+forall P, S, T, U where PlanOutput[P -> Completion[T]], Plan[P, Scope! -> Completion[T]], Discard[T].
+impl Update![P, S, T, U] {
+    fn reply_with(self, render: fn(U) -> Response!) -> AppAction![S] {
+        let data = HeapAllocator::alloc(sizeof[Pending![P, S, T, U]]()).into_raw();
+        unsafe *(unsafe (data as *Pending![P, S, T, U])) = Pending!.{ update: self, render };
+        AppAction!.{ data, start: start[P, S, T, U] }
+    }
+}
+
+forall P, S, T, U where PlanOutput[P -> Completion[T]], Plan[P, Scope! -> Completion[T]], Discard[T].
+unsafe fn start(data: *u8, address: *App![S]) -> Action! {
+    let { update, render } = unsafe *(unsafe (data as *Pending![P, S, T, U]));
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(data));
+    let { input, change } = update;
+    let task = match input {
+        Reject(code) => return reply(Response!::rejected(code)),
+        Run(task) => task,
+    };
+    task.respond(|outcome| {
+        let code = match outcome {
+            Completion::Ready(value) => {
+                var { state, routes } = unsafe *address;
+                let output = change(&state, value);
+                unsafe *address = App!.{ state, routes };
+                return reply(render(output));
+            },
+            Cancelled | TimedOut => 408,
+            Failed(failure) => match failure {
+                LimitExceeded => 413,
+                Operation(code) => {
+                    if code < 0 { return Action!::Close; }
+                    if code == 400 { 400 } else { 500 }
+                },
+                _ => 500,
+            },
+        };
+        reply(Response!::rejected(code))
+    })
+}
+
+forall S.
+enum RouteHandler {
+    Immediate(fn(&_: S, Request!) -> Response!),
+    Deferred(fn(Request!) -> AppAction![S]),
+}
+
+forall H, S.
+trait Handler { fn handler(call: H) -> RouteHandler[S]; }
+
+forall S.
+instance Handler[fn(&_: S, Request!) -> Response!, S] {
+    fn handler(call: fn(&_: S, Request!) -> Response!) -> RouteHandler[S] { RouteHandler::Immediate.(call) }
+}
+
+forall S.
+instance Handler[fn(Request!) -> AppAction![S], S] {
+    fn handler(call: fn(Request!) -> AppAction![S]) -> RouteHandler[S] { RouteHandler::Deferred.(call) }
+}
+
+forall S.
+struct Route { path: Str['static], post: bool, handler: RouteHandler[S] }
+
+forall S.
+struct App! { state: S, routes: OwnedVec![Route[S]] }
+
+forall S.
+impl App![S] {
+    fn new(state: S) -> App![S] { App!.{ state, routes: OwnedVec!::new[Route[S]]() } }
+
+    forall H where Handler[H, S].
+    fn get(self, path: Str['static], call: H) -> App![S] { self.add(path, false, Handler[H, S]::handler(call)) }
+
+    forall H where Handler[H, S].
+    fn post(self, path: Str['static], call: H) -> App![S] { self.add(path, true, Handler[H, S]::handler(call)) }
+
+    fn add(self, path: Str['static], post: bool, handler: RouteHandler[S]) -> App![S] {
+        var { state, routes } = self;
+        &routes.push(Route.{ path, post, handler });
+        App!.{ state, routes }
+    }
+}
+
+forall S where Discard[S].
+impl App![S] {
+    fn bind(self, port: u16) -> Result[Server!, i32] {
+        let data = HeapAllocator::alloc(sizeof[App![S]]()).into_raw();
+        unsafe *(unsafe (data as *App![S])) = self;
+        unsafe Server!::bind_context(port, data, dispatch[S], release[S])
+    }
+}
+
+forall S where Discard[S].
+unsafe fn release(data: *u8) {
+    let { state, routes } = unsafe *(unsafe (data as *App![S]));
+    state.discard();
+    routes.destroy();
+    HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(data));
+}
+
+forall S.
+unsafe fn dispatch(data: *u8, req: Request!) -> Action! {
+    let app = unsafe (data as *App![S]);
+    var { state, routes } = unsafe *app;
+    var request = req;
+    var get = false;
+    var post = false;
+    var selected = Option::None;
+    var index = 0usize;
+    while index < &routes.len() && selected.is_none() {
+        let route = &routes.get(index).unwrap();
+        if &request.path_is(route.path) {
+            if route.post { post = true; } else { get = true; }
+            let matches = match request.method { Get | Head => !route.post, Post => route.post, Other => false };
+            if matches { selected = Option::Some.(route.handler); }
+        }
+        index = index + 1;
+    }
+    let handler = match selected {
+        Some(handler) => handler,
+        None => {
+            unsafe *app = App!.{ state, routes };
+            request.destroy();
+            if !get && !post { return reply(Response!::rejected(404)); }
+            return reply(Response!::method_not_allowed(if get && post { "GET, HEAD, POST" }
+                else if get { "GET, HEAD" } else { "POST" }));
+        },
+    };
+    match handler {
+        Immediate(call) => {
+            let response = call(&state, request);
+            unsafe *app = App!.{ state, routes };
+            reply(response)
+        },
+        Deferred(call) => {
+            unsafe *app = App!.{ state, routes };
+            let { data, start } = call(request);
+            unsafe start(data, app)
+        },
+    }
+}

@@ -181,6 +181,49 @@ def check_hello_server(binary):
     print("Kable hello server checks passed")
 
 
+def check_todo_pipeline(binary):
+    get = b"GET /todos HTTP/1.1\r\nHost: localhost\r\n\r\n"
+    post = b"POST /todos HTTP/1.1\r\nHost: localhost\r\n"
+
+    def headers(payload):
+        return post + b"Content-Type: application/json\r\nContent-Length: " + str(len(payload)).encode() + b"\r\n\r\n"
+
+    with subprocess.Popen([binary], stdout=subprocess.PIPE) as process:
+        try:
+            port = listening_port(process, b"Listening on http://127.0.0.1:")
+            slow = b'{"title":"slow"}'
+            fast = b'{"title":"fast"}'
+            with connect(port) as paused:
+                paused.sendall(headers(slow) + slow[:8])
+                assert_response(exchange(port, get), 200, b"[]")
+                assert_response(exchange(port, headers(fast), fast), 201, b'{"id":1}')
+                paused.sendall(slow[8:])
+                assert_response(read_response(paused), 201, b'{"id":2}')
+            with connect(port) as reset:
+                reset.sendall(headers(slow) + slow[:8])
+                reset.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            for payload in (b"{", b'{"title":7}'):
+                assert_response(exchange(port, headers(payload), payload), 400, b"Bad Request\n")
+            assert_response(exchange(port, post + b"Content-Length: 100\r\n\r\n"), 415, b"Unsupported Media Type\n")
+            large = b"x" * 4097
+            assert_response(exchange(port, headers(large), large), 413, b"Content Too Large\n")
+            expected = b'[{"id":1,"title":"fast"},{"id":2,"title":"slow"}]'
+            assert_response(exchange(port, get), 200, expected)
+            assert_response(exchange(port, get.replace(b"GET ", b"HEAD ")), 200, expected, head=True)
+            allow = assert_response(exchange(port, get.replace(b"GET ", b"PUT ")), 405, b"Method Not Allowed\n")
+            assert allow[b"allow"] == b"GET, HEAD, POST"
+            assert_response(exchange(port, get.replace(b"/todos", b"/unknown")), 404, b"Not Found\n")
+            with connect(port) as pending:
+                pending.sendall(headers(slow) + slow[:8])
+                assert_response(exchange(port, get), 200, expected)
+                process.terminate()
+                assert process.wait(timeout=5) == 0
+        finally:
+            if process.poll() is None:
+                process.kill()
+    print("Kable todo pipeline checks passed")
+
+
 def check_static_files(command, directory, check_write_timeout=False):
     root = directory / "public"
     root.mkdir()
@@ -1421,6 +1464,7 @@ def main():
             check_tcp_api_boundary(Path(directory))
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
+            check_todo_pipeline(build("examples/todos", Path(directory) / "todos"))
             check_hello_server(hello)
             check_buffered_write(hello, Path(directory))
             check_http_streams(build("tests/http-streams", Path(directory) / "http-streams"),

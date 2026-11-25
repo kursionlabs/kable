@@ -100,12 +100,13 @@ typedef struct {
     KableTimer *timer;
     KableRequestBytes output;
     size_t limit;
+    size_t read_size;
     int collect;
     int cancelled;
     int status;
 } BodyPull;
 
-uint8_t *kable_body_new(uint8_t *scope, size_t limit, uint8_t collect) {
+uint8_t *kable_body_new(uint8_t *scope, size_t limit, size_t read_size, uint8_t collect) {
     if (!scope) return NULL;
     BodyPull *pull = calloc(1, sizeof *pull);
     if (!pull) {
@@ -114,6 +115,7 @@ uint8_t *kable_body_new(uint8_t *scope, size_t limit, uint8_t collect) {
     }
     pull->scope = scope;
     pull->limit = limit;
+    pull->read_size = read_size;
     pull->collect = collect;
     return (uint8_t *)pull;
 }
@@ -123,7 +125,7 @@ static void body_read(uint8_t *context);
 static void continue_body(BodyPull *pull, uint16_t result) {
     KableRequest *request = &pull->client->request;
     if (result == REQUEST_MORE && (pull->collect || !request->body.len)) {
-        int status = kable_tcp_start_scoped_read(pull->client->connection, pull->loop,
+        int status = kable_tcp_start_sized_read(pull->client->connection, pull->loop, pull->read_size,
             body_read, (uint8_t *)pull);
         if (status == 0) return;
         pull->status = status;

@@ -65,14 +65,31 @@ static int on_field_complete(llhttp_t *parser) {
     else if (field_is(request, "range", 5)) request->header = HEADER_RANGE;
     else if (field_is(request, "if-range", 8)) request->header = HEADER_IF_RANGE;
     else if (field_is(request, "expect", 6)) request->header = HEADER_EXPECT;
+    else if (field_is(request, "content-type", 12)) request->header = HEADER_TYPE;
     else request->header = HEADER_OTHER;
     request->field_len = 0;
     return 0;
 }
 
+static const char json_type[] = "application/json";
+
 static int on_value(llhttp_t *parser, const char *at, size_t len) {
     KableRequest *request = parser->data;
     if (request->headers_done) return 0;
+    if (request->header == HEADER_TYPE && !request->types && !request->media_params) {
+        for (size_t i = 0; i < len; i++) {
+            size_t pos = request->media_len;
+            if (pos == sizeof json_type - 1) {
+                if (at[i] == ';') { request->media_params = 1; break; }
+                if (at[i] == ' ' || at[i] == '\t') continue;
+            }
+            if (pos >= sizeof json_type - 1 || strncasecmp(at + i, json_type + pos, 1)) {
+                request->media_len = UINT8_MAX;
+                break;
+            }
+            request->media_len++;
+        }
+    }
     if (request->header == HEADER_HOST && !request->hosts) {
         return append_head(request, at, len);
     }
@@ -95,6 +112,7 @@ static int on_value_complete(llhttp_t *parser) {
     case HEADER_RANGE: request->ranges++; break;
     case HEADER_IF_RANGE: request->if_range = 1; break;
     case HEADER_EXPECT: request->expect = 1; break;
+    case HEADER_TYPE: request->types++; break;
     case HEADER_OTHER: break;
     }
     return 0;
@@ -240,4 +258,8 @@ uint16_t kable_request_resume(KableRequest *request) {
 
 uint16_t kable_request_eof(const KableRequest *request) {
     return request->wire_bytes ? REQUEST_TRUNCATED : REQUEST_CLOSED;
+}
+
+uint8_t kable_request_is_json(KableRequest *request) {
+    return request->types == 1 && request->media_len == sizeof json_type - 1;
 }
