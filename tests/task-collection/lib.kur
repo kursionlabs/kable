@@ -21,7 +21,7 @@ fn invalid_result(resolution: Resolution) -> bool {
 forall Driver where PlanDriver[Driver].
 instance Plan[ReverseSelect!, Driver -> bool] {
     fn stage(&task: ReverseSelect!, &scope: Driver) -> Option[usize] {
-        let { first, second, id: old } = task;
+        var { first, second, id: old } = task;
         let a = Plan[Sleep!, Driver -> Completion[()]]::stage(&first, &scope);
         let b = Plan[Sleep!, Driver -> Completion[()]]::stage(&second, &scope);
         let id = match a {
@@ -62,7 +62,7 @@ struct InvalidRootTimer! { timer: Sleep!, bytes: Buffer!, missing_root: bool }
 forall Driver where PlanDriver[Driver].
 instance Plan[InvalidRootTimer!, Driver -> (Buffer!, Completion[()])] {
     fn stage(&task: InvalidRootTimer!, &scope: Driver) -> Option[usize] {
-        let { timer, bytes, missing_root } = task;
+        var { timer, bytes, missing_root } = task;
         let root = Plan[Sleep!, Driver -> Completion[()]]::stage(&timer, &scope);
         task = InvalidRootTimer!.{ timer, bytes, missing_root };
         if missing_root { return Option::None; }
@@ -91,7 +91,7 @@ fn check_invalid_root(missing_root: bool) -> bool {
     };
     let bytes = Buffer!::new().push_static("second");
     let second = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
-    let ((first, first_status), (second, second_status), race_status) = run(select(first, second));
+    var ((first, first_status), (second, second_status), race_status) = run(select(first, second));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
     second.destroy();
@@ -126,7 +126,7 @@ fn check_cancelled_join() -> bool {
     let suffix = Buffer!::new().push_static(" returned");
     let first = sleep(Duration::from_nanos(0)).map(|status| (first, status));
     let second = sleep(Duration::from_secs(30)).map(|status| (second.push_buffer(suffix), status));
-    let ((first, first_status), (second, second_status), status) =
+    var ((first, first_status), (second, second_status), status) =
         run_with_deadline(join(first, second), Duration::from_millis(10));
     let lengths_ok = &first.len() == 5 && &second.len() == 15;
     first.destroy();
@@ -141,7 +141,7 @@ struct DeadlineDriver! { state: ScopeState!, timer: Option[usize], timer_result:
 
 instance PlanDriver[DeadlineDriver!] {
     fn timer(&scope: DeadlineDriver!, duration: Duration) -> Option[usize] {
-        let { state, timer, timer_result } = scope;
+        var { state, timer, timer_result } = scope;
         let id = &state.add_leaf();
         let timer = if duration.is_zero() { id } else { timer };
         scope = DeadlineDriver!.{ state, timer, timer_result };
@@ -149,14 +149,14 @@ instance PlanDriver[DeadlineDriver!] {
     }
 
     fn pair(&scope: DeadlineDriver!, pair: Pair) -> Option[usize] {
-        let { state, timer, timer_result } = scope;
+        var { state, timer, timer_result } = scope;
         let id = &state.add_pair(pair);
         scope = DeadlineDriver!.{ state, timer, timer_result };
         id
     }
 
     fn result(&scope: DeadlineDriver!, id: Option[usize]) -> Resolution {
-        let { state, timer, timer_result } = scope;
+        var { state, timer, timer_result } = scope;
         let result = (&state.result(id)).unwrap();
         scope = DeadlineDriver!.{ state, timer, timer_result };
         if id.unwrap() == timer.unwrap() { timer_result } else { result }
@@ -165,9 +165,10 @@ instance PlanDriver[DeadlineDriver!] {
 
 forall Task where Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)].
 fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
-    let driver = DeadlineDriver!.{ state: ScopeState!::new(), timer: Option::None, timer_result };
+    var plan = plan;
+    var driver = DeadlineDriver!.{ state: ScopeState!::new(), timer: Option::None, timer_result };
     let root = Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)]::stage(&plan, &driver);
-    let { state, timer, timer_result } = driver;
+    var { state, timer, timer_result } = driver;
     if !&state.begin(root) { trap(); }
     &state.started(Resource::Leaf.(0));
     &state.started(Resource::Leaf.(1));
@@ -178,8 +179,8 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
     &state.retired(Resource::Leaf.(loser));
     if !&state.joined() { trap(); }
 
-    let driver = DeadlineDriver!.{ state, timer, timer_result };
-    let ((bytes, status), deadline) =
+    var driver = DeadlineDriver!.{ state, timer, timer_result };
+    var ((bytes, status), deadline) =
         Plan[Task, DeadlineDriver! -> ((Buffer!, Completion[()]), DeadlineStatus)]::collect(plan, &driver);
     let { state, timer, timer_result } = driver;
     state.destroy();
@@ -239,7 +240,8 @@ fn unexpected_resume(state: Buffer!, output: Buffer!) -> Option[ExpiredStage!] {
 }
 
 fn discard_expired(state: Buffer!, output: Option[Buffer!]) {
-    let output = output.unwrap();
+    var state = state;
+    var output = output.unwrap();
     let valid = &state.len() == 5 && &output.len() == 6;
     state.destroy();
     output.destroy();
@@ -250,7 +252,7 @@ fn check_reported_deadline() -> bool {
     let stage = ExpiredStage!.{ output: Buffer!::new().push_static("output") };
     let plan = stage.then_owned_with(Buffer!::new().push_static("state"),
         |state, output| unexpected_resume(state, output), discard_expired);
-    let engine = EarlyDeadline.{};
+    var engine = EarlyDeadline.{};
     match drive_sequence_until(plan, &engine, Option::Some.(Duration::from_secs(1))) {
         Cancelled => true,
         Finished(output) => { output.destroy(); false },
@@ -317,7 +319,7 @@ fn test_stream(delay: Duration) -> TestStream! {
 }
 
 fn check_returned_stream(source: TestStream!) -> bool {
-    let { marker, delay } = source;
+    var { marker, delay } = source;
     let valid = &marker.len() == 6;
     marker.destroy();
     valid
@@ -329,7 +331,7 @@ fn check_timed_stream() -> bool {
     let (source, outcome) = run(test_stream(immediate).next_within(pending));
     let ready = match outcome {
         Item(item) => {
-            let { bytes } = item;
+            var { bytes } = item;
             let valid = &bytes.len() == 4;
             bytes.destroy();
             valid

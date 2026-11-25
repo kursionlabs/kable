@@ -1,7 +1,7 @@
 use async::{read_file, run};
 use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
-use server::{Action!, Server!};
+use server::{Action!, Server!, reply};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::Result;
@@ -13,18 +13,18 @@ use task::{Completion, Discard, PlanOutput, join};
 const FILE_LIMIT: usize = 65_536;
 
 fn serve_file(timed: bool) -> Action! {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
     if timed {
-        return file.respond(|outcome| file_response(outcome).reply())
+        return file.respond(|outcome| reply(file_response(outcome)))
             .within(Duration::from_secs(1))
             .reply();
     }
-    file.respond_with(|outcome| file_response(outcome).reply(), discard_plain_file).reply()
+    file.respond_with(|outcome| reply(file_response(outcome)), discard_plain_file).reply()
 }
 
 fn close_after_read() -> Action! {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     read_file(&access, "example.txt", FILE_LIMIT)
         .respond(|outcome| { outcome.discard(); Action!::Close })
         .reply()
@@ -74,6 +74,7 @@ fn route(&request: Request!) -> Route {
 }
 
 fn handle(request: Request!) -> Action! {
+    var request = request;
     let route = route(&request);
     let { method, target, body } = request;
     target.destroy();
@@ -81,19 +82,19 @@ fn handle(request: Request!) -> Action! {
 
     match method {
         Get | Head => (),
-        _ => { return Response!::method_not_allowed("GET, HEAD").reply(); },
+        _ => { return reply(Response!::method_not_allowed("GET, HEAD")); },
     }
     match route {
         File => serve_file(false),
         TimedFile => serve_file(true),
         FileJoin => file_join::serve(),
-        FileSequence => file_sequence::load().respond(|outcome| file_response(outcome).reply()).reply(),
-        TimedSequence => file_sequence::load().respond(|outcome| file_response(outcome).reply())
+        FileSequence => file_sequence::load().respond(|outcome| reply(file_response(outcome))).reply(),
+        TimedSequence => file_sequence::load().respond(|outcome| reply(file_response(outcome)))
             .within(Duration::from_secs(1)).reply(),
         Close => Action!::Close,
         CloseAfterRead => close_after_read(),
-        Health => Response!::text(200, "ok\n").reply(),
-        Missing => Response!::rejected(404).reply(),
+        Health => reply(Response!::text(200, "ok\n")),
+        Missing => reply(Response!::rejected(404)),
     }
 }
 
@@ -109,7 +110,7 @@ fn print_page(outcome: Completion[Buffer!]) -> i32 {
 
 fn main(args: Args) -> i32 {
     if args.len() == 2 {
-        let access = StaticRead::new();
+        var access = StaticRead::new();
         let arg = args.bytes(1).unwrap();
         if arg.is(&access, "--read-page") { return print_page(run(file_sequence::load())); }
         if arg.is(&access, "--join-pages") {
@@ -128,7 +129,7 @@ fn main(args: Args) -> i32 {
         eprint_buffer(f"usage: http-file [--read-page | --join-pages]\n");
         return 2;
     }
-    let server = match Server!::bind(0, handle) {
+    var server = match Server!::bind(0, handle) {
         Ok(server) => server,
         Err(code) => {
             eprint_buffer(f"http-file: cannot listen (libuv error {code})\n");

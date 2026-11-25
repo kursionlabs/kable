@@ -11,7 +11,7 @@ use tcp::{Action!, Connection!, Listener!};
 const LARGE_WRITE: usize = 16 * 1024 * 1024;
 
 fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)) -> Action! {
-    let ((connection, bytes, completion), deadline) = result;
+    var ((connection, bytes, completion), deadline) = result;
     let length = &bytes.len();
     bytes.destroy();
     if length != LARGE_WRITE { trap(); }
@@ -48,7 +48,7 @@ fn discard_write(connection: Connection!) -> Connection! {
     unsafe *returned = Option::None;
     let write = connection.write(Buffer!::new().push_static("discarded"));
     let hosted = prepare_hosted(write, |result, host, state| {
-        let (connection, bytes, status) = result;
+        var (connection, bytes, status) = result;
         let length = &bytes.len();
         bytes.destroy();
         let unstarted = match status {
@@ -66,7 +66,7 @@ fn discard_write(connection: Connection!) -> Connection! {
 
 fn send_after_eof(connection: Connection!, consuming: bool) -> Action! {
     let connection = discard_write(connection);
-    connection.send(Buffer!::new_with_cap(0)).defer_tcp(|outcome| {
+    connection.send(Buffer!::with_capacity(0)).defer_tcp(|outcome| {
         let (connection, status) = outcome;
         match status { Completion::Ready => (), _ => return connection.close() };
         let bytes = Buffer!::new_zeroed(LARGE_WRITE);
@@ -95,7 +95,7 @@ fn serve_send(connection: Connection!) -> Action! { serve(connection, true) }
 
 fn main(args: Args) -> i32 {
     let accept: fn(Connection!) -> Action! = if args.len() > 1 { serve_send } else { serve_write };
-    let listener = match Listener!::bind_connections(0, accept) {
+    var listener = match Listener!::bind_connections(0, accept) {
         Ok(listener) => listener,
         Err(code) => return 1,
     };

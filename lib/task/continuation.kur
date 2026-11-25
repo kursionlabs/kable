@@ -33,25 +33,25 @@ struct ChainPlan! {
     finish: unsafe fn(*u8, &_: Driver) -> Value,
 }
 
-forall Task, Driver, Value where Plan[Task, Driver -> Value].
+forall Task, Driver, Value where Plan[Task, Driver -> Value], Sized[Task].
 fn erase(task: Task) -> ChainPlan![Value, Driver] {
     let context = HeapAllocator::alloc(sizeof[Task]()).into_raw();
     unsafe *(unsafe (context as *Task)) = task;
     ChainPlan!.{ context, register: register_task[Task, Driver, Value], finish: finish_task[Task, Driver, Value] }
 }
 
-forall Task, Driver, Value where Plan[Task, Driver -> Value].
+forall Task, Driver, Value where Plan[Task, Driver -> Value], Sized[Task].
 unsafe fn register_task(raw: *u8, &scope: Driver) -> Option[usize] {
     let address = unsafe (raw as *Task);
-    let task = unsafe *address;
+    var task = unsafe *address;
     let id = Plan[Task, Driver -> Value]::stage(&task, &scope);
     unsafe *address = task;
     id
 }
 
-forall Task, Driver, Value where Plan[Task, Driver -> Value].
+forall Task, Driver, Value where Plan[Task, Driver -> Value], Sized[Task].
 unsafe fn finish_task(raw: *u8, &scope: Driver) -> Value {
-    let task = unsafe *(unsafe (raw as *Task));
+    var task = unsafe *(unsafe (raw as *Task));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
     Plan[Task, Driver -> Value]::collect(task, &scope)
 }
@@ -134,7 +134,7 @@ forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
     ContinuationDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
 unsafe fn advance(raw: *u8, cancelled: u8, scope: *(*u8), root: *usize) -> u8 {
     let pending = unsafe (raw as *Pending![First, Driver, State, Input, Next, Value, Env]);
-    let { phase, parent, cancel, resolve, ..rest } = unsafe *pending;
+    var { phase, parent, cancel, resolve, ..rest } = unsafe *pending;
     let (result, interrupted) = match phase {
         First(prepared, state, resume) => {
             let input = prepared.collect(close_child[Driver]);
@@ -143,7 +143,7 @@ unsafe fn advance(raw: *u8, cancelled: u8, scope: *(*u8), root: *usize) -> u8 {
             } else {
                 match resume(state, input) {
                     Start(next) => {
-                        let prepared = prepare(next, ContinuationDriver[Driver]::child_scope());
+                        var prepared = prepare(next, ContinuationDriver[Driver]::child_scope());
                         let child = child(&prepared);
                         unsafe *pending = Pending!.{ parent, cancel, resolve, phase: Phase!::Next.(prepared), ..rest };
                         unsafe *scope = child.scope;
@@ -160,7 +160,7 @@ unsafe fn advance(raw: *u8, cancelled: u8, scope: *(*u8), root: *usize) -> u8 {
         },
         Done(result, interrupted) => (result, interrupted),
         Pending(first, state, resume) => {
-            let scope = ContinuationDriver[Driver]::child_scope();
+            var scope = ContinuationDriver[Driver]::child_scope();
             let input = Plan[First, Driver -> Input]::collect(first, &scope);
             ContinuationDriver[Driver]::close_child(scope);
             (cancel(state, input), true)
@@ -174,7 +174,7 @@ forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
     ContinuationDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
 unsafe fn register(raw: *u8, &parent: Driver) -> Option[usize] {
     let pending = unsafe (raw as *Pending![First, Driver, State, Input, Next, Value, Env]);
-    let { phase, cancel, resolve, ..rest } = unsafe *pending;
+    var { phase, cancel, resolve, ..rest } = unsafe *pending;
     let (first, state, resume) = match phase {
         Pending(first, state, resume) => (first, state, resume),
         First(prepared, state, resume) => {
@@ -190,10 +190,10 @@ unsafe fn register(raw: *u8, &parent: Driver) -> Option[usize] {
             return Option::None;
         },
     };
-    let prepared = prepare(first, ContinuationDriver[Driver]::child_scope());
+    var prepared = prepare(first, ContinuationDriver[Driver]::child_scope());
     let (registration, id) = unsafe ContinuationDriver[Driver]::register(&parent, child(&prepared),
         Handoff.{ context: raw, advance: advance[First, Driver, State, Input, Next, Value, Env] });
-    let parent = ContinuationDriver[Driver]::scope_address(&parent);
+    var parent = ContinuationDriver[Driver]::scope_address(&parent);
     unsafe *pending = Pending!.{ parent, registration, id, cancel, resolve,
         phase: Phase!::First.(prepared, state, resume) };
     id
@@ -202,13 +202,13 @@ unsafe fn register(raw: *u8, &parent: Driver) -> Option[usize] {
 forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
     ContinuationDriver[Driver], PlanDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
 unsafe fn finish(raw: *u8, &scope: Driver) -> Value {
-    let { parent, registration, id, phase, cancel, resolve } =
+    var { parent, registration, id, phase, cancel, resolve } =
         unsafe *(unsafe (raw as *Pending![First, Driver, State, Input, Next, Value, Env]));
     unsafe ContinuationDriver[Driver]::release(registration);
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
     let (result, interrupted) = match phase {
         Pending(first, state, resume) => {
-            let scope = ContinuationDriver[Driver]::child_scope();
+            var scope = ContinuationDriver[Driver]::child_scope();
             let input = Plan[First, Driver -> Input]::collect(first, &scope);
             ContinuationDriver[Driver]::close_child(scope);
             (cancel(state, input), true)
@@ -233,14 +233,14 @@ instance PlanOutput[ChainPlan![Value, Driver] -> Value] {}
 forall Value, Driver.
 instance Plan[ChainPlan![Value, Driver], Driver -> Value] {
     fn stage(&task: ChainPlan![Value, Driver], &scope: Driver) -> Option[usize] {
-        let { context, register, finish } = task;
+        var { context, register, finish } = task;
         let id = unsafe register(context, &scope);
         task = ChainPlan!.{ context, register, finish };
         id
     }
 
     fn collect(task: ChainPlan![Value, Driver], &scope: Driver) -> Value {
-        let { context, register, finish } = task;
+        var { context, register, finish } = task;
         unsafe finish(context, &scope)
     }
 }

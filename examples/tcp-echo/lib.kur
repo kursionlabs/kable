@@ -30,7 +30,7 @@ fn write_finished(result: (Connection!, Completion[()])) -> Action! {
 }
 
 fn main() -> i32 {
-    let listener = match Listener!::bind_connections(0, read_next) {
+    var listener = match Listener!::bind_connections(0, read_next) {
         Ok(listener) => listener,
         Err(code) => {
             eprint_buffer(f"tcp-echo: cannot listen (libuv error {code})\n");

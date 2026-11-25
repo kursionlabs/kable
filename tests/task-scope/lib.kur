@@ -2,7 +2,7 @@ use std::option::Option;
 use task::driver::{Pair, PairKind, Resolution, Resource, ScopeState!};
 
 fn check_retirement_before_resolution() -> bool {
-    let scope = ScopeState!::new();
+    var scope = ScopeState!::new();
     let first = (&scope.add_leaf()).unwrap();
     let second = (&scope.add_leaf()).unwrap();
     let root = &scope.add_pair(Pair.{ kind: PairKind::Join, first, second });
@@ -29,7 +29,7 @@ fn check_retirement_before_resolution() -> bool {
 
 fn main() -> i32 {
     if !check_retirement_before_resolution() { return 1; }
-    let scope = ScopeState!::new();
+    var scope = ScopeState!::new();
     let first = (&scope.add_leaf()).unwrap();
     let second = (&scope.add_leaf()).unwrap();
     let missing_root_rejected = !&scope.begin(Option::None);

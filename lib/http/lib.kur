@@ -23,7 +23,7 @@ exposed struct RequestHead {
 /// Checks the request before reading its body and returns any rejection status.
 forall C, 'k where ReadBytes[C, Span['k]].
 fn validate_request_head(&access: C, head: RequestHead['k], body_limit: u64) -> Option[u16] {
-    let { major, minor, host_count, host, upgrade_or_connect, target, expect, content_length } = head;
+    var { major, minor, host_count, host, upgrade_or_connect, target, expect, content_length } = head;
     if major != 1 || minor > 1 { return Option::Some.(505); }
     if host_count > 1 || (minor == 1 && host_count == 0) || (host_count == 1 && !valid_host(&access, host)) {
         return Option::Some.(400);
@@ -60,19 +60,19 @@ impl Body! {
 
     /// Returns the original declared Content-Length, if present.
     fn content_length(&self) -> Option[u64] {
-        let { key, length } = self;
+        var { key, length } = self;
         self = Body!.{ key, length };
         length
     }
 
     /// Identifies the host that can drive this body.
     fn request_key(&self) -> u64 {
-        let { key, length } = self;
+        var { key, length } = self;
         self = Body!.{ key, length };
         key
     }
 
-    fn destroy(self) { let { key, length } = self; }
+    fn destroy(self) { var { key, length } = self; }
 }
 
 exposed struct Request! {
@@ -84,8 +84,8 @@ exposed struct Request! {
 impl Request! {
     /// Checks the request path before the query string.
     fn path_is(&self, path: Slice[u8, 'static]) -> bool {
-        let { method, target, body } = self;
-        let exists 'k. (access, bytes, restore) = target.open();
+        var { method, target, body } = self;
+        var exists 'k. (access, bytes, restore) = target.open();
         let raw = Span::from_slice(bytes);
         let raw = match raw.find_byte(&access, b'?', 0usize) {
             Some(end) => raw.take(end),
@@ -97,7 +97,7 @@ impl Request! {
     }
 
     fn destroy(self) {
-        let { method, target, body } = self;
+        var { method, target, body } = self;
         target.destroy();
         body.destroy();
     }
@@ -116,13 +116,13 @@ impl ResponseHead {
     }
 
     fn with_range(self, status: u16, offset: u64, total: u64) -> ResponseHead {
-        let { status: previous, content_type, allow, range } = self;
+        var { status: previous, content_type, allow, range } = self;
         let content_type = if status == 416 { "text/plain; charset=utf-8" } else { content_type };
         ResponseHead.{ status, content_type, allow, range: Option::Some.((offset, total)) }
     }
 
     fn encode(self, framing: ResponseFraming, http10: bool) -> Buffer! {
-        let { status, content_type, allow, range } = self;
+        var { status, content_type, allow, range } = self;
         let wire = header_fields(status, content_type, framing, http10);
         let wire = if allow.is_empty() { wire }
             else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
@@ -146,12 +146,12 @@ struct StreamBody! {
 impl StreamBody! {
     /// Starts the body on the live host that owns this response.
     unsafe fn send(self, host: *u8, response: ResponseHead, head: bool, http10: bool) -> i32 {
-        let { context, start, release } = self;
+        var { context, start, release } = self;
         unsafe start(context, host, response, head, http10)
     }
 
     fn destroy(self) {
-        let { context, start, release } = self;
+        var { context, start, release } = self;
         unsafe release(context);
     }
 }
@@ -169,7 +169,7 @@ impl Response! {
     }
 
     fn into_parts(self) -> (ResponseHead, ResponseBody!) {
-        let { head, body } = self;
+        var { head, body } = self;
         (head, body)
     }
 }
@@ -196,7 +196,7 @@ fn reason(status: u16) -> Slice[u8, 'static] {
 
 impl Response! {
     fn destroy(self) {
-        let { head, body } = self;
+        var { head, body } = self;
         match body {
             Buffered(bytes) => bytes.destroy(),
             Streamed(stream) => stream.destroy(),
@@ -219,8 +219,8 @@ impl Response! {
     }
 
     fn method_not_allowed(allow: Slice[u8, 'static]) -> Response! {
-        let { head, body } = Response!::text(405, "Method Not Allowed\n");
-        let { status, content_type, allow: previous, range } = head;
+        var { head, body } = Response!::text(405, "Method Not Allowed\n");
+        var { status, content_type, allow: previous, range } = head;
         Response!.{ head: ResponseHead.{ status, content_type, allow, range }, body }
     }
 
@@ -240,6 +240,7 @@ fn push_hex(wire: Buffer!, value: usize) -> Buffer! {
 
 /// Frames a nonempty payload. Only clean EOF emits the terminal chunk.
 fn encode_chunk(bytes: Buffer!) -> Buffer! {
+    var bytes = bytes;
     let length = &bytes.len();
     if length == 0 { return bytes; }
     push_hex(Buffer!::new(), length).push_static("\r\n").push_buffer(bytes).push_static("\r\n")
@@ -279,7 +280,7 @@ fn select_file_range(&access: C, header: Span['k], total: u64) -> (u16, u64, u64
     while end > 0 && header_space(header.at(&access, end - 1)) { end = end - 1; }
     let unit: Slice[u8, 'static] = "bytes=";
     if end < unit.len() { return whole; }
-    let static_access = StaticRead::new();
+    var static_access = StaticRead::new();
     var i = 0;
     while i < unit.len() {
         if to_lower(header.at(&access, i)) != unit.byte_or_zero(&static_access, i) { return whole; }

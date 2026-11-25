@@ -21,12 +21,11 @@ instance Discard[Body!] {
     fn discard(body: Body!) { body.destroy(); }
 }
 
-impl Body! {
-    /// Collects the remaining decoded bytes under the original request deadline.
+/// Collects the remaining decoded bytes under the original request deadline.
     /// The parser accumulates them within one plan, which can use a local deadline.
     /// Exceeding the byte limit reports HTTP 413.
-    fn collect(self, limit: usize) -> Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()] {
-        BodyRead!.{ body: self, limit, all: true, pull: null(), id: Option::None }.map(|result| {
+fn collect(body: Body!, limit: usize) -> Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()] {
+        BodyRead!.{ body, limit, all: true, pull: null(), id: Option::None }.map(|result| {
             let (body, outcome) = result;
             body.discard();
             match outcome {
@@ -37,7 +36,6 @@ impl Body! {
                 Failed(failure) => Completion::Failed.(failure),
             }
         })
-    }
 }
 
 instance Stream[Body! -> BodyRead!] {
@@ -50,7 +48,7 @@ instance PlanOutput[BodyRead! -> (Body!, StreamOutcome[Buffer!])] {}
 
 instance Plan[BodyRead!, Scope! -> (Body!, StreamOutcome[Buffer!])] {
     fn stage(&task: BodyRead!, &scope: Scope!) -> Option[usize] {
-        let { body, limit, all, pull, id } = task;
+        var { body, limit, all, pull, id } = task;
         let raw = unsafe &scope.require_host(&body.request_key());
         let pull = unsafe kable_body_new(raw, limit, if all { 1 } else { 0 });
         let id = if is_null(pull) { Option::None }
@@ -60,7 +58,7 @@ instance Plan[BodyRead!, Scope! -> (Body!, StreamOutcome[Buffer!])] {
     }
 
     fn collect(task: BodyRead!, &scope: Scope!) -> (Body!, StreamOutcome[Buffer!]) {
-        let { body, limit, all, pull, id } = task;
+        var { body, limit, all, pull, id } = task;
         let outcome = match (&scope.result(id)).completion() {
             Ready => unsafe pull_outcome(pull),
             TimedOut => StreamOutcome::TimedOut,

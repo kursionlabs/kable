@@ -74,7 +74,7 @@ fn check_chain(budget: Option[Duration], should_finish: bool) {
     let result = run_sequence(plan, budget);
     match result {
         Finished(outcome) => {
-            let (bytes, status) = outcome;
+            var (bytes, status) = outcome;
             let length = &bytes.len();
             bytes.destroy();
             let ready = match status {

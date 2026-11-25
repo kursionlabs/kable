@@ -25,6 +25,7 @@ fn start(connection: Connection!) -> Action! {
 }
 
 fn discard_line(pending: Buffer!) {
+    var pending = pending;
     let length = &pending.len();
     pending.destroy();
     eprint_buffer(f"Closed session with {length} buffered bytes.\n");
@@ -34,19 +35,19 @@ instance Resumable[Session! -> Buffer!, Lines!] {
     fn resume(session: Session!, bytes: Buffer!) -> Step[Session!, Lines!] {
         let { pending, retried } = session;
         let pending = pending.push_buffer(bytes);
-        let exists 'k. (access, bytes, restore) = pending.open();
+        var exists 'k. (access, bytes, restore) = pending.open();
         let span = Span::from_slice(bytes);
         match span.rfind_byte(&access, b'\n') {
             None => {
-                let pending = restore.restore(access);
+                var pending = restore.restore(access);
                 if &pending.len() > 16384 { Step::Done.(Lines!::TooLong.(pending)) }
                 else { Step::Suspended.(Session!::new(pending)) }
             },
             Some(index) => {
                 let end = index + 1;
-                let complete = Buffer!::new_with_cap(end).push_bytes(&access, span.take(end));
+                let complete = Buffer!::with_capacity(end).push_bytes(&access, span.take(end));
                 let rest = span.skip(end);
-                let tail = Buffer!::new_with_cap(rest.len()).push_bytes(&access, rest);
+                let tail = Buffer!::with_capacity(rest.len()).push_bytes(&access, rest);
                 restore.restore(access).destroy();
                 Step::Done.(Lines!::Complete.(complete, tail))
             },
@@ -113,7 +114,7 @@ fn write_lines(connection: Connection!, lines: Lines!) -> Action! {
 }
 
 fn main() -> i32 {
-    let listener = match Listener!::bind_connections(0, start) {
+    var listener = match Listener!::bind_connections(0, start) {
         Ok(listener) => listener,
         Err(code) => {
             eprint_buffer(f"tcp-session: cannot listen (libuv error {code})\n");

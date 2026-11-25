@@ -26,14 +26,14 @@ impl FileRequest! {
 
     /// Takes an unqueued native file request, or null on allocation failure.
     unsafe fn register(&self, &scope: Scope!, raw: *u8) -> Option[usize] {
-        let { raw: previous, id: previous_id } = self;
+        var { raw: previous, id: previous_id } = self;
         if !is_null(previous) {
             unsafe kable_file_free(raw);
             self = FileRequest!.{ raw: previous, id: previous_id };
             return Option::None;
         }
         if is_null(raw) {
-            let { raw: scope_raw } = scope;
+            var { raw: scope_raw } = scope;
             unsafe kable_scope_fail_allocation(scope_raw);
             scope = Scope!.{ raw: scope_raw };
             self = FileRequest!::empty();
@@ -51,14 +51,14 @@ impl FileRequest! {
 
     forall Item.
     unsafe fn collect(self, &scope: Scope!, result: unsafe fn(*u8) -> Completion[Item]) -> Completion[Item] {
-        let { raw, id } = self;
+        var { raw, id } = self;
         let outcome = (&scope.result(id)).completion().and_then(|unit| unsafe result(raw));
         unsafe kable_file_free(raw);
         outcome
     }
 
     fn collect_write(self, &scope: Scope!) -> (usize, Completion[()]) {
-        let { raw, id } = self;
+        var { raw, id } = self;
         let resolution = &scope.result(id);
         // Even a cancelled write can report bytes accepted before retirement.
         let size = unsafe alloca[usize]();
@@ -79,7 +79,7 @@ unsafe fn collect_read(request: *u8) -> Completion[Buffer!] {
     let code = unsafe kable_file_take_contents(request, data, size, capacity);
     if code < 0 { return Completion::Failed.(Failure::Operation.(code)); }
     let bytes = unsafe *data;
-    if is_null(bytes) { return Completion::Ready.(Buffer!::new_with_cap(0)); }
+    if is_null(bytes) { return Completion::Ready.(Buffer!::with_capacity(0)); }
     let len = unsafe *size;
     let cap = unsafe *capacity;
     let storage = unsafe HeapAllocator::adopt_raw_sized(bytes, cap);

@@ -1526,7 +1526,7 @@ use std::slice::StaticRead;
 use task::PlanOutput;
 
 fn main() {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let file = read_file(&access, "README.md", 65_536usize).map(|outcome| outcome);
     let result = virtual_clock::run(file);
 }

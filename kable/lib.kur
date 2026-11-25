@@ -1,5 +1,5 @@
 use http::{Method, Request!, Response!};
-use server::{Action!, Server!};
+use server::{Action!, Server!, after, body, reply};
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
 use std::option::{Option, Result};
@@ -11,7 +11,7 @@ use task::{Completion, Failure, PlanOutput};
 
 fn handle(request: Request!) -> Action! {
     let { method, target, body } = request;
-    let exists 'k. (access, bytes, restore) = target.open();
+    var exists 'k. (access, bytes, restore) = target.open();
     let target = Span::from_slice(bytes);
     let path = match target.find_byte(&access, b'?', 0) {
         Some(end) => target.take(end),
@@ -25,9 +25,9 @@ fn handle(request: Request!) -> Action! {
 
     if echo {
         match method {
-            Post => return body.collect(1024 * 1024).respond(|outcome| {
+            Post => return body::collect(body, 1024 * 1024).respond(|outcome| {
                 let status = match outcome {
-                    Completion::Ready(bytes) => return Response!::ok(bytes).reply(),
+                    Completion::Ready(bytes) => return reply(Response!::ok(bytes)),
                     TimedOut | Cancelled => 408,
                     Failed(failure) => match failure {
                         Failure::Operation(code) => {
@@ -37,11 +37,11 @@ fn handle(request: Request!) -> Action! {
                         _ => 500,
                     },
                 };
-                Response!::rejected(status).reply()
+                reply(Response!::rejected(status))
             }).reply(),
             _ => {
                 body.destroy();
-                return Response!::method_not_allowed("POST").reply();
+                return reply(Response!::method_not_allowed("POST"));
             },
         }
     }
@@ -51,21 +51,21 @@ fn handle(request: Request!) -> Action! {
         match method {
             Get | Head => {
                 if delay {
-                    return Response!::text(200, "done\n").after(Duration::from_secs(1));
+                    return after(Response!::text(200, "done\n"), Duration::from_secs(1));
                 }
                 let message = if home { "Kable\n" } else { "ok\n" };
-                Response!::text(200, message).reply()
+                reply(Response!::text(200, message))
             },
-            _ => Response!::method_not_allowed("GET, HEAD").reply(),
+            _ => reply(Response!::method_not_allowed("GET, HEAD")),
         }
     } else {
-        Response!::text(404, "Not Found\n").reply()
+        reply(Response!::text(404, "Not Found\n"))
     }
 }
 
 fn parse_port(bytes: Slice[u8, 'static]) -> Option[u16] {
     if bytes.is_empty() { return Option::None; }
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     var port = 0u32;
     var i = 0usize;
     while i < bytes.len() {
@@ -95,7 +95,7 @@ fn main(args: Args) -> i32 {
             None => return usage(),
         },
     };
-    let server = match Server!::bind(port, handle) {
+    var server = match Server!::bind(port, handle) {
         Ok(server) => server,
         Err(code) => {
             eprint_buffer(f"kable: cannot listen (libuv error {code})\n");

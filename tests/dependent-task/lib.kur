@@ -32,13 +32,13 @@ fn hold_handoff(outcome: Completion[Buffer!]) -> Completion[Prefix!] {
 }
 
 fn main() -> i32 {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let task: ChainPlan![Completion[Buffer!], Scope!] = read_file(&access, "example.txt", 1024)
         .map(|outcome| hold_handoff(outcome))
         .and_then(|prefix| {
             eprint_buffer(f"Started the footer continuation.\n");
             prefix.discard();
-            let access = StaticRead::new();
+            var access = StaticRead::new();
             read_file(&access, "footer.txt", 1024)
         });
     match run_with_deadline(task, Duration::from_millis(250)) {

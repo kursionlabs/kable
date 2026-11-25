@@ -1,6 +1,6 @@
 use async::Scope!;
 use http::{Body!, Request!, Response!};
-use server::{Action!, Server!};
+use server::{Action!, Server!, after, reply, response_stream};
 use std::ascii::to_upper;
 use std::buffer::Buffer!;
 use std::io::{eprint_buffer, print_buffer};
@@ -55,17 +55,17 @@ fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
             },
             Eof => {
                 body.discard();
-                Response!::ok(f"{chunks}:".push_buffer(bytes)).reply()
+                reply(Response!::ok(f"{chunks}:".push_buffer(bytes)))
             },
-            _ => { (body, bytes).discard(); Response!::rejected(400).reply() },
+            _ => { (body, bytes).discard(); reply(Response!::rejected(400)) },
         }
     }, discard_pull).reply()
 }
 
 fn uppercase(bytes: Buffer!) -> Buffer! {
-    let exists 'k. (access, bytes, restore) = bytes.open();
+    var exists 'k. (access, bytes, restore) = bytes.open();
     let span = Span::from_slice(bytes);
-    var mapped = Buffer!::new_with_cap(span.len());
+    var mapped = Buffer!::with_capacity(span.len());
     var index = 0;
     while index < span.len() {
         mapped = mapped.push_byte(to_upper(span.at(&access, index)));
@@ -77,14 +77,14 @@ fn uppercase(bytes: Buffer!) -> Buffer! {
 
 fn collection_response(outcome: Completion[Buffer!]) -> Action! {
     let status = match outcome {
-        Ready(bytes) => return Response!::ok(bytes).reply(),
+        Ready(bytes) => return reply(Response!::ok(bytes)),
         TimedOut | Cancelled => 408,
         Failed(failure) => match failure {
             Operation(code) => if code == 400 || code == 413 { code as u16 } else { 500 },
             _ => 500,
         },
     };
-    Response!::rejected(status).reply()
+    reply(Response!::rejected(status))
 }
 
 fn pull_completion(result: (Body!, StreamOutcome[Buffer!])) -> Completion[Buffer!] {
@@ -125,6 +125,7 @@ fn collect(body: Body!, observed: bool) -> Action! {
 }
 
 fn serve(request: Request!) -> Action! {
+    var request = request;
     if &request.path_is("/pull-plan") {
         let { method, target, body } = request;
         target.destroy();
@@ -149,14 +150,14 @@ fn serve(request: Request!) -> Action! {
     }
     let upper = &request.path_is("/upper");
     if upper || &request.path_is("/relay") {
-        let { method, target, body } = request;
+        var { method, target, body } = request;
         target.destroy();
         let length = &body.content_length();
         if upper {
             let source = body.map_items(|bytes| uppercase(bytes));
-            return Response!::stream(200, "application/octet-stream", length, source).reply();
+            return reply(response_stream::stream(200, "application/octet-stream", length, source));
         }
-        return Response!::stream(200, "application/octet-stream", length, body).reply();
+        return reply(response_stream::stream(200, "application/octet-stream", length, body));
     }
     let unknown_head = &request.path_is("/unknown-head");
     let head_only = &request.path_is("/head") || unknown_head;
@@ -176,17 +177,17 @@ fn serve(request: Request!) -> Action! {
     if collect_memory {
         return memory.collect(6).respond(|outcome| collection_response(outcome)).reply();
     }
-    let response: Response! = Response!::stream(200, "application/octet-stream", length, memory);
+    let response = response_stream::stream(200, "application/octet-stream", length, memory);
     if cancelled {
         eprint_buffer(f"Scheduled delayed response.\n");
-        return response.after(Duration::from_secs(30));
+        return after(response, Duration::from_secs(30));
     }
-    if delayed { return response.after(Duration::from_millis(20)); }
-    response.reply()
+    if delayed { return after(response, Duration::from_millis(20)); }
+    reply(response)
 }
 
 fn main() -> i32 {
-    let server = Server!::bind(0, serve).unwrap();
+    var server = Server!::bind(0, serve).unwrap();
     let port = &server.port();
     if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();

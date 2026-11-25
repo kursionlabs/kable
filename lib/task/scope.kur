@@ -37,12 +37,12 @@ struct Node {
 
 impl Node {
     fn reparent(self, parent: usize) -> Node {
-        let { parent: old, ..rest } = self;
+        var { parent: old, ..rest } = self;
         Node.{ parent: Option::Some.(parent), ..rest }
     }
 
     fn resolve(self, result: Resolution) -> Node {
-        let { result: old, ..rest } = self;
+        var { result: old, ..rest } = self;
         Node.{ result: Option::Some.(result), ..rest }
     }
 }
@@ -81,7 +81,7 @@ impl ScopeState! {
             Some(id) => id,
             None => return false,
         };
-        let { nodes, root: prior, ..rest } = self;
+        var { nodes, root: prior, ..rest } = self;
         let count = &nodes.len();
         var valid = prior.is_none() && id < count;
         var i = 0usize;
@@ -106,7 +106,7 @@ impl ScopeState! {
     }
 
     fn update_resource(&self, resource: Resource, starting: bool) {
-        let { nodes, root, pending, parent_timer, ..rest } = self;
+        var { nodes, root, pending, parent_timer, ..rest } = self;
         let changed = if root.is_some() {
             match resource {
                 Leaf(id) => update_leaf(&nodes, id, starting),
@@ -120,14 +120,14 @@ impl ScopeState! {
     }
 
     fn pending(&self) -> bool {
-        let { pending, ..rest } = self;
+        var { pending, ..rest } = self;
         self = ScopeState!.{ pending, ..rest };
         pending != 0usize
     }
 
     /// A scope joins when its root resolves and all resources retire.
     fn joined(&self) -> bool {
-        let { nodes, root, pending, ..rest } = self;
+        var { nodes, root, pending, ..rest } = self;
         let joined = scope_joined(&nodes, root, pending);
         self = ScopeState!.{ nodes, root, pending, ..rest };
         joined
@@ -135,7 +135,7 @@ impl ScopeState! {
 
     /// Reports a leaf's completion and returns true if it resolves the root.
     fn complete(&self, id: usize) -> bool {
-        let { nodes, stops, root, ..rest } = self;
+        var { nodes, stops, root, ..rest } = self;
         var resolved = false;
         if root.is_some() && id < &nodes.len() {
             let leaf = &nodes.at(id);
@@ -149,7 +149,7 @@ impl ScopeState! {
     }
 
     fn cancel(&self) {
-        let { nodes, stops, root, ..rest } = self;
+        var { nodes, stops, root, ..rest } = self;
         match root {
             Some(root) => cancel_branch(&nodes, &stops, root),
             None => (),
@@ -158,7 +158,7 @@ impl ScopeState! {
     }
 
     fn take_cancel(&self) -> Option[usize] {
-        let { stops, ..rest } = self;
+        var { stops, ..rest } = self;
         let id = &stops.pop();
         self = ScopeState!.{ stops, ..rest };
         id
@@ -170,7 +170,7 @@ impl ScopeState! {
             Some(id) => id,
             None => return Option::None,
         };
-        let { nodes, root, pending, ..rest } = self;
+        var { nodes, root, pending, ..rest } = self;
         let result = if scope_joined(&nodes, root, pending) && id < &nodes.len() {
             (&nodes.at(id)).result
         } else { Option::None };
@@ -179,14 +179,14 @@ impl ScopeState! {
     }
 
     fn destroy(self) {
-        let { nodes, stops, root, pending, parent_timer } = self;
-        nodes.destroy(ignore_node);
-        stops.destroy(ignore_id);
+        var { nodes, stops, root, pending, parent_timer } = self;
+        nodes.destroy();
+        stops.destroy();
     }
 }
 
 fn add_branch(&scope: ScopeState!, branch: Branch) -> Option[usize] {
-    let { nodes, root, ..rest } = scope;
+    var { nodes, root, ..rest } = scope;
     var nodes = nodes;
     let index = &nodes.len();
     let valid = if root.is_none() {
@@ -207,7 +207,7 @@ fn add_branch(&scope: ScopeState!, branch: Branch) -> Option[usize] {
         }
     } else { false };
     if valid {
-        nodes = nodes.push(Node.{
+        &nodes.push(Node.{
             branch, parent: Option::None, result: Option::None, lifetime: Lifetime::Unstarted,
         });
     }
@@ -228,7 +228,7 @@ fn update_leaf(&nodes: OwnedVec![Node], id: usize, starting: bool) -> bool {
     let node = &nodes.at(id);
     match node.branch {
         Leaf => {
-            let { lifetime, ..rest } = node;
+            var { lifetime, ..rest } = node;
             let changed = update_lifetime(&lifetime, starting);
             if changed { &nodes.set(id, Node.{ lifetime, ..rest }); }
             changed
@@ -265,7 +265,7 @@ fn cancel_branch(&nodes: OwnedVec![Node], &stops: OwnedVec![usize], root: usize)
         if node.result.is_none() {
             &nodes.set(index, node.resolve(Resolution::Cancelled));
             match node.branch {
-                Leaf => { stops = stops.push(index); },
+                Leaf => { &stops.push(index); },
                 Pair(pair) => { child = Option::Some.(pair.first); },
             }
         }

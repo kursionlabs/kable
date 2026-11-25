@@ -37,8 +37,8 @@ forall Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read
 impl CollectionReply![Source, Env] {
     /// Pulls the stream under the original request deadline.
     fn reply(self) -> Action! {
-        let { collection, respond } = self;
-        let { source, limit } = collection;
+        var { collection, respond } = self;
+        var { source, limit } = collection;
         collect_next(source, Option::None, limit, respond)
     }
 }
@@ -51,6 +51,7 @@ fn collect_next(source: Source, bytes: Option[Buffer!], remaining: usize,
         let (source, outcome) = result;
         let failure = match outcome {
             StreamOutcome::Item(item) => {
+                var item = item;
                 let length = &item.len();
                 if length <= remaining {
                     let bytes = match bytes {

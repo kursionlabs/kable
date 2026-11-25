@@ -40,17 +40,15 @@ unsafe fn take(context: *u8) -> PendingBody![State, Source, Env] {
 
 forall State, Source, Env where Copy[Env], Discard[State].
 unsafe fn release(context: *u8) {
-    let { state, build } = unsafe take[State, Source, Env](context);
+    var { state, build } = unsafe take[State, Source, Env](context);
     state.discard();
 }
 
-impl Response! {
-    /// Sends a known-length or EOF-terminated response from an owned source.
-    forall Source, Read where Discard[Source], Stream[Source -> Read],
-        Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-    fn stream(status: u16, content_type: Slice[u8, 'static], length: Option[u64], source: Source) -> Response! {
-        prepare(ResponseHead::new(status, content_type), source, |source, head, client| (source, head, length))
-    }
+/// Sends a known-length or EOF-terminated response from an owned source.
+forall Source, Read where Discard[Source], Stream[Source -> Read],
+    Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
+fn stream(status: u16, content_type: Slice[u8, 'static], length: Option[u64], source: Source) -> Response! {
+    prepare(ResponseHead::new(status, content_type), source, |source, head, client| (source, head, length))
 }
 
 fn complete(framing: ResponseFraming) -> bool {
@@ -63,7 +61,7 @@ enum ResponseStep! {
 }
 
 fn frame(framing: ResponseFraming, outcome: StreamOutcome[Buffer!]) -> ResponseStep! {
-    let bytes = match outcome {
+    var bytes = match outcome {
         StreamOutcome::Item(bytes) => bytes,
         Eof => return match framing {
             Chunked => ResponseStep!::Send.(ResponseFraming::Fixed.(0), Buffer!::new().push_static("0\r\n\r\n")),
@@ -74,6 +72,7 @@ fn frame(framing: ResponseFraming, outcome: StreamOutcome[Buffer!]) -> ResponseS
     };
     match framing {
         Fixed(remaining) => {
+            var bytes = bytes;
             let length = &bytes.len() as u64;
             if length > remaining {
                 bytes.destroy();
@@ -88,7 +87,7 @@ fn frame(framing: ResponseFraming, outcome: StreamOutcome[Buffer!]) -> ResponseS
 forall State, Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
     Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
 unsafe fn start(context: *u8, client: *u8, response: ResponseHead, head: bool, http10: bool) -> i32 {
-    let { state, build } = unsafe take[State, Source, Env](context);
+    var { state, build } = unsafe take[State, Source, Env](context);
     let (source, response, length) = build(state, response, client);
     let framing = match length {
         Some(length) => ResponseFraming::Fixed.(length),

@@ -33,11 +33,11 @@ fn new_scope() -> Virtual! {
 forall Env where Copy[Env].
 fn register_node(&scope: Virtual!, node: Node,
     register: closure[Env](&_: ScopeState!) -> Option[usize]) -> Option[usize] {
-    let { raw } = scope;
+    var { raw } = scope;
     let address = unsafe (raw as *State!);
-    let { policy, nodes, invalid, ..rest } = unsafe *address;
+    var { policy, nodes, invalid, ..rest } = unsafe *address;
     let id = if invalid { Option::None } else { register(&policy) };
-    let nodes = if id.is_some() { nodes.push(node) } else { nodes };
+    if id.is_some() { &nodes.push(node); }
     unsafe *address = State!.{ policy, nodes, invalid: id.is_none(), ..rest };
     scope = Virtual!.{ raw };
     id
@@ -53,9 +53,9 @@ instance PlanDriver[Virtual!] {
     }
 
     fn result(&scope: Virtual!, id: Option[usize]) -> Resolution {
-        let { raw } = scope;
+        var { raw } = scope;
         let address = unsafe (raw as *State!);
-        let { policy, invalid, ..rest } = unsafe *address;
+        var { policy, invalid, ..rest } = unsafe *address;
         let result = &policy.result(id);
         unsafe *address = State!.{ policy, invalid, ..rest };
         scope = Virtual!.{ raw };
@@ -70,7 +70,7 @@ instance ContinuationDriver[Virtual!] {
     fn close_child(scope: Virtual!) { close_scope(scope); }
 
     fn scope_address(&scope: Virtual!) -> *u8 {
-        let { raw } = scope;
+        var { raw } = scope;
         scope = Virtual!.{ raw };
         raw
     }
@@ -93,14 +93,14 @@ fn expired(now: Duration, limit: Option[Duration]) -> bool {
 
 unsafe fn time_info(raw: *u8) -> (*Duration, Option[Duration]) {
     let address = unsafe (raw as *State!);
-    let { clock, deadline, ..rest } = unsafe *address;
+    var { clock, deadline, ..rest } = unsafe *address;
     unsafe *address = State!.{ clock, deadline, ..rest };
     (clock, deadline)
 }
 
 unsafe fn node_at(raw: *u8, id: usize) -> Node {
     let address = unsafe (raw as *State!);
-    let { nodes, ..rest } = unsafe *address;
+    var { nodes, ..rest } = unsafe *address;
     let node = &nodes.at(id);
     unsafe *address = State!.{ nodes, ..rest };
     node
@@ -108,14 +108,14 @@ unsafe fn node_at(raw: *u8, id: usize) -> Node {
 
 unsafe fn set_node(raw: *u8, id: usize, node: Node) {
     let address = unsafe (raw as *State!);
-    let { nodes, ..rest } = unsafe *address;
+    var { nodes, ..rest } = unsafe *address;
     &nodes.set(id, node);
     unsafe *address = State!.{ nodes, ..rest };
 }
 
 unsafe fn joined(raw: *u8) -> bool {
     let address = unsafe (raw as *State!);
-    let { policy, invalid, ..rest } = unsafe *address;
+    var { policy, invalid, ..rest } = unsafe *address;
     let done = invalid || &policy.joined();
     unsafe *address = State!.{ policy, invalid, ..rest };
     done
@@ -123,7 +123,7 @@ unsafe fn joined(raw: *u8) -> bool {
 
 unsafe fn start(raw: *u8, root: Option[usize], clock: *Duration, deadline: Option[Duration]) {
     let address = unsafe (raw as *State!);
-    let { policy, nodes, invalid, clock: old_clock, deadline: old_deadline } = unsafe *address;
+    var { policy, nodes, invalid, clock: old_clock, deadline: old_deadline } = unsafe *address;
     let invalid = invalid || !&policy.begin(root);
     let now = unsafe *clock;
     if invalid || expired(now, deadline) {
@@ -156,8 +156,8 @@ unsafe fn start(raw: *u8, root: Option[usize], clock: *Duration, deadline: Optio
 }
 
 unsafe fn advance_child(handoff: Handoff, cancelled: u8) -> Option[Child] {
-    let { context, advance } = handoff;
-    let scope = unsafe alloca[*u8]();
+    var { context, advance } = handoff;
+    var scope = unsafe alloca[*u8]();
     let root = unsafe alloca[usize]();
     if (unsafe advance(context, cancelled, scope, root)) == 0 { return Option::None; }
     Option::Some.(Child.{ scope: unsafe *scope, root: unsafe *root })
@@ -179,7 +179,7 @@ unsafe fn drive_child(raw: *u8, id: usize, first: Child, handoff: Handoff, finis
 
 unsafe fn take_cancel(raw: *u8) -> Option[usize] {
     let address = unsafe (raw as *State!);
-    let { policy, ..rest } = unsafe *address;
+    var { policy, ..rest } = unsafe *address;
     let id = &policy.take_cancel();
     unsafe *address = State!.{ policy, ..rest };
     id
@@ -197,7 +197,7 @@ unsafe fn retire_cancelled(raw: *u8) {
             _ => (),
         };
         let address = unsafe (raw as *State!);
-        let { policy, nodes, ..rest } = unsafe *address;
+        var { policy, nodes, ..rest } = unsafe *address;
         &nodes.set(id, Node::Empty);
         &policy.retired(Resource::Leaf.(id));
         unsafe *address = State!.{ policy, nodes, ..rest };
@@ -207,7 +207,7 @@ unsafe fn retire_cancelled(raw: *u8) {
 
 unsafe fn cancel_scope(raw: *u8) {
     let address = unsafe (raw as *State!);
-    let { policy, ..rest } = unsafe *address;
+    var { policy, ..rest } = unsafe *address;
     &policy.cancel();
     unsafe *address = State!.{ policy, ..rest };
     unsafe retire_cancelled(raw);
@@ -215,7 +215,7 @@ unsafe fn cancel_scope(raw: *u8) {
 
 unsafe fn settle(raw: *u8, id: usize) {
     let address = unsafe (raw as *State!);
-    let { policy, nodes, ..rest } = unsafe *address;
+    var { policy, nodes, ..rest } = unsafe *address;
     &nodes.set(id, Node::Empty);
     &policy.complete(id);
     &policy.retired(Resource::Leaf.(id));
@@ -225,7 +225,7 @@ unsafe fn settle(raw: *u8, id: usize) {
 
 unsafe fn next_event(raw: *u8) -> Option[(usize, Duration)] {
     let address = unsafe (raw as *State!);
-    let { nodes, ..rest } = unsafe *address;
+    var { nodes, ..rest } = unsafe *address;
     var next = Option::None;
     var index = 0;
     while index < &nodes.len() {
@@ -263,8 +263,8 @@ unsafe fn fire(raw: *u8, id: usize) {
 }
 
 fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) -> (Duration, bool) {
-    let { raw } = scope;
-    let clock = unsafe alloca[Duration]();
+    var { raw } = scope;
+    var clock = unsafe alloca[Duration]();
     unsafe *clock = Duration::from_nanos(0);
     unsafe start(raw, root, clock, deadline);
     var deadline_expired = expired(unsafe *clock, deadline);
@@ -286,10 +286,10 @@ fn advance(&scope: Virtual!, root: Option[usize], deadline: Option[Duration]) ->
 fn ignore_node(node: Node) {}
 
 fn close_scope(scope: Virtual!) {
-    let { raw } = scope;
-    let { policy, nodes, invalid, clock, deadline } = unsafe *(unsafe (raw as *State!));
+    var { raw } = scope;
+    var { policy, nodes, invalid, clock, deadline } = unsafe *(unsafe (raw as *State!));
     policy.destroy();
-    nodes.destroy(ignore_node);
+    nodes.destroy();
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
 }
 
@@ -316,7 +316,7 @@ struct SequenceClock! { time: Duration }
 
 instance Clock[SequenceClock!] {
     fn now(&engine: SequenceClock!) -> Duration {
-        let { time } = engine;
+        var { time } = engine;
         engine = SequenceClock!.{ time };
         time
     }
@@ -326,7 +326,7 @@ forall Task, Output where Plan[Task, Virtual! -> Output].
 instance StageDriver[Task, SequenceClock! -> Output] {
     fn drive(task: Task, &engine: SequenceClock!, deadline: Option[Duration]) -> StageResult[Output] {
         let remaining = remaining_budget(&engine, deadline);
-        let { time } = engine;
+        var { time } = engine;
         let (result, elapsed) = drive_timed(task, remaining);
         let time = time.add(elapsed);
         engine = SequenceClock!.{ time };
@@ -336,9 +336,9 @@ instance StageDriver[Task, SequenceClock! -> Output] {
 
 forall Stages, Output where Chain[Stages, SequenceClock! -> Output].
 fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> SequenceOutcome[Output] {
-    let clock = SequenceClock!.{ time: Duration::from_nanos(0) };
+    var clock = SequenceClock!.{ time: Duration::from_nanos(0) };
     // The clock starts at zero, so the budget gives the absolute deadline.
     let result = drive_sequence_until(plan, &clock, budget);
-    let { time } = clock;
+    var { time } = clock;
     result
 }

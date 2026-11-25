@@ -38,7 +38,7 @@ fn usage() -> i32 {
 
 fn main(args: Args) -> i32 {
     if args.len() < 3usize || args.len() > 4usize { return usage(); }
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let left = match args.bytes(1usize) {
         Some(path) => path,
         None => return usage(),

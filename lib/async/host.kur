@@ -24,10 +24,10 @@ struct Pending! { prepared: Prepared![Task, Scope!], resume: closure[Env](Output
 
 forall Task, Output, Env where Plan[Task, Scope! -> Output].
 fn prepare_hosted(task: Task, resume: closure[Env](Output, *u8, u8) -> i32) -> HostedPlan! {
-    let prepared = prepare(task, Scope!::new());
+    var prepared = prepare(task, Scope!::new());
     // The prepared plan keeps the native scope alive through collection.
     let (scope, root) = &prepared.with_scope(|&scope, root| {
-        let { raw } = scope;
+        var { raw } = scope;
         scope = Scope!.{ raw };
         (raw, root.unwrap_or(usize::MAX))
     });
@@ -52,7 +52,7 @@ fn prepare_handoff(task: Task, state: State,
 
 forall Task, Output, Env where Plan[Task, Scope! -> Output].
 unsafe fn finish_hosted(plan: *u8, host: *u8, state: u8) -> i32 {
-    let { prepared, resume } = unsafe *(unsafe (plan as *Pending![Task, Output, Env]));
+    var { prepared, resume } = unsafe *(unsafe (plan as *Pending![Task, Output, Env]));
     HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(plan));
     let outcome = prepared.collect(Scope!::close);
     resume(outcome, host, state)
@@ -62,7 +62,7 @@ impl HostedPlan! {
     /// Finishes a plan discarded before submission with a valid host pointer.
     /// The continuation receives host state zero.
     unsafe fn discard(self, host: *u8) {
-        let { scope, root, plan, finish } = self;
+        var { scope, root, plan, finish } = self;
         unsafe finish(plan, host, 0);
     }
 
@@ -74,7 +74,7 @@ impl HostedPlan! {
     unsafe fn submit(self, host: *u8, flags: u8,
         schedule: unsafe fn(*u8, *u8, usize, *u8, unsafe fn(*u8, *u8, u8) -> i32, u8) -> i32)
         -> Result[i32, SubmissionError] {
-        let { scope, root, plan, finish } = self;
+        var { scope, root, plan, finish } = self;
         let status = unsafe schedule(host, scope, root, plan, finish, flags);
         if status < 0 {
             let continuation_status = unsafe finish(plan, host, 0);

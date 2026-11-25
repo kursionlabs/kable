@@ -47,6 +47,8 @@ struct Prepared! { task: Task, scope: Driver, root: Option[usize] }
 /// Stages the plan and retains its state even when staging fails.
 forall Task, Driver, Output where Plan[Task, Driver -> Output].
 fn prepare(task: Task, scope: Driver) -> Prepared![Task, Driver] {
+    var task = task;
+    var scope = scope;
     let root = Plan[Task, Driver -> Output]::stage(&task, &scope);
     Prepared!.{ task, scope, root }
 }
@@ -59,14 +61,15 @@ impl Prepared![Task, Driver] {
     forall Output, Env, RunResult where Plan[Task, Driver -> Output].
     fn drive(self, run: closure[Env](&_: Driver, Option[usize]) -> RunResult,
         close: fn(Driver) -> ()) -> (Output, RunResult) {
-        let result = &self.with_scope(run);
-        (self.collect(close), result)
+        var prepared = self;
+        let result = &prepared.with_scope(run);
+        (prepared.collect(close), result)
     }
 
     /// Lends the scope and its staged root to the engine.
     forall Env, Value.
     fn with_scope(&self, body: closure[Env](&_: Driver, Option[usize]) -> Value) -> Value {
-        let { task, scope, root } = self;
+        var { task, scope, root } = self;
         let value = body(&scope, root);
         self = Prepared!.{ task, scope, root };
         value
@@ -76,7 +79,7 @@ impl Prepared![Task, Driver] {
     /// returning the owned outcome.
     forall Output where Plan[Task, Driver -> Output].
     fn collect(self, close: fn(Driver) -> ()) -> Output {
-        let { task, scope, root } = self;
+        var { task, scope, root } = self;
         let output = Plan[Task, Driver -> Output]::collect(task, &scope);
         close(scope);
         output

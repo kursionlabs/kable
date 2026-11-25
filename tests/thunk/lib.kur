@@ -12,14 +12,14 @@ fn check_force() -> bool {
         bytes
     }, Buffer!::destroy);
     let delayed = (unsafe *calls) == 0;
-    let bytes = work.force();
+    var bytes = work.force();
     let length = &bytes.len();
     bytes.destroy();
     delayed && length == 5 && (unsafe *calls) == 1
 }
 
 fn discard_line(state: (Buffer!, *usize)) {
-    let (bytes, released) = state;
+    var (bytes, released) = state;
     unsafe *released = (unsafe *released) + &bytes.len();
     bytes.destroy();
 }
@@ -56,7 +56,7 @@ fn check_one_shot(resume: bool) -> bool {
         work.discard_with(Option::Some.(input));
         return (unsafe *released) == 10;
     }
-    let bytes = work.resume(input);
+    var bytes = work.resume(input);
     let length = &bytes.len();
     bytes.destroy();
     length == 10 && (unsafe *released) == 0
@@ -88,6 +88,7 @@ fn check_resume(finish: bool) -> bool {
     }
     match line.resume(delimiter) {
         Done(bytes) => {
+            var bytes = bytes;
             let length = &bytes.len();
             bytes.destroy();
             length == 2 && (unsafe *released) == 0

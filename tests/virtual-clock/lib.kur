@@ -13,7 +13,7 @@ fn check_deadline_order() -> bool {
     let earlier = sleep(Duration::from_nanos(1));
     let bytes = Buffer!::new().push_static("owned");
     let tied = sleep(deadline).map(|status| (bytes, status));
-    let (earlier, (bytes, tied), scope) = run_with_deadline(join(earlier, tied), deadline);
+    var (earlier, (bytes, tied), scope) = run_with_deadline(join(earlier, tied), deadline);
     let valid_buffer = &bytes.len() == 5;
     bytes.destroy();
     let earlier_ready = match earlier { Ready => true, _ => false };

@@ -10,7 +10,7 @@ instance Discard[Buffer!] {
 }
 
 fn read_line(body: Buffer!, line: Buffer!) -> Step[Buffer!, Buffer!] {
-    let exists 'k. (access, bytes, restore) = line.open();
+    var exists 'k. (access, bytes, restore) = line.open();
     let terminator = bytes.is(&access, ".");
     let line = restore.restore(access);
     if terminator {
@@ -38,14 +38,14 @@ fn read_message(&input: Input!, pending: Reader) -> Result[Option[Buffer!], Erro
 }
 
 fn main(args: Args) -> i32 {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let check = args.len() == 2 && args.bytes(1).unwrap().is(&access, "--check");
     if args.len() != 1 && !check {
         eprint("usage: thunk-message [--check]\n");
         return 2;
     }
 
-    let input = match stdin() {
+    var input = match stdin() {
         Ok(input) => input,
         Err(error) => { eprint_buffer(f"thunk-message: {error}\n"); return 1; },
     };
@@ -61,6 +61,7 @@ fn main(args: Args) -> i32 {
     };
 
     let output = delay(body, |body| {
+        var body = body;
         let length = &body.len();
         f"Message ({length} bytes)\n".push_buffer(body)
     });

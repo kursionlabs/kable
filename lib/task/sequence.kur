@@ -79,7 +79,7 @@ impl Sequence![Stages, Input] {
     /// Uses the sequence as a child of a regular plan on a continuation driver.
     forall Driver where SequencePlan[Stages, Driver -> Input].
     fn into_plan(self) -> ChainPlan![SequenceOutcome[Input], Driver] {
-        let { stages } = self;
+        var { stages } = self;
         SequencePlan[Stages, Driver -> Input]::build(stages)
     }
 
@@ -104,7 +104,7 @@ impl Sequence![Stages, Input] {
     forall State, Task, Output, Env where PlanOutput[Task -> Output], Copy[Env].
     fn then_owned_with(self, state: State, resume: closure[Env](State, Input) -> Option[Task],
         cancel: fn(State, Option[Input]) -> ()) -> Sequence![Then![Stages, State, Input, Task, Env], Output] {
-        let { stages } = self;
+        var { stages } = self;
         Sequence!.{ stages: Then!.{ previous: stages, handoff: thunk::defer(state, resume, cancel) } }
     }
 }
@@ -115,7 +115,7 @@ trait SequencePlan { fn build(stages: Stages) -> ChainPlan![SequenceOutcome[Outp
 forall Task, Driver, Output where PlanOutput[Task -> Output], Plan[Task, Driver -> Output].
 instance SequencePlan[First![Task], Driver -> Output] {
     fn build(stages: First![Task]) -> ChainPlan![SequenceOutcome[Output], Driver] {
-        let { task } = stages;
+        var { task } = stages;
         erase(task.map(|output| SequenceOutcome::Finished.(output)))
     }
 }
@@ -125,7 +125,7 @@ forall Previous, State, Input, Next, Output, Env, Driver where Copy[Env],
     Plan[Next, Driver -> Output], PlanOutput[Next -> Output].
 instance SequencePlan[Then![Previous, State, Input, Next, Env], Driver -> Output] {
     fn build(stages: Then![Previous, State, Input, Next, Env]) -> ChainPlan![SequenceOutcome[Output], Driver] {
-        let { previous, handoff } = stages;
+        var { previous, handoff } = stages;
         let prior = SequencePlan[Previous, Driver -> Input]::build(previous);
         chain(prior, handoff, |handoff, input| resume_handoff[State, Input, Next, Output, Env](handoff, input),
             cancel_handoff[State, Input, Next, Output, Env], resolve_sequence[Output])
@@ -183,7 +183,7 @@ fn remaining_budget(&engine: Engine, deadline: Option[Duration]) -> Option[Durat
 forall Task, Output, Engine where StageDriver[Task, Engine -> Output].
 instance Chain[First![Task], Engine -> Output] {
     fn drive(stages: First![Task], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[StageResult[Output]] {
-        let { task } = stages;
+        var { task } = stages;
         SequenceOutcome::Finished.(StageDriver[Task, Engine -> Output]::drive(task, &engine, deadline))
     }
 }
@@ -193,7 +193,7 @@ forall Previous, State, Input, Task, Env, Output, Engine
 instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
     fn drive(stages: Then![Previous, State, Input, Task, Env], &engine: Engine, deadline: Option[Duration])
         -> SequenceOutcome[StageResult[Output]] {
-        let { previous, handoff } = stages;
+        var { previous, handoff } = stages;
         let stage = match Chain[Previous, Engine -> Input]::drive(previous, &engine, deadline) {
             Finished(stage) => stage,
             Stopped => {
@@ -205,7 +205,7 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
                 return SequenceOutcome::Cancelled;
             },
         };
-        let { output: input, deadline_expired } = stage;
+        var { output: input, deadline_expired } = stage;
         let expired = deadline_expired || (match remaining_budget(&engine, deadline) {
             Some(duration) => duration.is_zero(),
             None => false,
@@ -224,10 +224,10 @@ instance Chain[Then![Previous, State, Input, Task, Env], Engine -> Output] {
 /// Drives the chain with one absolute deadline for all stages and handoffs.
 forall Stages, Output, Engine where Chain[Stages, Engine -> Output].
 fn drive_sequence_until(sequence: Sequence![Stages, Output], &engine: Engine, deadline: Option[Duration]) -> SequenceOutcome[Output] {
-    let { stages } = sequence;
+    var { stages } = sequence;
     match Chain[Stages, Engine -> Output]::drive(stages, &engine, deadline) {
         Finished(stage) => {
-            let { output, deadline_expired } = stage;
+            var { output, deadline_expired } = stage;
             SequenceOutcome::Finished.(output)
         },
         Stopped => SequenceOutcome::Stopped,

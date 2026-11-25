@@ -60,7 +60,7 @@ fn check_within() -> bool {
 }
 
 fn reclaim_limited_buffer(result: ((Buffer!, Completion[()]), DeadlineStatus), local: bool) -> bool {
-    let ((bytes, status), deadline) = result;
+    var ((bytes, status), deadline) = result;
     let expected = match deadline {
         TimedOut => local,
         Cancelled => !local,
@@ -86,7 +86,7 @@ fn check_map() -> bool {
     let second = Buffer!::new().push_static("b");
     let first = sleep(Duration::from_nanos(0)).map(|status| label(first, winner_label, status));
     let second = sleep(Duration::from_secs(30)).map(|status| label(second, loser_label, status));
-    let ((first, ready), (second, loser_ready), status) = run(select(first, second));
+    var ((first, ready), (second, loser_ready), status) = run(select(first, second));
     let valid = won(status, Side::First) && ready && !loser_ready && &first.len() == 5 && &second.len() == 6;
     first.destroy();
     second.destroy();
@@ -95,7 +95,7 @@ fn check_map() -> bool {
     let suffix = Buffer!::new().push_static("cancelled");
     let bytes = Buffer!::new();
     let task = sleep(Duration::from_secs(30)).map(|status| label(bytes, suffix, status));
-    let (bytes, ready) = run_with_deadline(task, Duration::from_nanos(0));
+    var (bytes, ready) = run_with_deadline(task, Duration::from_nanos(0));
     let valid = !ready && &bytes.len() == 9usize;
     bytes.destroy();
     if valid { print_buffer(f"Mapped the winning and cancelled outcomes with owned closures.\n"); }
@@ -132,7 +132,7 @@ fn check_nested_deadline() -> bool {
     let (timer, race, nested_status) = nested;
     let (a, b, selection) = race;
     let race_cancelled = cancelled(selection) && cancelled(a) && cancelled(b);
-    let (buffer, first_status) = first;
+    var (buffer, first_status) = first;
     let length = &buffer.len();
     buffer.destroy();
     if !ready(first_status) || length != 5 || !cancelled(status) || !cancelled(nested_status)

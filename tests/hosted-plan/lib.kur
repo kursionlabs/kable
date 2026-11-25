@@ -1,4 +1,4 @@
-use async::{FileErrorKind, Scope!, open_file, run, run_sequence, run_with_deadline, with_runner};
+use async::{FileErrorKind, Scope!, file_error_kind, open_file, run, run_sequence, run_with_deadline, with_runner};
 use async::host::{HostedPlan!, prepare_handoff, prepare_hosted};
 use std::buffer::Buffer!;
 use std::mem::alloca;
@@ -68,7 +68,7 @@ fn check_startup_failure() -> bool {
     let first = sleep(Duration::from_secs(30)).map(|status| (first, status));
     let second = sleep(Duration::from_secs(30)).map(|status| (second, status));
     let plan = join(first, join(second, FailStart.{ stage_nanos: 0 }));
-    let (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(Duration::from_secs(1)));
+    var (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(Duration::from_secs(1)));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
     second.destroy();
@@ -144,7 +144,7 @@ fn check_sequence_loop(error: i32) -> bool {
     let loop_matched = (unsafe kable_test_loop_end(if error == 0 { 1 } else { 0 })) != 0;
     match result {
         Finished(outcome) => {
-            let ((bytes, first), second) = outcome;
+            var ((bytes, first), second) = outcome;
             let length = &bytes.len();
             bytes.destroy();
             loop_matched && length == 5 && sequence_stage_status(first, error != 0)
@@ -158,12 +158,12 @@ fn check_runner_reuse() -> bool {
     let immediate = Duration::from_nanos(0);
     unsafe kable_test_loop_begin(0);
     unsafe kable_test_advance_clock_on_init(0);
-    let (bytes, first, second, timer, joined) = with_runner(|&runner| {
+    var (bytes, first, second, timer, joined) = with_runner(|&runner| {
         let bytes = Buffer!::new().push_static("owned");
         let slow = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
         let (bytes, first) = &runner.run_with_deadline(slow, immediate);
         let quick = sleep(immediate).map(|status| (bytes, status));
-        let (bytes, second) = &runner.run(quick);
+        var (bytes, second) = &runner.run(quick);
         let stage_time = Duration::from_millis(10);
         let budget = Duration::from_millis(5);
         let plan = join(sleep(immediate), FailStart.{ stage_nanos: stage_time.as_nanos() });
@@ -181,8 +181,8 @@ fn check_runner_reuse() -> bool {
 }
 
 fn discard_runner_sequence(state: (Buffer!, *u8), prior: Option[(Buffer!, Completion[()])]) {
-    let (state, cleaned) = state;
-    let (bytes, status) = prior.unwrap();
+    var (state, cleaned) = state;
+    var (bytes, status) = prior.unwrap();
     let valid = &state.len() == 5 && &bytes.len() == 6;
     state.destroy();
     bytes.destroy();
@@ -219,7 +219,7 @@ fn check_runner_sequence() -> bool {
 }
 
 fn discard_setup_sequence(cleaned: *u8, prior: Option[((Buffer!, Completion[()]), (), Completion[()])]) {
-    let ((bytes, timer), unit, joined) = prior.unwrap();
+    var ((bytes, timer), unit, joined) = prior.unwrap();
     let length = &bytes.len();
     bytes.destroy();
     match timer { Cancelled => (), _ => trap() };
@@ -263,7 +263,7 @@ fn pending() -> HostedPlan! {
     let plan = join(first, sleep(Duration::from_nanos(0)));
     unsafe kable_test_track_scope();
     prepare_hosted(plan.within(Duration::from_secs(1)), |outcome, host, state| {
-        let (((bytes, first), second, status), deadline) = outcome;
+        var (((bytes, first), second, status), deadline) = outcome;
         let length = &bytes.len();
         bytes.destroy();
         require_scope_closes(closed_before + 1);
@@ -304,7 +304,8 @@ fn check_handoff_rejection() -> bool {
             trap()
         },
         |state, outcome| {
-            let (bytes, status) = outcome;
+            var state = state;
+            var (bytes, status) = outcome;
             let valid = &state.len() == 5 && &bytes.len() == 7 && not_started(status);
             (state, bytes).discard();
             require_scope_closes(closed_before + 1);
@@ -330,7 +331,7 @@ fn check_synchronous_submission() -> bool {
     });
     unsafe kable_test_track_scope();
     let hosted = prepare_hosted(plan, |outcome, host, state| {
-        let (bytes, (unit, timer, joined)) = outcome;
+        var (bytes, (unit, timer, joined)) = outcome;
         let length = &bytes.len();
         bytes.destroy();
         require_scope_closes(closed_before + 1);
@@ -346,7 +347,7 @@ fn check_synchronous_submission() -> bool {
 }
 
 fn check_file_fault(fault: u8) -> bool {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let file = match run(open_file(&access, "/proc/self/exe")) {
         Ready(file) => file,
         _ => return false,
@@ -374,9 +375,9 @@ fn check_file_fault(fault: u8) -> bool {
 }
 
 fn check_file_path() -> bool {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let rejected_nul = match run(open_file(&access, "/proc/self/exe\x00ignored")) {
-        Failed(failure) => match failure.file_error_kind() {
+        Failed(failure) => match file_error_kind(failure) {
             InvalidInput => true,
             _ => false,
         },

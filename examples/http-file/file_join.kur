@@ -2,19 +2,19 @@
 use async::read_file;
 use http::Response!;
 use package::{FILE_LIMIT, append_file};
-use server::Action!;
+use server::{Action!, reply};
 use std::buffer::Buffer!;
 use std::slice::StaticRead;
 use std::time::Duration;
 use task::{Completion, Discard, PlanOutput, join};
 
 fn serve() -> Action! {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let first = read_file(&access, "example.txt", FILE_LIMIT);
     let second = read_file(&access, "footer.txt", FILE_LIMIT);
 
     join(first, second)
-        .respond(|files| joined_response(files).reply())
+        .respond(|files| reply(joined_response(files)))
         .within(Duration::from_secs(1))
         .reply()
 }

@@ -9,7 +9,7 @@ use task::{Completion, PlanOutput};
 use task::continuation::ChainPlan!;
 
 fn load() -> ChainPlan![Completion[Buffer!], Scope!] {
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     read_file(&access, "example.txt", FILE_LIMIT).map(|outcome| {
         match outcome {
             Completion::Cancelled => {
@@ -21,8 +21,9 @@ fn load() -> ChainPlan![Completion[Buffer!], Scope!] {
             Failed(failure) => Completion::Failed.(failure),
         }
     }).and_then(|first| {
+        var first = first;
         let path = footer_path(&first);
-        let access = StaticRead::new();
+        var access = StaticRead::new();
         read_file(&access, path, FILE_LIMIT).map(|outcome| append_footer(first, outcome))
     })
 }
@@ -31,6 +32,7 @@ fn append_footer(first: Buffer!, footer: Completion[Buffer!]) -> Completion[Buff
     match footer {
         Ready(bytes) => Completion::Ready.(first.push_buffer(bytes)),
         Cancelled => {
+            var first = first;
             let length = &first.len();
             first.destroy();
             eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
@@ -42,7 +44,7 @@ fn append_footer(first: Buffer!, footer: Completion[Buffer!]) -> Completion[Buff
 }
 
 fn footer_path(&first: Buffer!) -> Slice[u8, 'static] {
-    let exists 'k. (access, bytes, restore) = first.open();
+    var exists 'k. (access, bytes, restore) = first.open();
     let text = Span::from_slice(bytes);
     let line = match text.find_byte(&access, b'\n', 0) {
         Some(end) => text.take(end),

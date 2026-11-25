@@ -55,7 +55,7 @@ each socket write completes. `file.chunks(offset, length)` creates an
 owned `FileChunks!` stream. Its `Stream.next()` plans one read and returns
 the stream with a chunk, EOF, cancellation, or an error after the read
 joins. Only a nonempty chunk advances the cursor. The server uses the same
-response writer as `Response!::stream(status, content_type, length, source).reply()`,
+response writer as `reply(response_stream::stream(status, content_type, length, source))`,
 where `length` is an `Option[u64]`.
 It sends the headers, then pulls and sends one body chunk at a time. The
 writer releases the source after the final write joins or when a read or
@@ -78,21 +78,24 @@ This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://ma
 ## A small async server
 
 `Server!::bind` takes a handler that returns an `Action!`. The hello server
-uses `.reply()` to send one response immediately and `.after(...)` to delay another.
-Both methods accept buffered and streamed `Response!` values. A buffered
+uses `reply(response)` to send one response immediately and `after(response, duration)` to delay another.
+Both functions accept buffered and streamed `Response!` values. A buffered
 reply sends its headers and body in one write.
 
 ```kursal
+use http::{Request!, Response!};
+use server::{Action!, after, reply};
 use std::time::Duration;
 
 fn hello(request: Request!) -> Action! {
+    var request = request;
     let delayed = &request.path_is("/delay");
     request.destroy();
 
     if delayed {
-        Response!::text(200, "done\n").after(Duration::from_secs(1))
+        after(Response!::text(200, "done\n"), Duration::from_secs(1))
     } else {
-        Response!::text(200, "Hello from Kable!\n").reply()
+        reply(Response!::text(200, "Hello from Kable!\n"))
     }
 }
 ```
@@ -119,7 +122,7 @@ half-close, and drain peer input.
 
 Handlers run after the headers are validated. `Request!` owns a `Body!` that
 implements `task::Stream` and yields decoded byte chunks. Use
-`body.collect(limit)` for a single bounded result, as in `/echo`, or
+`server::body::collect(body, limit)` for a single bounded result, as in `/echo`, or
 `body.destroy()` to discard it. Body pulls and collection use the original
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
@@ -130,9 +133,9 @@ yielded by the stream, so `body.map_items(transform).collect(limit)` counts
 transformed bytes. Exceeding the collection limit yields `Failure::Operation`
 with HTTP status 413. The HTTP parser also enforces its own input cap.
 
-`body.content_length()` exposes the original declared length as an option.
+`&body.content_length()` exposes the original declared length as an option.
 The HTTP stream test fixture passes the body and that option straight to
-`Response!::stream(...).reply()`. A known length sets `Content-Length`.
+`reply(response_stream::stream(...))`. A known length sets `Content-Length`.
 An unknown length uses chunked encoding for HTTP/1.1 and ends at connection
 close for HTTP/1.0. The connection alternates one pull with one joined write.
 The client reads as it uploads. For a chunked response, the terminal chunk
@@ -161,13 +164,14 @@ Request `/file-with-timeout` on the printed address to read the bundled
 
 ```kursal
 use async::read_file;
+use server::reply;
 use std::slice::StaticRead;
 use std::time::Duration;
 use task::PlanOutput;
 
-let access = StaticRead::new();
+var access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .respond(|outcome| file_response(outcome).reply())
+    .respond(|outcome| reply(file_response(outcome)))
     .within(Duration::from_secs(1))
     .reply()
 ```

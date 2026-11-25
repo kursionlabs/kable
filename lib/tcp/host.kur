@@ -56,7 +56,7 @@ unsafe fn begin_stream(raw: *u8, idle_ms: u64, watch_input: bool) -> Result[Conn
 forall Task, Output, BuildEnv, ResumeEnv where Plan[Task, Scope! -> Output].
 unsafe fn submit_stream(connection: Connection!, build: closure[BuildEnv](Connection!) -> Task,
     resume: closure[ResumeEnv](Output) -> i32) -> i32 {
-    let { raw } = connection;
+    var { raw } = connection;
     unsafe submit_stream_plan(raw, build(Connection!.{ raw }), resume)
 }
 
@@ -73,6 +73,6 @@ unsafe fn submit_stream_plan(raw: *u8, task: Task, resume: closure[Env](Output) 
 /// half-closes and drains. Return the status to the host so it can close
 /// the connection on failure.
 unsafe fn end_stream(connection: Connection!, complete: bool) -> i32 {
-    let { raw } = connection;
+    var { raw } = connection;
     if complete { unsafe kable_tcp_stream_end(raw) } else { -1 }
 }

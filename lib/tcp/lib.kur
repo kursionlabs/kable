@@ -54,7 +54,7 @@ impl Task {
             |state, result, connection, flags| unsafe apply(connection, resume(state, result)),
             |state, result| {
                 let (connection, outcome) = result;
-                let { raw } = connection;
+                var { raw } = connection;
                 discard(state, outcome);
             });
         Action!::Scoped.(hosted)
@@ -69,7 +69,7 @@ impl Connection! {
 struct Handler { accept: fn(Connection!) -> Action! }
 
 unsafe fn dispatch(context: *u8, raw: *u8) -> i32 {
-    let { accept } = unsafe *(unsafe (context as *Handler));
+    var { accept } = unsafe *(unsafe (context as *Handler));
     unsafe apply(raw, accept(Connection!.{ raw }))
 }
 
@@ -80,7 +80,7 @@ unsafe fn apply(connection: *u8, action: Action!) -> i32 {
             submission.unwrap_or_else(|rejection| rejection.continuation_status)
         },
         Close(connection) => {
-            let { raw } = connection;
+            var { raw } = connection;
             unsafe kable_tcp_close(raw);
             0i32
         },
@@ -95,7 +95,7 @@ impl Listener! {
         let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
         unsafe *(unsafe (context as *Handler)) = Handler.{ accept };
 
-        let scratch = Buffer!::new_zeroed(sizeof[i32]());
+        var scratch = Buffer!::new_zeroed(sizeof[i32]());
         let error = unsafe ((unsafe &scratch.as_ptr()) as *i32);
         let raw = unsafe kable_tcp_bind(port, context, dispatch, error);
         let status = unsafe *error;
@@ -109,7 +109,7 @@ impl Listener! {
     }
 
     fn port(&self) -> u16 {
-        let { raw, context } = self;
+        var { raw, context } = self;
         let port = unsafe kable_tcp_port(raw);
         self = Listener!.{ raw, context };
         port
@@ -117,14 +117,14 @@ impl Listener! {
 
     /// Closes a listener before entering the event loop.
     fn stop(self) {
-        let { raw, context } = self;
+        var { raw, context } = self;
         unsafe kable_tcp_stop(raw);
         HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
     }
 
     /// Runs until shutdown, joining all connections before releasing the handler.
     fn run(self) -> Result[(), i32] {
-        let { raw, context } = self;
+        var { raw, context } = self;
         let status = unsafe kable_tcp_run(raw);
         HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
         if status == 0i32 { Result::Ok.(()) } else { Result::Err.(status) }

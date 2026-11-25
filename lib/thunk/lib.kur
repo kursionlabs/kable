@@ -51,7 +51,7 @@ fn defer(state: State, evaluate: closure[Env](State, Input) -> Output, cleanup: 
 forall State, Input, Output, Env, Cleanup where Copy[Cleanup].
 impl Thunk![State, Input, Output, Env, Cleanup] {
     fn resume(self, input: Input) -> Output {
-        let { state, evaluate, cleanup } = self;
+        var { state, evaluate, cleanup } = self;
         evaluate(state, input)
     }
 }
@@ -59,7 +59,7 @@ impl Thunk![State, Input, Output, Env, Cleanup] {
 forall State, Input, Output, Env, Context where Copy[Env].
 impl Thunk![State, Input, Output, Env, fn(State, Context) -> ()] {
     fn discard_with(self, context: Context) {
-        let { state, evaluate, cleanup } = self;
+        var { state, evaluate, cleanup } = self;
         cleanup(state, context);
     }
 }
@@ -86,7 +86,7 @@ impl Thunk![State, (), Output, Env, Cleanup] {
 forall State, Input, Output, Env where Copy[Env].
 impl Thunk![State, Input, Output, Env, fn(State) -> ()] {
     fn discard(self) {
-        let { state, evaluate, cleanup } = self;
+        var { state, evaluate, cleanup } = self;
         cleanup(state);
     }
 }
@@ -131,7 +131,7 @@ forall State, Input, Output, Env where Copy[Env].
 instance Resumable[Suspension![State, Input, Output, Env] -> Input, Output] {
     fn resume(suspension: Suspension![State, Input, Output, Env], input: Input)
         -> Step[Suspension![State, Input, Output, Env], Output] {
-        let { state, step, cleanup } = suspension;
+        var { state, step, cleanup } = suspension;
         match step(state, input) {
             Done(output) => Step::Done.(output),
             Suspended(state) => Step::Suspended.(Suspension!.{ state, step, cleanup }),
@@ -142,7 +142,7 @@ instance Resumable[Suspension![State, Input, Output, Env] -> Input, Output] {
 forall State, Input, Output, Env where Copy[Env].
 instance Discard[Suspension![State, Input, Output, Env]] {
     fn discard(suspension: Suspension![State, Input, Output, Env]) {
-        let { state, step, cleanup } = suspension;
+        var { state, step, cleanup } = suspension;
         cleanup(state);
     }
 }

@@ -24,7 +24,7 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
                 return false;
             },
         };
-        let (file, outcome) = match deadline {
+        var (file, outcome) = match deadline {
             Some(duration) => &runner.run_with_deadline(write, duration),
             None => &runner.run(write),
         };
@@ -46,13 +46,13 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
 }
 
 fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'static], deadline: Option[Duration]) -> i32 {
-    let access = StaticRead::new();
-    let input = match &runner.run(open_file(&access, source)) {
+    var access = StaticRead::new();
+    var input = match &runner.run(open_file(&access, source)) {
         Ready(file) => file,
         TimedOut | Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
         Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
     };
-    let destination = match &runner.run(create_file(&access, destination)) {
+    var destination = match &runner.run(create_file(&access, destination)) {
         Ready(file) => file,
         TimedOut | Cancelled => {
             input.close();
@@ -66,7 +66,7 @@ fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'st
         },
     };
     let size = &input.len();
-    let source = input.chunks(0, size);
+    var source = input.chunks(0, size);
     let copied = transfer(&runner, &source, &destination, deadline);
     source.close();
     match destination.close() {
@@ -82,7 +82,7 @@ fn usage() -> i32 {
 
 fn main(args: Args) -> i32 {
     if args.len() < 3 || args.len() > 4 { return usage(); }
-    let access = StaticRead::new();
+    var access = StaticRead::new();
     let source = args.bytes(1).unwrap();
     let destination = args.bytes(2).unwrap();
     let deadline = match args.bytes(3) {

@@ -17,7 +17,7 @@ fn main(args: Args) -> i32 {
     let port = match args.bytes(2) {
         None => 8080,
         Some(bytes) => {
-            let access = StaticRead::new();
+            var access = StaticRead::new();
             match parse_u64(&access, bytes) {
                 Some(port) => {
                     if port > 65535 { return usage(); }
@@ -34,7 +34,7 @@ fn main(args: Args) -> i32 {
         return 1;
     }
 
-    let server = match Server!::bind(port, static_files::serve_from_cwd) {
+    var server = match Server!::bind(port, static_files::serve_from_cwd) {
         Ok(server) => server,
         Err(code) => {
             eprint_buffer(f"static-files: cannot listen (libuv error {code})\n");

@@ -42,10 +42,9 @@ exposed enum FileErrorKind {
     NotFound, NotADirectory, SymlinkLoop, CrossDevice, InvalidInput, PermissionDenied, TooLarge, Other,
 }
 
-impl Failure {
-    /// Classifies a failure from a libuv file operation. The failure retains its raw code.
-    fn file_error_kind(self) -> FileErrorKind {
-        let code = match self {
+/// Classifies a failure from a libuv file operation. The failure retains its raw code.
+fn file_error_kind(failure: Failure) -> FileErrorKind {
+        let code = match failure {
             Operation(code) => code,
             _ => return FileErrorKind::Other,
         };
@@ -59,7 +58,6 @@ impl Failure {
             7 => FileErrorKind::TooLarge,
             _ => FileErrorKind::Other,
         }
-    }
 }
 
 forall Item.
@@ -85,7 +83,7 @@ const FILE_CHUNK: u64 = 64 * 1024;
 forall C, S, Item where ReadBytes[C, S], Copy[S].
 unsafe fn file_path_plan(&cx: C, path: S, limit: usize, mode: u8,
     result: unsafe fn(*u8) -> Completion[Item]) -> FilePathPlan![Item] {
-    let path = Buffer!::new().push_bytes(&cx, path).push_byte(0);
+    var path = Buffer!::new().push_bytes(&cx, path).push_byte(0);
     FilePathPlan!.{ path, limit, mode, request: FileRequest!::empty(), result }
 }
 
@@ -123,7 +121,7 @@ fn create_file(&cx: C, path: S) -> FilePathPlan![OutputFile!] {
 impl OutputFile! {
     /// The next sequential write starts here, including after a partial write.
     fn position(&self) -> u64 {
-        let { fd, position } = self;
+        var { fd, position } = self;
         self = OutputFile!.{ fd, position };
         position
     }
@@ -135,7 +133,7 @@ impl OutputFile! {
     }
 
     fn close(self) -> Result[(), i32] {
-        let { fd, position } = self;
+        var { fd, position } = self;
         let status = unsafe kable_file_close_descriptor(fd);
         if status < 0 { Result::Err.(status) } else { Result::Ok.(()) }
     }
@@ -145,10 +143,11 @@ instance Sink[OutputFile! -> Buffer!,
     Map![WriteChunk!, (OutputFile!, Buffer!, usize, Completion[()]), (OutputFile!, Buffer!, Completion[()]), ()]] {
     fn write(file: OutputFile!, bytes: Buffer!)
         -> Map![WriteChunk!, (OutputFile!, Buffer!, usize, Completion[()]), (OutputFile!, Buffer!, Completion[()]), ()] {
+        var file = file;
         let offset = &file.position();
         file.write_chunk(offset, bytes).map(|result| {
             let (file, bytes, count, status) = result;
-            let { fd, position } = file;
+            var { fd, position } = file;
             (OutputFile!.{ fd, position: position + count as u64 }, bytes, status)
         })
     }
@@ -156,7 +155,7 @@ instance Sink[OutputFile! -> Buffer!,
 
 impl OpenedFile! {
     fn len(&self) -> u64 {
-        let { fd, length } = self;
+        var { fd, length } = self;
         self = OpenedFile!.{ fd, length };
         length
     }
@@ -165,10 +164,11 @@ impl OpenedFile! {
     /// The joined outcome returns the file on success, failure, or cancellation.
     /// An empty buffer indicates the end of the file or a zero limit.
     fn read_chunk(self, offset: u64, limit: usize) -> ReadChunk! {
-        let length = &self.len();
+        var file = self;
+        let length = &file.len();
         let remaining = if offset < length { length - offset } else { 0 };
         let limit = if remaining < limit as u64 { remaining as usize } else { limit };
-        ReadChunk!.{ file: self, offset, limit, bytes: Option::None, request: FileRequest!::empty() }
+        ReadChunk!.{ file, offset, limit, bytes: Option::None, request: FileRequest!::empty() }
     }
 
     /// Owns the file and reads up to length bytes starting at offset.
@@ -177,13 +177,13 @@ impl OpenedFile! {
     }
 
     fn close(self) {
-        let { fd, length } = self;
+        var { fd, length } = self;
         unsafe kable_file_close_descriptor(fd);
     }
 
     /// Transfers responsibility for closing the descriptor to the caller.
     unsafe fn into_parts(self) -> (i32, u64) {
-        let { fd, length } = self;
+        var { fd, length } = self;
         (fd, length)
     }
 }
@@ -195,13 +195,13 @@ instance Discard[OpenedFile!] {
 impl FileChunks! {
     /// The number of requested bytes still unread, including after early EOF.
     fn remaining(&self) -> u64 {
-        let { file, offset, remaining } = self;
+        var { file, offset, remaining } = self;
         self = FileChunks!.{ file, offset, remaining };
         remaining
     }
 
     fn close(self) {
-        let { file, offset, remaining } = self;
+        var { file, offset, remaining } = self;
         file.close();
     }
 }
@@ -215,12 +215,13 @@ instance Stream[FileChunks! ->
     /// Plans a read of at most 64 KiB and advances only by the bytes read.
     fn next(source: FileChunks!)
         -> Map![ReadChunk!, (OpenedFile!, Completion[Buffer!]), (FileChunks!, StreamOutcome[Buffer!]), (u64, u64)] {
-        let { file, offset, remaining } = source;
+        var { file, offset, remaining } = source;
         let limit = if remaining < FILE_CHUNK { remaining } else { FILE_CHUNK };
         file.read_chunk(offset, limit as usize).map(|result| {
             let (file, outcome) = result;
             let (outcome, count) = match outcome {
                 Completion::Ready(bytes) => {
+                    var bytes = bytes;
                     let count = &bytes.len() as u64;
                     let item = if count == 0 {
                         bytes.destroy();
@@ -264,7 +265,7 @@ const INVALID_PLAN: i32 = 5;
 forall Env.
 unsafe fn register_node(raw: *u8, register: closure[Env](&_: ScopeState!) -> Option[usize]) -> usize {
     let ptr = unsafe (raw as *ScopeState!);
-    let state = unsafe *ptr;
+    var state = unsafe *ptr;
     let id = register(&state);
     unsafe *ptr = state;
     id.unwrap_or(usize::MAX)
@@ -291,7 +292,7 @@ fn resource_id(id: usize) -> Resource {
 // branch wins, what to cancel, and when all resources have retired.
 unsafe fn scope_event(raw: *u8, event: u8, id: usize) -> usize {
     let ptr = unsafe (raw as *ScopeState!);
-    let state = unsafe *ptr;
+    var state = unsafe *ptr;
     if event == 8u8 {
         state.destroy();
         HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(raw));
@@ -344,8 +345,8 @@ impl Scope! {
 
     /// Registers the required host and lends the native scope through collection.
     unsafe fn require_host(&self, key: u64) -> *u8 {
-        let { raw } = self;
-        let scope = unsafe kable_scope_require_host(raw, key);
+        var { raw } = self;
+        var scope = unsafe kable_scope_require_host(raw, key);
         self = Scope!.{ raw };
         scope
     }
@@ -356,14 +357,14 @@ impl Scope! {
     unsafe fn add_operation(&self, context: *u8,
         start: unsafe fn(*u8, *u8, unsafe fn(*u8) -> (), *u8) -> i32,
         stop: unsafe fn(*u8) -> u8) -> Option[usize] {
-        let { raw } = self;
+        var { raw } = self;
         let id = unsafe kable_scope_add_operation(raw, context, start, stop);
         self = Scope!.{ raw };
         registered(id)
     }
 
     fn run(&self, root: Option[usize], deadline: Option[Duration], loop: RunLoop) -> bool {
-        let { raw } = self;
+        var { raw } = self;
         let root = root.unwrap_or(usize::MAX);
         let (end_ms, timed) = match deadline {
             None => (0u64, 0u8),
@@ -378,7 +379,7 @@ impl Scope! {
     }
 
     fn result(&self, id: Option[usize]) -> Resolution {
-        let { raw } = self;
+        var { raw } = self;
         let code = unsafe kable_scope_result(raw, id.unwrap_or(usize::MAX));
         self = Scope!.{ raw };
         if code == CANCELLED { return Resolution::Cancelled; }
@@ -392,7 +393,7 @@ impl Scope! {
     }
 
     fn close(self) {
-        let { raw } = self;
+        var { raw } = self;
         unsafe kable_scope_free(raw);
     }
 }
@@ -411,7 +412,7 @@ instance PlanOutput[FilePathPlan![Item] -> Completion[Item]] {}
 forall Item.
 instance Plan[FilePathPlan![Item], Scope! -> Completion[Item]] {
     fn stage(&task: FilePathPlan![Item], &scope: Scope!) -> Option[usize] {
-        let { path, limit, mode, request, result } = task;
+        var { path, limit, mode, request, result } = task;
         let raw = unsafe kable_file_new(unsafe &path.as_ptr(), &path.len(), limit, mode);
         let id = unsafe &request.register(&scope, raw);
         task = FilePathPlan!.{ path, limit, mode, request, result };
@@ -419,7 +420,7 @@ instance Plan[FilePathPlan![Item], Scope! -> Completion[Item]] {
     }
 
     fn collect(task: FilePathPlan![Item], &scope: Scope!) -> Completion[Item] {
-        let { path, limit, mode, request, result } = task;
+        var { path, limit, mode, request, result } = task;
         let outcome = unsafe request.collect(&scope, result);
         path.destroy();
         outcome
@@ -430,16 +431,17 @@ instance PlanOutput[ReadChunk! -> (OpenedFile!, Completion[Buffer!])] {}
 
 instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     fn stage(&task: ReadChunk!, &scope: Scope!) -> Option[usize] {
-        let { file, offset, limit, bytes, request } = task;
-        let { fd, length } = file;
+        var { file, offset, limit, bytes, request } = task;
+        var { fd, length } = file;
         let (id, bytes) = match bytes {
             Some(bytes) => (Option::None, Option::Some.(bytes)),
             None => {
                 let (bytes, dest) = if limit > isize::MAX as usize {
                     (Option::None, null())
                 } else {
-                    match Buffer!::try_new_with_cap(limit) {
+                    match Buffer!::try_with_capacity(limit) {
                         Ok(bytes) => {
+                            var bytes = bytes;
                             let dest = unsafe &bytes.tail_ptr();
                             (Option::Some.(bytes), dest)
                         },
@@ -456,7 +458,7 @@ instance Plan[ReadChunk!, Scope! -> (OpenedFile!, Completion[Buffer!])] {
     }
 
     fn collect(task: ReadChunk!, &scope: Scope!) -> (OpenedFile!, Completion[Buffer!]) {
-        let { file, offset, limit, bytes, request } = task;
+        var { file, offset, limit, bytes, request } = task;
         let outcome = match unsafe request.collect(&scope, collect_chunk_count) {
             Ready(count) => {
                 let outcome = match bytes {
@@ -478,8 +480,8 @@ instance PlanOutput[WriteChunk! -> (OutputFile!, Buffer!, usize, Completion[()])
 
 instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()])] {
     fn stage(&task: WriteChunk!, &scope: Scope!) -> Option[usize] {
-        let { file, offset, bytes, request } = task;
-        let { fd, position } = file;
+        var { file, offset, bytes, request } = task;
+        var { fd, position } = file;
         let raw = unsafe kable_file_write_chunk(fd, offset, unsafe &bytes.as_ptr(), &bytes.len());
         let id = unsafe &request.register(&scope, raw);
         task = WriteChunk!.{ file: OutputFile!.{ fd, position }, offset, bytes, request };
@@ -487,7 +489,7 @@ instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()
     }
 
     fn collect(task: WriteChunk!, &scope: Scope!) -> (OutputFile!, Buffer!, usize, Completion[()]) {
-        let { file, offset, bytes, request } = task;
+        var { file, offset, bytes, request } = task;
         let (count, status) = request.collect_write(&scope);
         (file, bytes, count, status)
     }
@@ -495,19 +497,19 @@ instance Plan[WriteChunk!, Scope! -> (OutputFile!, Buffer!, usize, Completion[()
 
 instance PlanDriver[Scope!] {
     fn timer(&scope: Scope!, duration: Duration) -> Option[usize] {
-        let { raw } = scope;
+        var { raw } = scope;
         let id = unsafe kable_scope_add_timer(raw, timer_millis(duration));
         scope = Scope!.{ raw };
         registered(id)
     }
 
     fn pair(&scope: Scope!, pair: Pair) -> Option[usize] {
-        let { kind, first, second } = pair;
+        var { kind, first, second } = pair;
         let tag = match kind {
             Select => 0u8,
             Join => 1u8,
         };
-        let { raw } = scope;
+        var { raw } = scope;
         let id = unsafe kable_scope_add_pair(raw, tag, first, second);
         scope = Scope!.{ raw };
         registered(id)
@@ -518,7 +520,7 @@ instance PlanDriver[Scope!] {
 
 forall Task, Output where Plan[Task, Scope! -> Output].
 fn run_standalone(task: Task, deadline: Option[Duration]) -> Output {
-    let { output, deadline_expired } = drive_on_loop(task, deadline, RunLoop::Standalone);
+    var { output, deadline_expired } = drive_on_loop(task, deadline, RunLoop::Standalone);
     output
 }
 
@@ -547,7 +549,7 @@ impl Runner! {
     /// Runs and joins one plan on this loop.
     forall Task, Output where Plan[Task, Scope! -> Output].
     fn run(&self, task: Task) -> Output {
-        let { output, deadline_expired } = &self.drive(task, Option::None);
+        var { output, deadline_expired } = &self.drive(task, Option::None);
         output
     }
 
@@ -555,7 +557,7 @@ impl Runner! {
     forall Task, Output where Plan[Task, Scope! -> Output].
     fn run_with_deadline(&self, task: Task, duration: Duration) -> Output {
         let deadline = deadline_after(duration);
-        let { output, deadline_expired } = &self.drive(task, Option::Some.(deadline));
+        var { output, deadline_expired } = &self.drive(task, Option::Some.(deadline));
         output
     }
 
@@ -567,7 +569,7 @@ impl Runner! {
 
     forall Task, Output where Plan[Task, Scope! -> Output].
     fn drive(&self, task: Task, deadline: Option[Duration]) -> StageResult[Output] {
-        let { loop } = self;
+        var { loop } = self;
         self = Runner!.{ loop };
         drive_on_loop(task, deadline, RunLoop::Reusable.(loop))
     }
@@ -577,9 +579,9 @@ impl Runner! {
 /// Loop startup failures are reported through the plans' outcomes.
 forall Env, Output.
 fn with_runner(body: closure[Env](&_: Runner!) -> Output) -> Output {
-    let runner = Runner!.{ loop: unsafe kable_runner_new() };
+    var runner = Runner!.{ loop: unsafe kable_runner_new() };
     let output = body(&runner);
-    let { loop } = runner;
+    var { loop } = runner;
     unsafe kable_runner_free(loop);
     output
 }
