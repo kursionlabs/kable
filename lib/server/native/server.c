@@ -141,6 +141,11 @@ static void body_read(uint8_t *context) {
     BodyPull *pull = (BodyPull *)context;
     uint8_t *bytes;
     int32_t count = kable_tcp_read_result(pull->client->connection, &bytes);
+    if (count == UV_ECONNRESET || count == UV_ECONNABORTED) {
+        /* Cancelling the request retires this pull and can free it before returning. */
+        kable_tcp_close(pull->client->connection);
+        return;
+    }
     if (count < 0) {
         pull->status = count;
         pull->done(pull->context);

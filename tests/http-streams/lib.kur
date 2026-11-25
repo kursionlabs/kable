@@ -133,24 +133,16 @@ fn collect_raw(body: Body!, limit: usize) -> CollectedBody! { body.collect(limit
 fn serve(request: Request!) -> Action! {
     var request = request;
     if &request.path_is("/pull-plan") {
-        let { method, target, body } = request;
-        target.destroy();
-        return pull_plan(body);
+        return pull_plan(request.into_body());
     }
     if &request.path_is("/pull") {
-        let { method, target, body } = request;
-        target.destroy();
-        return pull(body, Buffer!::new(), 0);
+        return pull(request.into_body(), Buffer!::new(), 0);
     }
     if &request.path_is("/collect-raw") {
-        let { method, target, body } = request;
-        target.destroy();
-        return collect_raw(body, 6).respond(|result| collection_response(result));
+        return collect_raw(request.into_body(), 6).respond(|result| collection_response(result));
     }
     if &request.path_is("/collect-timed") {
-        let { method, target, body } = request;
-        target.destroy();
-        return body.map_items(|bytes| uppercase(bytes)).collect(6)
+        return request.into_body().map_items(|bytes| uppercase(bytes)).collect(6)
             .within(Duration::from_millis(100)).respond(|outcome| match outcome {
                 Completion::TimedOut => Response!::rejected(504),
                 Ready(bytes) => Response!::ok(bytes),
@@ -160,20 +152,15 @@ fn serve(request: Request!) -> Action! {
     }
     let observed = &request.path_is("/collect-observed");
     if observed || &request.path_is("/collect") {
-        let { method, target, body } = request;
-        target.destroy();
-        return collect(body, observed);
+        return collect(request.into_body(), observed);
     }
     if &request.path_is("/collect-shrink") {
-        let { method, target, body } = request;
-        target.destroy();
-        return body.map_items(|bytes| bytes.truncate(0)).collect(0)
+        return request.into_body().map_items(|bytes| bytes.truncate(0)).collect(0)
             .respond(|outcome| collection_response(outcome));
     }
     let upper = &request.path_is("/upper");
     if upper || &request.path_is("/relay") {
-        var { method, target, body } = request;
-        target.destroy();
+        var body = request.into_body();
         let length = &body.content_length();
         if upper {
             let source = body.map_items(|bytes| uppercase(bytes));

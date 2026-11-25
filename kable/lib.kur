@@ -3,28 +3,16 @@ use server::{Action!, Server!, after, reply};
 use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::process::Args;
-use std::raw::Span;
 use std::slice::{ReadBytes, Slice, StaticRead};
 use std::time::Duration;
 use task::{Completion, Failure, PlanOutput};
 
 fn handle(request: Request!) -> Action! {
-    let { method, target, body } = request;
-    var exists 'k. (access, bytes, restore) = target.open();
-    let target = Span::from_slice(bytes);
-    let path = match target.find_byte(&access, b'?', 0) {
-        Some(end) => target.take(end),
-        None => target,
-    };
-    let home = path.is(&access, "/");
-    let health = path.is(&access, "/health");
-    let echo = path.is(&access, "/echo");
-    let delay = path.is(&access, "/delay");
-    restore.restore(access).destroy();
-
-    if echo {
+    var request = request;
+    let method = request.method;
+    if &request.path_is("/echo") {
         match method {
-            Post => return body.collect(1024 * 1024).respond(|outcome| {
+            Post => return request.into_body().collect(1024 * 1024).respond(|outcome| {
                 let status = match outcome {
                     Completion::Ready(bytes) => return reply(Response!::ok(bytes)),
                     TimedOut | Cancelled => 408,
@@ -40,13 +28,16 @@ fn handle(request: Request!) -> Action! {
                 reply(Response!::rejected(status))
             }),
             _ => {
-                body.destroy();
+                request.destroy();
                 return reply(Response!::method_not_allowed("POST"));
             },
         }
     }
 
-    body.destroy();
+    let home = &request.path_is("/");
+    let health = &request.path_is("/health");
+    let delay = &request.path_is("/delay");
+    request.destroy();
     if home || health || delay {
         match method {
             Get | Head => {

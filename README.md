@@ -121,8 +121,9 @@ After queuing a response, the connection has five seconds to write it,
 half-close, and drain peer input.
 
 Handlers run after the headers are validated. `Request!` owns a `Body!` that
-implements `task::Stream` and yields decoded byte chunks. Use
-`body.collect(limit)` to collect directly in the request parser, as in `/echo`, or
+implements `task::Stream` and yields decoded byte chunks. After routing,
+`request.into_body()` releases the target and returns the owned stream. Use
+`request.into_body().collect(limit)` to collect directly in the request parser, as in `/echo`, or
 `body.destroy()` to discard it. Body pulls and collection use the original
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.

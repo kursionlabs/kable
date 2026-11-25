@@ -1347,6 +1347,13 @@ def check_http_streams(binary, directory, check_timeout=False):
                 client.sendall(b"\r\n")
                 assert_response(read_response(client), 200, b"2:a\x00b")
 
+            with connect(port) as client:
+                client.sendall(headers + b"1\r\na\r\n")
+                read_log_until(process.stderr, b"Received body chunk.")
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            read_log_until(process.stderr, b"Discarded pending body pull.")
+            assert_response(request(b"/memory"), 200, b"abcdef")
+
             with connect(port) as client, connect(port) as delayed, connect(port) as collected:
                 client.sendall(headers + b"1\r\na\r\n")
                 read_log_until(process.stderr, b"Received body chunk.")

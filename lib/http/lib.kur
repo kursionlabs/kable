@@ -109,10 +109,15 @@ impl Request! {
         matches
     }
 
-    fn destroy(self) {
-        var { method, target, body } = self;
+    /// Consumes the request, releases its target, and returns the owned body stream.
+    fn into_body(self) -> Body! {
+        let { method, target, body } = self;
         target.destroy();
-        body.destroy();
+        body
+    }
+
+    fn destroy(self) {
+        self.into_body().destroy();
     }
 }
 
