@@ -1,6 +1,6 @@
 //! Request-scoped pulls of decoded HTTP body bytes.
 use async::Scope!;
-use http::Body!;
+use http::{Body!, BodyCollection};
 use std::buffer::Buffer!;
 use std::heap::HeapAllocator;
 use std::mem::alloca;
@@ -21,10 +21,15 @@ instance Discard[Body!] {
     fn discard(body: Body!) { body.destroy(); }
 }
 
-/// Collects the remaining decoded bytes under the original request deadline.
-/// The parser accumulates them within one plan, which can use a local deadline.
-/// Exceeding the byte limit reports LimitExceeded.
-fn collect(body: Body!, limit: usize) -> Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()] {
+/// A single parser operation that collects the remaining raw body.
+type CollectedBody! = Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()];
+
+instance BodyCollection[Body! -> CollectedBody!] {
+    fn collect_body(body: Body!, limit: usize) -> CollectedBody! { collect(body, limit) }
+}
+
+/// Collects decoded bytes in the parser under the request deadline.
+fn collect(body: Body!, limit: usize) -> CollectedBody! {
     BodyRead!.{ body, limit, all: true, pull: null(), id: Option::None }.map(|result| {
         let (body, outcome) = result;
         body.discard();

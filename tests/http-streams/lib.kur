@@ -1,5 +1,6 @@
 use std::fmt::Writer;
 use async::{CollectBytes, Scope!};
+use server::body::CollectedBody!;
 use http::{Body!, Request!, Response!};
 use server::{Action!, Server!, after, reply, response_stream};
 use std::ascii::to_upper;
@@ -126,6 +127,9 @@ fn collect(body: Body!, observed: bool) -> Action! {
     })
 }
 
+// Pins concrete dispatch even with the generic CollectBytes trait in scope.
+fn collect_raw(body: Body!, limit: usize) -> CollectedBody! { body.collect(limit) }
+
 fn serve(request: Request!) -> Action! {
     var request = request;
     if &request.path_is("/pull-plan") {
@@ -137,6 +141,11 @@ fn serve(request: Request!) -> Action! {
         let { method, target, body } = request;
         target.destroy();
         return pull(body, Buffer!::new(), 0);
+    }
+    if &request.path_is("/collect-raw") {
+        let { method, target, body } = request;
+        target.destroy();
+        return collect_raw(body, 6).respond(|result| collection_response(result));
     }
     if &request.path_is("/collect-timed") {
         let { method, target, body } = request;

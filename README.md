@@ -122,12 +122,12 @@ half-close, and drain peer input.
 
 Handlers run after the headers are validated. `Request!` owns a `Body!` that
 implements `task::Stream` and yields decoded byte chunks. Use
-`server::body::collect(body, limit)` for a single bounded result, as in `/echo`, or
+`body.collect(limit)` to collect directly in the request parser, as in `/echo`, or
 `body.destroy()` to discard it. Body pulls and collection use the original
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
 
-Import `async::CollectBytes` to call `source.collect(limit)` on an owned
+For mapped bodies and other byte streams, import `async::CollectBytes` to call `source.collect(limit)` on an owned
 byte stream. The plan produces a buffer at EOF, including an empty buffer
 for empty input. It reports `Failure::LimitExceeded` if the yielded bytes
 exceed the limit. After a transform, the limit applies to the transformed

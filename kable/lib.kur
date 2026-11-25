@@ -1,5 +1,5 @@
 use http::{Method, Request!, Response!};
-use server::{Action!, Server!, after, body, reply};
+use server::{Action!, Server!, after, reply};
 use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::process::Args;
@@ -24,7 +24,7 @@ fn handle(request: Request!) -> Action! {
 
     if echo {
         match method {
-            Post => return body::collect(body, 1024 * 1024).respond(|outcome| {
+            Post => return body.collect(1024 * 1024).respond(|outcome| {
                 let status = match outcome {
                     Completion::Ready(bytes) => return reply(Response!::ok(bytes)),
                     TimedOut | Cancelled => 408,

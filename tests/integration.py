@@ -1234,6 +1234,10 @@ def check_chunked_relay(port, path, transform, check_timeout):
 
 def check_mapped_collection(port, stderr, check_timeout):
     headers = b"POST /collect HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+    raw = headers.replace(b"/collect", b"/collect-raw")
+    assert_response(exchange(port, raw, b"6\r\nabcdef\r\n0\r\n\r\n"), 200, b"abcdef")
+    assert_response(exchange(port, raw, b"7\r\nabcdefg\r\n0\r\n\r\n"), 413, b"Content Too Large\n")
+
     observed = headers.replace(b"/collect", b"/collect-observed")
     assert_response(exchange(port, headers, b"0\r\n\r\n"), 200, b"")
 
