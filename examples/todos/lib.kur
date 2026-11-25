@@ -1,8 +1,7 @@
 //! An in-memory todo API. A POST reads JSON, updates the shared list, then replies.
 use http::{Request!, Response!};
-use std::buffer::Buffer!;
 use std::collections::vec::OwnedVec!;
-use json::{Array!, Json!, Object!, Text!, decode};
+use json::{Array!, Json!, Object!, Text!, Serializable, Deserializable, decode_as};
 use std::io::{eprint, print};
 use std::option::{Option, Result};
 use task::Discard;
@@ -17,29 +16,40 @@ instance Discard[Todos!] {
     }
 }
 
-instance Discard[Text!] {
-    fn discard(text: Text!) { text.destroy(); }
+struct NewTodo! { title: Text! }
+struct Todo! { id: usize, title: Text! }
+
+instance Deserializable[NewTodo!] {
+    fn deserialize(doc: Json!) -> Option[NewTodo!] {
+        var title = doc.take_field("title")?.into_string()?;
+        if &title.len() == 0 { title.destroy(); return Option::None; }
+        Option::Some.(NewTodo!.{ title })
+    }
 }
 
-fn decode_title(input: Buffer!) -> Option[Text!] {
-    var title = decode(input).ok()
-        .and_then(|doc| doc.take_field("title"))
-        .and_then(|field| field.into_string())?;
-    if &title.len() > 0 { Option::Some.(title) } else { title.destroy(); Option::None }
+instance Discard[NewTodo!] {
+    fn discard(todo: NewTodo!) { todo.title.destroy(); }
 }
 
-fn insert(&todos: Todos!, title: Text!) -> usize {
-    &todos.titles.push(title);
+instance Serializable[Todo!] {
+    fn serialize(todo: Todo!) -> Json! {
+        let { id, title } = todo;
+        Object!::new().field("id", id).field("title", title).value()
+    }
+}
+
+fn insert(&todos: Todos!, todo: NewTodo!) -> usize {
+    &todos.titles.push(todo.title);
     &todos.titles.len()
 }
 
 fn created(id: usize) -> Response! {
-    let body = Object!::new().field("id", Json!::uint(id)).value().encode();
+    let body = Object!::new().field("id", id).encode();
     Response!::buffered(201, "application/json", body)
 }
 
 fn create(request: Request!) -> AppAction![Todos!] {
-    request.json(decode_title)
+    request.json(decode_as[NewTodo!])
         .update(insert)
         .reply_with(created)
 }
@@ -50,11 +60,10 @@ fn list(&todos: Todos!, request: Request!) -> Response! {
     var index = 0usize;
     while index < &todos.titles.len() {
         let title = &todos.titles.update(index, |&text| &text.clone()).unwrap();
-        let todo = Object!::new().field("id", Json!::uint(index + 1)).field("title", title.value());
-        &items.push(todo.value());
+        &items.push(Todo!.{ id: index + 1, title });
         index = index + 1;
     }
-    Response!::bytes(items.value().encode(), "application/json")
+    Response!::bytes(items.encode(), "application/json")
 }
 
 fn main() -> i32 {

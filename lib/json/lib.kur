@@ -18,6 +18,35 @@ struct Array! { items: OwnedVec![Json!] }
 exposed struct Member! { key: Text!, value: Json! }
 struct Object! { members: OwnedVec![Member!] }
 
+/// Converts an owned application value into a JSON value.
+forall T.
+trait Serializable { fn serialize(value: T) -> Json!; }
+
+/// Consumes the JSON value on both success and schema mismatch.
+forall T.
+trait Deserializable { fn deserialize(value: Json!) -> Option[T]; }
+
+instance Serializable[Json!] { fn serialize(value: Json!) -> Json! { value } }
+instance Serializable[usize] { fn serialize(value: usize) -> Json! { Json!::uint(value) } }
+instance Serializable[Text!] { fn serialize(value: Text!) -> Json! { value.value() } }
+instance Serializable[Array!] { fn serialize(value: Array!) -> Json! { value.value() } }
+instance Serializable[Object!] { fn serialize(value: Object!) -> Json! { value.value() } }
+
+instance Deserializable[Json!] { fn deserialize(value: Json!) -> Option[Json!] { Option::Some.(value) } }
+instance Deserializable[Text!] { fn deserialize(value: Json!) -> Option[Text!] { value.into_string() } }
+
+forall T where Serializable[T].
+impl T {
+    fn encode(self) -> Buffer! { self.serialize().encode() }
+}
+
+/// Decoder callback for consumers that treat syntax and schema errors alike.
+forall T where Deserializable[T].
+fn decode_as(bytes: Buffer!) -> Option[T] {
+    let value = decode(bytes).ok()?;
+    Deserializable[T]::deserialize(value)
+}
+
 impl Number! {
     /// Exact decimal spelling, including any fraction and exponent.
     fn into_bytes(self) -> Buffer! { self.spelling }
@@ -41,21 +70,23 @@ impl Text! {
 impl Array! {
     fn new() -> Array! { Array!.{ items: OwnedVec!::new[Json!]() } }
     fn into_items(self) -> OwnedVec![Json!] { self.items }
-    fn push(&self, value: Json!) { &self.items.push(value); }
+    forall T where Serializable[T].
+    fn push(&self, value: T) { &self.items.push(value.serialize()); }
     fn value(self) -> Json! { Json!::Array.(self) }
 }
 
 impl Object! {
     fn new() -> Object! { Object!.{ members: OwnedVec!::new[Member!]() } }
     fn into_members(self) -> OwnedVec![Member!] { self.members }
-    fn field(self, name: Str['static], value: Json!) -> Object! {
+    forall T where Serializable[T].
+    fn field(self, name: Str['static], value: T) -> Object! {
         var obj = self;
         var key = Text!.{ bytes: Buffer!::new().put(name) };
         match find_key(&obj, &key) {
             Some(index) => free_member(&obj.members.remove(index).unwrap()),
             None => (),
         };
-        &obj.members.push(Member!.{ key, value });
+        &obj.members.push(Member!.{ key, value: value.serialize() });
         obj
     }
     fn value(self) -> Json! { Json!::Object.(self) }
@@ -68,6 +99,7 @@ fn free_member(member: Member!) {
 }
 
 impl Json! {
+    fn encode(self) -> Buffer! { write_value(Buffer!::new(), self) }
     fn uint(n: usize) -> Json! { Json!::Number.(Number!.{ spelling: Buffer!::new().put(n) }) }
     fn destroy(self) {
         match self {
@@ -108,7 +140,6 @@ impl Json! {
         obj.members.destroy_with(free_member);
         Option::None
     }
-    fn encode(self) -> Buffer! { write_value(Buffer!::new(), self) }
 }
 
 fn hex_digit(n: u8) -> u8 { if n < 10 { b'0' + n } else { b'a' + (n - 10) } }

@@ -46,7 +46,7 @@ pipeline when the headers arrive:
 
 ```kursal
 fn create(request: Request!) -> AppAction![Todos!] {
-    request.json(decode_title)
+    request.json(decode_as[NewTodo!])
         .update(insert)
         .reply_with(created)
 }
@@ -55,7 +55,7 @@ fn create(request: Request!) -> AppAction![Todos!] {
 `json` checks the media type, collects at most 4096 bytes, and gives the owned
 buffer to the application's decoder. The decoder returns an optional typed value.
 For a route with different limits, use
-`request.json_with_options(decode_title, JsonOptions.{ max_bytes: 8192, read_size: 1024 })`.
+`request.json_with_options(decode_as[NewTodo!], JsonOptions.{ max_bytes: 8192, read_size: 1024 })`.
 `max_bytes` bounds the whole payload. `read_size` caps each subsequent socket read
 after headers and defaults to the transport's buffer size. The decoder receives the
 assembled body once, including bytes already read with the headers.
@@ -67,8 +67,11 @@ update can lose the response to that update.
 
 The Todo app uses Kable's synchronous Kursal JSON codec in [lib/json](lib/json/lib.kur).
 `decode` consumes a buffer and returns an owned value or an error with a byte offset.
-The handler takes the `title` field as decoded UTF-8 text. When a response is built,
-`encode` escapes strings and writes compact JSON. The decoder accepts up to 128
+The `Deserializable[NewTodo!]` instance takes the `title` field as decoded UTF-8
+text and checks that it is nonempty. `decode_as[NewTodo!]` combines parsing and
+that schema check into the decoder callback. For responses, `Serializable[Todo!]`
+defines how one todo becomes a JSON value. Object fields and array items accept
+serializable values directly, and `.encode()` writes compact JSON. The decoder accepts up to 128
 nested arrays and objects and rejects duplicate keys, including escaped equivalents.
 
 Build and start the example, then use the printed loopback address.
