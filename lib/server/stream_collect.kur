@@ -1,78 +1,56 @@
-//! Collects byte streams within the request's existing deadline.
-use async::Scope!;
-use package::Action!;
+//! Bounded collection of an owned byte stream, one joined pull at a time.
+use async::{Scope!, Task!};
 use std::buffer::Buffer!;
 use std::option::Option;
 use task::{Completion, Discard, Failure, PlanOutput, Stream, StreamOutcome};
+use task::continuation::{HandoffStep, repeat, resolve_completion};
 use task::driver::Plan;
 
-forall Source.
-struct StreamCollection! { source: Source, limit: usize }
+struct Collection! { bytes: Option[Buffer!], remaining: usize }
 
-forall Source, Env.
-struct CollectionReply! {
-    collection: StreamCollection![Source],
-    respond: closure[Env](Completion[Buffer!]) -> Action!,
-}
-
-forall Source, Read where Stream[Source -> Read], PlanOutput[Read -> (Source, StreamOutcome[Buffer!])].
+forall Source, Read where Stream[Source -> Read], PlanOutput[Read -> (Source, StreamOutcome[Buffer!])],
+    Discard[Source], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
 impl Source {
-    /// Collects the bytes yielded by the stream. Exceeding the byte limit reports HTTP 413.
-    fn collect(self, limit: usize) -> StreamCollection![Source] {
-        StreamCollection!.{ source: self, limit }
+    /// Collects the yielded bytes. The request's original deadline still applies to body pulls.
+    fn collect(self, limit: usize) -> Task![Buffer!] {
+        repeat(self.next(), Collection!.{ bytes: Option::None, remaining: limit },
+            collect_next[Source, Read], cancel[Source], resolve_completion[Buffer!])
     }
 }
 
-forall Source.
-impl StreamCollection![Source] {
-    /// Uses `respond` once the stream ends or fails while the request is active.
-    forall Env where Copy[Env].
-    fn respond(self, respond: closure[Env](Completion[Buffer!]) -> Action!) -> CollectionReply![Source, Env] {
-        CollectionReply!.{ collection: self, respond }
-    }
+forall Source where Discard[Source].
+fn cancel(state: Collection!, result: (Source, StreamOutcome[Buffer!])) -> Completion[Buffer!] {
+    let { bytes, remaining } = state;
+    (bytes, result).discard();
+    Completion::Cancelled
 }
 
-forall Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
-    PlanOutput[Read -> (Source, StreamOutcome[Buffer!])], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-impl CollectionReply![Source, Env] {
-    /// Pulls the stream under the original request deadline.
-    fn reply(self) -> Action! {
-        var { collection, respond } = self;
-        var { source, limit } = collection;
-        collect_next(source, Option::None, limit, respond)
-    }
-}
-
-forall Source, Read, Env where Copy[Env], Discard[Source], Stream[Source -> Read],
-    PlanOutput[Read -> (Source, StreamOutcome[Buffer!])], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-fn collect_next(source: Source, bytes: Option[Buffer!], remaining: usize,
-    respond: closure[Env](Completion[Buffer!]) -> Action!) -> Action! {
-    source.next().respond_owned(bytes, |bytes, result| {
-        let (source, outcome) = result;
-        let failure = match outcome {
-            StreamOutcome::Item(item) => {
-                var item = item;
-                let length = &item.len();
-                if length <= remaining {
-                    let bytes = match bytes {
-                        Option::Some(bytes) => bytes.push_buffer(item),
-                        None => item,
-                    };
-                    return collect_next(source, Option::Some.(bytes), remaining - length, respond);
-                }
-                item.destroy();
-                Completion::Failed.(Failure::Operation.(413))
-            },
-            Eof => {
-                source.discard();
-                let bytes = match bytes { Some(bytes) => bytes, None => Buffer!::new() };
-                return respond(Completion::Ready.(bytes));
-            },
-            TimedOut => Completion::TimedOut,
-            Cancelled => Completion::Cancelled,
-            Failed(failure) => Completion::Failed.(failure),
-        };
-        (source, bytes).discard();
-        respond(failure)
-    }).reply()
+forall Source, Read where Stream[Source -> Read], Discard[Source].
+fn collect_next(state: Collection!, result: (Source, StreamOutcome[Buffer!]))
+    -> HandoffStep[(Read, Collection!), Completion[Buffer!]] {
+    let { bytes, remaining } = state;
+    let (source, outcome) = result;
+    let failure = match outcome {
+        Item(item) => {
+            var item = item;
+            let length = &item.len();
+            if length <= remaining {
+                let bytes = match bytes { Some(bytes) => bytes.push_buffer(item), None => item };
+                return HandoffStep::Start.((source.next(), Collection!.{
+                    bytes: Option::Some.(bytes), remaining: remaining - length }));
+            }
+            item.destroy();
+            Completion::Failed.(Failure::Operation.(413))
+        },
+        Eof => {
+            source.discard();
+            let bytes = match bytes { Some(bytes) => bytes, None => Buffer!::new() };
+            return HandoffStep::Finish.(Completion::Ready.(bytes));
+        },
+        TimedOut => Completion::TimedOut,
+        Cancelled => Completion::Cancelled,
+        Failed(failure) => Completion::Failed.(failure),
+    };
+    (source, bytes).discard();
+    HandoffStep::Finish.(failure)
 }

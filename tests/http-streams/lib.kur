@@ -59,7 +59,7 @@ fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
             },
             _ => { (body, bytes).discard(); reply(Response!::rejected(400)) },
         }
-    }, discard_pull).reply()
+    }, discard_pull)
 }
 
 fn uppercase(bytes: Buffer!) -> Buffer! {
@@ -111,7 +111,7 @@ fn after_pull(bytes: Buffer!, status: Completion[()]) -> Completion[Buffer!] {
 fn pull_plan(body: Body!) -> Action! {
     let task: ChainPlan![Completion[Buffer!], Scope!] = body.next().map(|result| pull_completion(result))
         .and_then(|bytes| sleep(Duration::from_nanos(0)).map(|status| after_pull(bytes, status)));
-    task.respond(|result| collection_response(result)).reply()
+    task.respond(|result| collection_response(result))
 }
 
 fn collect(body: Body!, observed: bool) -> Action! {
@@ -121,7 +121,7 @@ fn collect(body: Body!, observed: bool) -> Action! {
     }).collect(6).respond(|outcome| {
         if observed { eprint_buffer(f"Finished collecting body.\n"); }
         collection_response(outcome)
-    }).reply()
+    })
 }
 
 fn serve(request: Request!) -> Action! {
@@ -136,6 +136,16 @@ fn serve(request: Request!) -> Action! {
         target.destroy();
         return pull(body, Buffer!::new(), 0);
     }
+    if &request.path_is("/collect-timed") {
+        let { method, target, body } = request;
+        target.destroy();
+        return body.map_items(|bytes| uppercase(bytes)).collect(6)
+            .within(Duration::from_millis(100)).respond(|outcome| match outcome {
+                Completion::TimedOut => Response!::rejected(504),
+                Ready(bytes) => Response!::ok(bytes),
+                Cancelled | Failed => Response!::rejected(500),
+            });
+    }
     let observed = &request.path_is("/collect-observed");
     if observed || &request.path_is("/collect") {
         let { method, target, body } = request;
@@ -146,7 +156,7 @@ fn serve(request: Request!) -> Action! {
         let { method, target, body } = request;
         target.destroy();
         return body.map_items(|bytes| bytes.truncate(0)).collect(0)
-            .respond(|outcome| collection_response(outcome)).reply();
+            .respond(|outcome| collection_response(outcome));
     }
     let upper = &request.path_is("/upper");
     if upper || &request.path_is("/relay") {
@@ -175,7 +185,7 @@ fn serve(request: Request!) -> Action! {
     let memory = Memory!.{ remaining: 3, may_pull: !head_only && !empty && !cancelled,
         report_discard: head_only || cancelled };
     if collect_memory {
-        return memory.collect(6).respond(|outcome| collection_response(outcome)).reply();
+        return memory.collect(6).respond(|outcome| collection_response(outcome));
     }
     let response = response_stream::stream(200, "application/octet-stream", length, memory);
     if cancelled {

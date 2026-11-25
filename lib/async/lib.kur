@@ -603,3 +603,7 @@ fn run_sequence(plan: Sequence![Stages, Output], budget: Option[Duration]) -> Se
     let deadline = sequence_deadline(budget);
     with_runner(|&runner| drive_sequence_until(plan, &runner, deadline))
 }
+
+forall T.
+/// A named completion plan bound to the libuv driver.
+type Task! = task::continuation::ChainPlan![Completion[T], Scope!];

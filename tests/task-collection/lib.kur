@@ -196,7 +196,7 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
 fn deadline_with_timer_result(timer_result: Resolution) -> DeadlineStatus {
     let bytes = Buffer!::new().push_static("owned");
     let plan = sleep(Duration::from_secs(1)).map(|status| (bytes, status));
-    run_deadline_test(plan.within(Duration::from_nanos(0)), timer_result)
+    run_deadline_test(plan.observe_deadline(Duration::from_nanos(0)), timer_result)
 }
 
 fn check_deadline_timer_results() -> bool {
@@ -262,7 +262,7 @@ fn check_reported_deadline() -> bool {
 
 fn check_local_timeout_handoff() -> bool {
     let immediate = Duration::from_nanos(0);
-    let stage = sleep(Duration::from_secs(30)).within(immediate);
+    let stage = sleep(Duration::from_secs(30)).observe_deadline(immediate);
     let plan = stage.then(|outcome| {
         let (status, deadline) = outcome;
         match status { Completion::Cancelled => (), _ => trap() };

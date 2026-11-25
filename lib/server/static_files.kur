@@ -32,9 +32,8 @@ fn serve_from_cwd(request: Request!) -> Action! {
     var file = open_file_beneath_cwd(&access, bytes);
     restore.restore(access).destroy();
 
-    file.respond(|outcome| opened_file_reply(outcome, content_type))
-        .within(Duration::from_secs(2))
-        .reply()
+    file.within(Duration::from_secs(2))
+        .respond(|outcome| opened_file_reply(outcome, content_type))
 }
 
 fn opened_file_reply(outcome: Completion[OpenedFile!], content_type: Slice[u8, 'static]) -> Action! {

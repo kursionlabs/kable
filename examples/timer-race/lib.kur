@@ -37,18 +37,18 @@ fn check_timer_resolution() -> bool {
 
 fn check_within() -> bool {
     let owned = Buffer!::new().push_static("owned");
-    let limited = sleep(Duration::from_secs(30)).map(|status| (owned, status)).within(Duration::from_millis(10));
+    let limited = sleep(Duration::from_secs(30)).map(|status| (owned, status)).observe_deadline(Duration::from_millis(10));
     let plan = join(limited, sleep(Duration::from_millis(25)));
     let (limited, sibling, status) = run(plan);
     let local_expired = reclaim_limited_buffer(limited, true);
     if !local_expired || !ready(status) || !ready(sibling) { return false; }
 
     let owned = Buffer!::new().push_static("owned");
-    let limited = sleep(Duration::from_secs(30)).map(|status| (owned, status)).within(Duration::from_secs(20));
+    let limited = sleep(Duration::from_secs(30)).map(|status| (owned, status)).observe_deadline(Duration::from_secs(20));
     let result = run_with_deadline(limited, Duration::from_millis(10));
     if !reclaim_limited_buffer(result, false) { return false; }
 
-    let (outcome, deadline) = run(sleep(Duration::from_nanos(0)).within(Duration::from_secs(30)));
+    let (outcome, deadline) = run(sleep(Duration::from_nanos(0)).observe_deadline(Duration::from_secs(30)));
     match deadline {
         Completed => {
             if !ready(outcome) { return false; }

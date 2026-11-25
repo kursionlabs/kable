@@ -3,7 +3,7 @@ use std::mem::alloca;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
-use task::{Completion, Discard, PlanOutput, Sleep!, join, select, sleep};
+use task::{Completion, Discard, PlanOutput, Sleep!, join, select, sleep, zip};
 use task::sequence::SequenceOutcome;
 use task::continuation::ChainPlan!;
 use virtual_clock::{Virtual!, run, run_sequence, run_with_deadline};
@@ -85,7 +85,32 @@ fn check_second_stage_clock() -> bool {
     match status { Ready(side) => match side { Second => true, First => false }, _ => false }
 }
 
+fn check_partial() -> bool {
+    let count = unsafe alloca[usize]();
+    unsafe *count = 0;
+    let left = sleep(Duration::from_nanos(1)).map(|status| Completion::Ready.(Tracked!.{ discards: count }));
+    let right = sleep(Duration::from_nanos(3)).within(Duration::from_nanos(2));
+    let status = run(zip(left, right));
+    match status {
+        Ready(both) => { both.discard(); false },
+        TimedOut => (unsafe *count) == 1,
+        _ => false,
+    }
+}
+
+fn check_late() -> bool {
+    let count = unsafe alloca[usize]();
+    unsafe *count = 0;
+    let plan = sleep(Duration::from_nanos(10)).map(|status| Completion::Ready.(Tracked!.{ discards: count }));
+    let status = run(plan.within(Duration::from_nanos(1)));
+    match status {
+        Ready(value) => { value.discard(); false },
+        TimedOut => (unsafe *count) == 1,
+        _ => false,
+    }
+}
+
 fn main() -> i32 {
-    if check_deadline_order() && check_skipped_handoffs(false) && check_skipped_handoffs(true) &&
+    if check_partial() && check_late() && check_deadline_order() && check_skipped_handoffs(false) && check_skipped_handoffs(true) &&
         check_cancelled_dependent_handoff() && check_second_stage_clock() { 0 } else { 1 }
 }

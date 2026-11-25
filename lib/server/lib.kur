@@ -12,10 +12,9 @@ use std::option::{Option, Result};
 use std::ptr::is_null;
 use std::raw::Span;
 use std::time::Duration;
-use task::{Completion, DeadlineStatus, Discard, PlanOutput, StreamOutcome, discard, discard_owned, sleep};
+use task::{Completion, Discard, PlanOutput, StreamOutcome, discard, discard_owned, sleep};
 use task::driver::Plan;
 use tcp::host;
-use thunk::Thunk!;
 
 export static_files;
 export body;
@@ -65,114 +64,69 @@ fn reply(response: Response!) -> Action! { Action!::Reply.(response) }
 
 /// Sends this response after a request-scoped timer.
 fn after(response: Response!, duration: Duration) -> Action! {
-        sleep(duration).respond_owned(response, |response, status| {
-            let code = match status {
-                Completion::Ready => return reply(response),
-                TimedOut => 504,
-                Cancelled => 408,
-                Failed => 500,
-            };
-            response.destroy();
-            reply(Response!::rejected(code))
-        }).reply()
+    sleep(duration).respond_owned(response, |response, status| {
+        let code = match status {
+            Completion::Ready => return response,
+            TimedOut => 504,
+            Cancelled => 408,
+            Failed => 500,
+        };
+        response.destroy();
+        Response!::rejected(code)
+    })
 }
 
 instance Discard[Response!] {
     fn discard(response: Response!) { response.destroy(); }
 }
 
-struct Handler { call: fn(Request!) -> Action! }
+forall R.
+trait IntoAction { fn into_action(result: R) -> Action!; }
 
-forall Task, State, Output, Env.
-struct ReplyBuilder! {
-    task: Task,
-    handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
-    timeout: Option[Duration],
+instance IntoAction[Response!] {
+    fn into_action(response: Response!) -> Action! { reply(response) }
 }
+
+instance IntoAction[Action!] {
+    fn into_action(action: Action!) -> Action! { action }
+}
+
+forall R.
+struct Handler { call: fn(Request!) -> R }
 
 forall Task, Output where PlanOutput[Task -> Output].
 impl Task {
-    /// Builds a reply that discards the outcome if the callback is skipped.
-    forall Env where Copy[Env], Discard[Output].
-    fn respond(self, respond: closure[Env](Output) -> Action!)
-        -> ReplyBuilder![Task, fn(Output) -> (), Output, (closure[Env](Output) -> Action!,)] {
-        self.respond_with(respond, discard[Output])
+    /// Responds after join while the request is active. A skipped callback releases the output.
+    forall R, Env where Copy[Env], IntoAction[R], Discard[Output], Plan[Task, Scope! -> Output].
+    fn respond(self, finish: closure[Env](Output) -> R) -> Action! {
+        self.respond_with(finish, discard[Output])
     }
 
-    /// Uses `respond` for a completed plan while the request is active.
-    /// Uses `discard` to release the joined outcome otherwise.
-    /// The reply callback can capture copyable values, since it can be skipped.
-    forall Env where Copy[Env].
-    fn respond_with(self, respond: closure[Env](Output) -> Action!, discard: fn(Output) -> ())
-        -> ReplyBuilder![Task, fn(Output) -> (), Output, (closure[Env](Output) -> Action!,)] {
-        self.respond_owned_with(discard, |cleanup, outcome| respond(outcome), discard_reply[Output])
+    forall R, Env where Copy[Env], IntoAction[R], Plan[Task, Scope! -> Output].
+    fn respond_with(self, finish: closure[Env](Output) -> R, cleanup: fn(Output) -> ()) -> Action! {
+        self.respond_owned_with(cleanup, |release, output| finish(output), discard_reply[Output])
     }
 
-    /// Builds a reply that discards both state and outcome if the callback is skipped.
-    forall State, Env where Copy[Env], Discard[State], Discard[Output].
-    fn respond_owned(self, state: State, respond: closure[Env](State, Output) -> Action!)
-        -> ReplyBuilder![Task, State, Output, Env] {
-        self.respond_owned_with(state, respond, discard_owned[State, Output])
+    forall State, R, Env where Copy[Env], IntoAction[R], Discard[State], Discard[Output], Plan[Task, Scope! -> Output].
+    fn respond_owned(self, state: State, finish: closure[Env](State, Output) -> R) -> Action! {
+        self.respond_owned_with(state, finish, discard_owned[State, Output])
     }
 
-    /// Transfers state and the joined outcome to `respond` or `discard`.
-    /// Put owned values in `state` and capture copyable configuration in `respond`.
-    forall State, Env where Copy[Env].
-    fn respond_owned_with(self, state: State, respond: closure[Env](State, Output) -> Action!,
-        discard: fn(State, Output) -> ()) -> ReplyBuilder![Task, State, Output, Env] {
-        ReplyBuilder!.{ task: self, handoff: thunk::defer(state, respond, discard), timeout: Option::None }
-    }
-}
-
-forall Output.
-fn discard_reply(discard: fn(Output) -> (), outcome: Output) { discard(outcome); }
-
-forall Task, State, Output, Env where Copy[Env], PlanOutput[Task -> Output], Plan[Task, Scope! -> Output].
-impl ReplyBuilder![Task, State, Output, Env] {
-    /// Sets a local deadline for the plan.
-    fn within(self, duration: Duration) -> ReplyBuilder![Task, State, Output, Env] {
-        var { timeout: previous, ..rest } = self;
-        ReplyBuilder!.{ timeout: Option::Some.(duration), ..rest }
-    }
-
-    /// Returns a deferred action that runs after the plan joins.
-    fn reply(self) -> Action! {
-        var { task, handoff, timeout } = self;
-        let hosted = match timeout {
-            Some(duration) => prepare_reply(task.within(duration), handoff),
-            None => prepare_reply(task.map(|outcome| (outcome, DeadlineStatus::Completed)), handoff),
-        };
+    /// Transfers state and output exactly once, to the active request or to cleanup.
+    forall State, R, Env where Copy[Env], IntoAction[R], Plan[Task, Scope! -> Output].
+    fn respond_owned_with(self, state: State, finish: closure[Env](State, Output) -> R,
+        cleanup: fn(State, Output) -> ()) -> Action! {
+        let handoff = thunk::defer(state, finish, cleanup);
+        let hosted = prepare_handoff(self, handoff, |handoff, output, client, flags| {
+            let action = handoff.resume(output).into_action();
+            unsafe apply(client, action, (flags & RESPONSE_HEAD) != 0, (flags & RESPONSE_HTTP10) != 0)
+        }, |handoff, output| handoff.discard_with(output));
         Action!::Deferred.(hosted)
     }
 }
 
-forall Task, State, Output, Env where Copy[Env], Plan[Task, Scope! -> (Output, DeadlineStatus)].
-fn prepare_reply(task: Task,
-    handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()]) -> HostedPlan! {
-    prepare_handoff(task, handoff,
-        |handoff, result, client, flags| {
-            let (outcome, deadline) = result;
-            let action = reply_action(handoff, outcome, deadline);
-            unsafe apply(client, action, (flags & RESPONSE_HEAD) != 0, (flags & RESPONSE_HTTP10) != 0)
-        },
-        |handoff, result| {
-            let (outcome, deadline) = result;
-            handoff.discard_with(outcome);
-        })
-}
-
-forall State, Output, Env where Copy[Env].
-fn reply_action(handoff: Thunk![State, Output, Action!, Env, fn(State, Output) -> ()],
-    outcome: Output, deadline: DeadlineStatus) -> Action! {
-    let status = match deadline {
-        Completed => return handoff.resume(outcome),
-        TimedOut => 504,
-        Cancelled => 408,
-        Failed => 500,
-    };
-    handoff.discard_with(outcome);
-    reply(Response!::rejected(status))
-}
+forall Output.
+fn discard_reply(cleanup: fn(Output) -> (), output: Output) { cleanup(output); }
 
 unsafe fn write_wire(client: *u8, wire: Buffer!) -> i32 {
     unsafe kable_release_request(unsafe kable_client_request(client));
@@ -228,6 +182,7 @@ unsafe fn validate_head(major: u8, minor: u8, host_count: u32, upgrade_or_connec
     status
 }
 
+forall R where IntoAction[R].
 unsafe fn receive(context: *u8, client: *u8) -> i32 {
     let raw = unsafe kable_client_connection(client);
     let plan = prepare_handoff(unsafe host::read(raw), context, |context, completion, client, flags| {
@@ -236,10 +191,10 @@ unsafe fn receive(context: *u8, client: *u8) -> i32 {
             TimedOut | Cancelled => 408,
             Failed => return -1,
         };
-        if result == REQUEST_MORE { return unsafe receive(context, client); }
+        if result == REQUEST_MORE { return unsafe receive[R](context, client); }
         if result == REQUEST_CLOSED { return -1; }
         let status = if result == REQUEST_HEADERS { 0 } else if result == REQUEST_TRUNCATED { 400 } else { result };
-        unsafe respond(context, client, status)
+        unsafe respond[R](context, client, status)
     }, |context, completion| completion.discard());
     unsafe submit_request(client, plan, 0)
 }
@@ -252,6 +207,7 @@ unsafe fn feed_request(raw: *u8, request: *u8) -> u16 {
     }
 }
 
+forall R where IntoAction[R].
 unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
     let parser = unsafe kable_client_request(client);
     let version = unsafe alloca[u8]();
@@ -278,20 +234,21 @@ unsafe fn respond(context: *u8, client: *u8, status: u16) -> i32 {
         body: unsafe Body!::from_request(unsafe kable_client_key(client), length),
     };
     unsafe kable_release_request_head(parser);
-    var { call } = unsafe *(unsafe (context as *Handler));
-    unsafe apply(client, call(request), head, http10)
+    var { call } = unsafe *(unsafe (context as *Handler[R]));
+    unsafe apply(client, call(request).into_action(), head, http10)
 }
 
 struct Server! { raw: *u8, context: *u8 }
 
 impl Server! {
     /// Binds a handler that returns the action for each request.
-    fn bind(port: u16, call: fn(Request!) -> Action!) -> Result[Server!, i32] {
-        let context = HeapAllocator::alloc(sizeof[Handler]()).into_raw();
-        unsafe *(unsafe (context as *Handler)) = Handler.{ call };
+    forall R where IntoAction[R].
+    fn bind(port: u16, call: fn(Request!) -> R) -> Result[Server!, i32] {
+        let context = HeapAllocator::alloc(sizeof[Handler[R]]()).into_raw();
+        unsafe *(unsafe (context as *Handler[R])) = Handler.{ call };
 
         let error = unsafe alloca[i32]();
-        let raw = unsafe kable_bind(port, validate_head, receive, context, error);
+        let raw = unsafe kable_bind(port, validate_head, receive[R], context, error);
         if is_null(raw) {
             HeapAllocator::drop(unsafe HeapAllocator::adopt_raw(context));
             Result::Err.(unsafe *error)

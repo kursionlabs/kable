@@ -1232,6 +1232,11 @@ def check_mapped_collection(port, stderr, check_timeout):
         read_log_until(stderr, b"Finished collecting body.")
     assert_response(exchange(port, headers, b"2\r\nab\r\n", eof=True), 400, b"Bad Request\n")
 
+    with connect(port) as client:
+        client.sendall(headers.replace(b"/collect", b"/collect-timed") + b"1\r\na\r\n")
+        assert select.select([client], [], [], 3)[0], "local collection deadline did not fire"
+        assert_response(read_response(client), 504, b"Gateway Timeout\n")
+
     shrink = headers.replace(b"/collect", b"/collect-shrink")
     assert_response(exchange(port, shrink, b"1\r\nx\r\n0\r\n\r\n"), 200, b"")
     assert_response(exchange(port, shrink, b"100000\r\n", b"x" * (1024 * 1024), b"\r\n1\r\ny\r\n0\r\n\r\n"),

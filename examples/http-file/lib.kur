@@ -16,18 +16,16 @@ fn serve_file(timed: bool) -> Action! {
     var access = StaticRead::new();
     let file = read_file(&access, "example.txt", FILE_LIMIT);
     if timed {
-        return file.respond(|outcome| reply(file_response(outcome)))
-            .within(Duration::from_secs(1))
-            .reply();
+        return file.within(Duration::from_secs(1))
+            .respond(|outcome| file_response(outcome));
     }
-    file.respond_with(|outcome| reply(file_response(outcome)), discard_plain_file).reply()
+    file.respond_with(|outcome| file_response(outcome), discard_plain_file)
 }
 
 fn close_after_read() -> Action! {
     var access = StaticRead::new();
     read_file(&access, "example.txt", FILE_LIMIT)
         .respond(|outcome| { outcome.discard(); Action!::Close })
-        .reply()
 }
 
 fn file_response(outcome: Completion[Buffer!]) -> Response! {
@@ -47,15 +45,6 @@ fn discard_plain_file(outcome: Completion[Buffer!]) {
         Ready(bytes) => bytes.destroy(),
         Cancelled => { eprint_buffer(f"File request cancelled.\n"); },
         TimedOut | Failed => (),
-    }
-}
-
-fn append_file(first: Buffer!, second: Completion[Buffer!]) -> Response! {
-    match second {
-        Ready(bytes) => Response!::ok(first.push_buffer(bytes)),
-        TimedOut => { first.destroy(); Response!::rejected(504) },
-        Cancelled => { first.destroy(); Response!::rejected(408) },
-        Failed(code) => { first.destroy(); Response!::rejected(500) },
     }
 }
 
@@ -88,9 +77,9 @@ fn handle(request: Request!) -> Action! {
         File => serve_file(false),
         TimedFile => serve_file(true),
         FileJoin => file_join::serve(),
-        FileSequence => file_sequence::load().respond(|outcome| reply(file_response(outcome))).reply(),
-        TimedSequence => file_sequence::load().respond(|outcome| reply(file_response(outcome)))
-            .within(Duration::from_secs(1)).reply(),
+        FileSequence => file_sequence::load().respond(|outcome| file_response(outcome)),
+        TimedSequence => file_sequence::load().within(Duration::from_secs(1))
+            .respond(|outcome| file_response(outcome)),
         Close => Action!::Close,
         CloseAfterRead => close_after_read(),
         Health => reply(Response!::text(200, "ok\n")),

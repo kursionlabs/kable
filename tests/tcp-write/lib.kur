@@ -74,7 +74,7 @@ fn send_after_eof(connection: Connection!, consuming: bool) -> Action! {
             return connection.send_within(bytes, Duration::from_millis(1500))
                 .defer_tcp(|result| finish_send(result));
         }
-        connection.write(bytes).within(Duration::from_millis(1500)).defer_tcp(|result| finish_write(result))
+        connection.write(bytes).observe_deadline(Duration::from_millis(1500)).defer_tcp(|result| finish_write(result))
     })
 }
 

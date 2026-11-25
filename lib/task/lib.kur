@@ -331,7 +331,7 @@ impl Task {
     }
 
     /// Races this plan against a local timer and returns the outcome after both join.
-    fn within(self, duration: Duration)
+    fn observe_deadline(self, duration: Duration)
         -> Map![PairPlan![Sleep!, Task, Side], (Completion[()], Input, Completion[Side]), (Input, DeadlineStatus), ()] {
         deadline::race(self, duration).map(|result| deadline::resolve(result))
     }
@@ -358,4 +358,46 @@ exposed enum DeadlineStatus {
     TimedOut,
     Cancelled,
     Failed(Failure),
+}
+
+forall Task, T where PlanOutput[Task -> Completion[T]], Discard[T].
+impl Task {
+    /// Reports a local timeout in the completion and releases any late value after join.
+    fn within(self, duration: Duration)
+        -> Map![PairPlan![Sleep!, Task, Side], (Completion[()], Completion[T], Completion[Side]), Completion[T], ()] {
+        deadline::race(self, duration).map(|result| {
+            let (output, reason) = deadline::resolve(result);
+            deadline::finish(output, reason)
+        })
+    }
+}
+
+forall A, B where Discard[A], Discard[B].
+fn zip_result(result: (Completion[A], Completion[B], Completion[()])) -> Completion[(A, B)] {
+    let (left, right, scope) = result;
+    match scope {
+        Ready => (),
+        TimedOut => { (left, right).discard(); return Completion::TimedOut; },
+        Cancelled => { (left, right).discard(); return Completion::Cancelled; },
+        Failed(failure) => { (left, right).discard(); return Completion::Failed.(failure); },
+    };
+    let value = match left {
+        Ready(value) => value,
+        TimedOut => { right.discard(); return Completion::TimedOut; },
+        Cancelled => { right.discard(); return Completion::Cancelled; },
+        Failed(failure) => { right.discard(); return Completion::Failed.(failure); },
+    };
+    match right {
+        Ready(other) => Completion::Ready.((value, other)),
+        TimedOut => { value.discard(); Completion::TimedOut },
+        Cancelled => { value.discard(); Completion::Cancelled },
+        Failed(failure) => { value.discard(); Completion::Failed.(failure) },
+    }
+}
+
+forall Left, Right, A, B where PlanOutput[Left -> Completion[A]], PlanOutput[Right -> Completion[B]], Discard[A], Discard[B].
+/// Joins both operations. Scope failure takes precedence, followed by left then right.
+fn zip(left: Left, right: Right)
+    -> Map![PairPlan![Left, Right, ()], (Completion[A], Completion[B], Completion[()]), Completion[(A, B)], ()] {
+    join(left, right).map(|joined| zip_result(joined))
 }

@@ -59,10 +59,36 @@ unsafe fn finish_task(raw: *u8, &scope: Driver) -> Value {
 forall Next, Value.
 exposed enum HandoffStep { Start(Next), Finish(Value) }
 
+forall First, State, Next, Value.
+enum ChildStep! { Again(First, State), Start(Next), Finish(Value) }
+
+forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
+    ContinuationDriver[Driver], PlanDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
+fn chain(first: First, state: State, resume: closure[Env](State, Input) -> HandoffStep[Next, Value],
+    cancel: fn(State, Input) -> Value, resolve: fn(Value, Resolution) -> Value) -> ChainPlan![Value, Driver] {
+    schedule(first, state, |state, input| match resume(state, input) {
+        Start(next) => ChildStep!::Start.(next),
+        Finish(value) => ChildStep!::Finish.(value),
+    }, cancel, resolve)
+}
+
+/// Reuses one continuation registration for successive children of the same type.
+forall First, Driver, State, Input, Value where ContinuationDriver[Driver], PlanDriver[Driver],
+    Plan[First, Driver -> Input].
+fn repeat(first: First, state: State, step: fn(State, Input) -> HandoffStep[(First, State), Value],
+    cancel: fn(State, Input) -> Value, resolve: fn(Value, Resolution) -> Value) -> ChainPlan![Value, Driver] {
+    schedule(first, state, |state, input| -> ChildStep![First, State, ChainPlan![Value, Driver], Value] {
+        match step(state, input) {
+            Start(pair) => { let (next, state) = pair; ChildStep!::Again.(next, state) },
+            Finish(value) => ChildStep!::Finish.(value),
+        }
+    }, cancel, resolve)
+}
+
 forall First, Driver, State, Input, Next, Value, Env.
 enum Phase! {
-    Pending(First, State, closure[Env](State, Input) -> HandoffStep[Next, Value]),
-    First(Prepared![First, Driver], State, closure[Env](State, Input) -> HandoffStep[Next, Value]),
+    Pending(First, State, closure[Env](State, Input) -> ChildStep![First, State, Next, Value]),
+    First(Prepared![First, Driver], State, closure[Env](State, Input) -> ChildStep![First, State, Next, Value]),
     Next(Prepared![Next, Driver]),
     Done(Value, bool),
 }
@@ -79,7 +105,7 @@ struct Pending! {
 
 forall First, Driver, State, Input, Next, Value, Env where Copy[Env],
     ContinuationDriver[Driver], PlanDriver[Driver], Plan[First, Driver -> Input], Plan[Next, Driver -> Value].
-fn chain(first: First, state: State, resume: closure[Env](State, Input) -> HandoffStep[Next, Value],
+fn schedule(first: First, state: State, resume: closure[Env](State, Input) -> ChildStep![First, State, Next, Value],
     cancel: fn(State, Input) -> Value, resolve: fn(Value, Resolution) -> Value) -> ChainPlan![Value, Driver] {
     let context = HeapAllocator::alloc(sizeof[Pending![First, Driver, State, Input, Next, Value, Env]]()).into_raw();
     let pending = unsafe (context as *Pending![First, Driver, State, Input, Next, Value, Env]);
@@ -142,6 +168,15 @@ unsafe fn advance(raw: *u8, cancelled: u8, scope: *(*u8), root: *usize) -> u8 {
                 (cancel(state, input), true)
             } else {
                 match resume(state, input) {
+                    Again(next, state) => {
+                        var prepared = prepare(next, ContinuationDriver[Driver]::child_scope());
+                        let child = child(&prepared);
+                        unsafe *pending = Pending!.{ parent, cancel, resolve,
+                            phase: Phase!::First.(prepared, state, resume), ..rest };
+                        unsafe *scope = child.scope;
+                        unsafe *root = child.root;
+                        return 1;
+                    },
                     Start(next) => {
                         var prepared = prepare(next, ContinuationDriver[Driver]::child_scope());
                         let child = child(&prepared);

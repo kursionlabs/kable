@@ -38,7 +38,7 @@ fn handle(request: Request!) -> Action! {
                     },
                 };
                 reply(Response!::rejected(status))
-            }).reply(),
+            }),
             _ => {
                 body.destroy();
                 return reply(Response!::method_not_allowed("POST"));

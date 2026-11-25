@@ -77,7 +77,7 @@ This executable requires Linux 5.6 or later. [Linux `openat2` manual](https://ma
 
 ## A small async server
 
-`Server!::bind` takes a handler that returns an `Action!`. The hello server
+`Server!::bind` accepts handlers returning a `Response!` or an `Action!`. The hello server
 uses `reply(response)` to send one response immediately and `after(response, duration)` to delay another.
 Both functions accept buffered and streamed `Response!` values. A buffered
 reply sends its headers and body in one write.
@@ -127,7 +127,8 @@ implements `task::Stream` and yields decoded byte chunks. Use
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
 
-The server's `collect(limit).respond(...).reply()` works with owned byte
+The server's `collect(limit)` returns a libuv plan for a bounded buffer.
+It composes with `within`, `respond`, and other plan adapters on owned byte
 streams through EOF under the same request deadline. It counts the bytes
 yielded by the stream, so `body.map_items(transform).collect(limit)` counts
 transformed bytes. Exceeding the collection limit yields `Failure::Operation`
@@ -164,36 +165,32 @@ Request `/file-with-timeout` on the printed address to read the bundled
 
 ```kursal
 use async::read_file;
-use server::reply;
 use std::slice::StaticRead;
 use std::time::Duration;
 use task::PlanOutput;
 
 var access = StaticRead::new();
 read_file(&access, "example.txt", FILE_LIMIT)
-    .respond(|outcome| reply(file_response(outcome)))
     .within(Duration::from_secs(1))
-    .reply()
+    .respond(|outcome| file_response(outcome))
 ```
 
-`respond` takes a callback that consumes the joined outcome and returns an
-`Action!`. The callback can capture copyable values, such as the content type
-for a streamed file. When the request ends or the local deadline wins, the
-builder releases the outcome through `Discard`. Use `respond_with` to supply
-a cleanup function, for example to log cancellation.
-`.reply()` builds the action. If the local timer wins while the request is
-active, the server replies 504 after the worker joins. `/file` uses the
-request deadline alone, and `/health` remains available during a pending read.
+The terminal `respond` hands the plan to the request. Its callback consumes the
+joined output and can return a response or another action. When the request
+ends before the callback can run, the host releases the output through
+`Discard`. Use `respond_with` to supply a cleanup function. A local timeout
+on an active request delivers `TimedOut` to the callback after join. Here
+`file_response` turns that outcome into HTTP 504.
 
 ### Two independent file reads
 
 `/file-join` starts reads of `example.txt` and `footer.txt` together using
-`join(first, second)` and uses the same reply builder. Both reads have a
+`zip(first, second)`. Both reads have a
 64 KiB limit and share the one-second deadline.
 The response appends the footer after the first file’s bytes regardless of
 which read finishes first.
-A timeout returns 504 after both workers retire, and the handler destroys
-any buffer it received. [Parallel file handler](examples/http-file/file_join.kur)
+A timeout returns 504 after both workers retire, and the plan releases
+any partial results. [Parallel file handler](examples/http-file/file_join.kur)
 
 ### Dependent file reads
 
@@ -338,10 +335,15 @@ capture owned state and runs once, including on cancellation or failure.
 `plan.and_then(next)` builds a `ChainPlan![Completion[Output], Scope!]`
 from two plans that return `Completion` values. It composes with `run`,
 `join`, and `.within` on libuv and the virtual clock. Give the resulting
-plan a type annotation to select its driver. A libuv chain can use a
+plan a type annotation to select its driver. For a libuv completion chain,
+`async::Task![T]` names `ChainPlan![Completion[T], Scope!]`. A libuv chain can use a
 request body if its first child registers the connection host during staging.
 
-`plan.within(duration)` races the plan against a local timer and returns
+For plans producing `Completion[T]`, `plan.within(duration)` returns the
+same completion type. If the local timer wins, it discards any late value
+and returns `TimedOut` after join. `T` must implement `Discard`.
+
+`plan.observe_deadline(duration)` races any plan against a local timer and returns
 `(output, deadline)` after both join. `DeadlineStatus::Completed` means the
 plan finished first, including when the operation reported an error.
 `TimedOut` means the local timer fired first. `Cancelled` means the enclosing
@@ -349,7 +351,7 @@ scope cancelled the race. `Failed(failure)` reports an error from the scope or
 the winning timer. Every case gives the caller the inner output to reclaim.
 A local timeout leaves unrelated sibling plans running.
 
-Import `task::PlanOutput` to use both methods. Driver implementations use
+Import `task::PlanOutput` to use the plan adapters. Driver implementations use
 `task::driver` for staging, collection, and scope policy.
 
 ### Implementing a driver

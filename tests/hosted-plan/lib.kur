@@ -68,7 +68,7 @@ fn check_startup_failure() -> bool {
     let first = sleep(Duration::from_secs(30)).map(|status| (first, status));
     let second = sleep(Duration::from_secs(30)).map(|status| (second, status));
     let plan = join(first, join(second, FailStart.{ stage_nanos: 0 }));
-    var (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.within(Duration::from_secs(1)));
+    var (((first, first_status), ((second, second_status), unit, inner), outer), deadline) = run(plan.observe_deadline(Duration::from_secs(1)));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
     first.destroy();
     second.destroy();
@@ -262,7 +262,7 @@ fn pending() -> HostedPlan! {
     });
     let plan = join(first, sleep(Duration::from_nanos(0)));
     unsafe kable_test_track_scope();
-    prepare_hosted(plan.within(Duration::from_secs(1)), |outcome, host, state| {
+    prepare_hosted(plan.observe_deadline(Duration::from_secs(1)), |outcome, host, state| {
         var (((bytes, first), second, status), deadline) = outcome;
         let length = &bytes.len();
         bytes.destroy();

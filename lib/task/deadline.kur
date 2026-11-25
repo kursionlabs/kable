@@ -1,5 +1,5 @@
 use std::time::Duration;
-use package::{Completion, DeadlineStatus, Failure, PairPlan!, Side, Sleep!, select, sleep};
+use package::{Completion, DeadlineStatus, Discard, Failure, PairPlan!, Side, Sleep!, select, sleep};
 
 forall Task.
 fn race(task: Task, duration: Duration) -> PairPlan![Sleep!, Task, Side] {
@@ -12,12 +12,13 @@ fn resolve(result: (Completion[()], Output, Completion[Side])) -> (Output, Deadl
     (outcome, status(timer, race))
 }
 
-fn finish(completion: Completion[()], deadline: DeadlineStatus) -> Completion[()] {
+forall T where Discard[T].
+fn finish(completion: Completion[T], deadline: DeadlineStatus) -> Completion[T] {
     match deadline {
         Completed => completion,
-        TimedOut => Completion::TimedOut,
-        Cancelled => Completion::Cancelled,
-        Failed(failure) => Completion::Failed.(failure),
+        TimedOut => { completion.discard(); Completion::TimedOut },
+        Cancelled => { completion.discard(); Completion::Cancelled },
+        Failed(failure) => { completion.discard(); Completion::Failed.(failure) },
     }
 }
 
