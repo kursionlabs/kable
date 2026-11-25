@@ -1,5 +1,5 @@
 use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::Result;
 use std::time::Duration;
 use task::{Completion, PlanOutput, Sink, Stream, StreamOutcome};
@@ -14,8 +14,8 @@ fn read_finished(result: (Connection!, StreamOutcome[Buffer!])) -> Action! {
     match outcome {
         Item(bytes) => return connection.send_within(bytes, Duration::from_secs(1))
             .defer_tcp(|result| write_finished(result)),
-        TimedOut => { eprint_buffer(f"Read deadline expired.\n"); },
-        Cancelled => { eprint_buffer(f"Cancelled connection on shutdown.\n"); },
+        TimedOut => { eprint(f"Read deadline expired.\n"); },
+        Cancelled => { eprint(f"Cancelled connection on shutdown.\n"); },
         Eof | Failed => (),
     };
     connection.close()
@@ -33,19 +33,19 @@ fn main() -> i32 {
     var listener = match Listener!::bind_connections(0, read_next) {
         Ok(listener) => listener,
         Err(code) => {
-            eprint_buffer(f"tcp-echo: cannot listen (libuv error {code})\n");
+            eprint(f"tcp-echo: cannot listen (libuv error {code})\n");
             return 1i32;
         },
     };
     let port = &listener.port();
-    if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on 127.0.0.1:{port}\n").is_err() {
         listener.stop();
         return 1i32;
     }
     match listener.run() {
         Ok(unit) => 0i32,
         Err(code) => {
-            eprint_buffer(f"tcp-echo: listener stopped (libuv error {code})\n");
+            eprint(f"tcp-echo: listener stopped (libuv error {code})\n");
             1i32
         },
     }

@@ -3,7 +3,7 @@ use http::{Method, Request!, Response!};
 use package::{file_join, file_sequence};
 use server::{Action!, Server!, reply};
 use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::Result;
 use std::process::Args;
 use std::slice::{Slice, StaticRead};
@@ -33,7 +33,7 @@ fn file_response(outcome: Completion[Buffer!]) -> Response! {
         Ready(bytes) => Response!::ok(bytes),
         TimedOut => Response!::rejected(504),
         Cancelled => {
-            eprint_buffer(f"File request cancelled.\n");
+            eprint(f"File request cancelled.\n");
             Response!::rejected(408)
         },
         Failed(code) => Response!::rejected(500),
@@ -43,7 +43,7 @@ fn file_response(outcome: Completion[Buffer!]) -> Response! {
 fn discard_plain_file(outcome: Completion[Buffer!]) {
     match outcome {
         Ready(bytes) => bytes.destroy(),
-        Cancelled => { eprint_buffer(f"File request cancelled.\n"); },
+        Cancelled => { eprint(f"File request cancelled.\n"); },
         TimedOut | Failed => (),
     }
 }
@@ -89,9 +89,9 @@ fn handle(request: Request!) -> Action! {
 
 fn print_page(outcome: Completion[Buffer!]) -> i32 {
     match outcome {
-        Ready(bytes) => if print_buffer(bytes).is_ok() { 0 } else { 1 },
+        Ready(bytes) => if print(bytes).is_ok() { 0 } else { 1 },
         _ => {
-            eprint_buffer(f"http-file: could not read page and footer\n");
+            eprint(f"http-file: could not read page and footer\n");
             1
         },
     }
@@ -115,25 +115,25 @@ fn main(args: Args) -> i32 {
         }
     }
     if args.len() != 1 {
-        eprint_buffer(f"usage: http-file [--read-page | --join-pages]\n");
+        eprint(f"usage: http-file [--read-page | --join-pages]\n");
         return 2;
     }
     var server = match Server!::bind(0, handle) {
         Ok(server) => server,
         Err(code) => {
-            eprint_buffer(f"http-file: cannot listen (libuv error {code})\n");
+            eprint(f"http-file: cannot listen (libuv error {code})\n");
             return 1;
         },
     };
     let port = &server.port();
-    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
         return 1;
     }
     match server.run() {
         Ok(unit) => 0,
         Err(code) => {
-            eprint_buffer(f"http-file: server stopped (libuv error {code})\n");
+            eprint(f"http-file: server stopped (libuv error {code})\n");
             1
         },
     }

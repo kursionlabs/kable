@@ -1,6 +1,6 @@
 use async::{Scope!, read_file, run_with_deadline};
 use std::buffer::Buffer!;
-use std::io::eprint_buffer;
+use std::io::eprint;
 use std::slice::StaticRead;
 use std::time::Duration;
 use task::{Completion, Discard, PlanOutput};
@@ -14,7 +14,7 @@ instance Discard[Prefix!] {
     fn discard(prefix: Prefix!) {
         let { bytes } = prefix;
         bytes.destroy();
-        eprint_buffer(f"Discarded the joined prefix.\n");
+        eprint(f"Discarded the joined prefix.\n");
     }
 }
 
@@ -36,7 +36,7 @@ fn main() -> i32 {
     let task: ChainPlan![Completion[Buffer!], Scope!] = read_file(&access, "example.txt", 1024)
         .map(|outcome| hold_handoff(outcome))
         .and_then(|prefix| {
-            eprint_buffer(f"Started the footer continuation.\n");
+            eprint(f"Started the footer continuation.\n");
             prefix.discard();
             var access = StaticRead::new();
             read_file(&access, "footer.txt", 1024)

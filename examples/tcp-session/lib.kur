@@ -1,5 +1,6 @@
+use std::fmt::Writer;
 use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::raw::Span;
 use std::time::Duration;
@@ -28,13 +29,13 @@ fn discard_line(pending: Buffer!) {
     var pending = pending;
     let length = &pending.len();
     pending.destroy();
-    eprint_buffer(f"Closed session with {length} buffered bytes.\n");
+    eprint(f"Closed session with {length} buffered bytes.\n");
 }
 
 instance Resumable[Session! -> Buffer!, Lines!] {
     fn resume(session: Session!, bytes: Buffer!) -> Step[Session!, Lines!] {
         let { pending, retried } = session;
-        let pending = pending.push_buffer(bytes);
+        let pending = pending.put(bytes);
         var exists 'k. (access, bytes, restore) = pending.open();
         let span = Span::from_slice(bytes);
         match span.rfind_byte(&access, b'\n') {
@@ -45,9 +46,10 @@ instance Resumable[Session! -> Buffer!, Lines!] {
             },
             Some(index) => {
                 let end = index + 1;
-                let complete = Buffer!::with_capacity(end).push_bytes(&access, span.take(end));
+                let line = span.take(end);
+                let complete = f"{line}".write(&access, Buffer!::with_capacity(end));
                 let rest = span.skip(end);
-                let tail = Buffer!::with_capacity(rest.len()).push_bytes(&access, rest);
+                let tail = f"{rest}".write(&access, Buffer!::with_capacity(rest.len()));
                 restore.restore(access).destroy();
                 Step::Done.(Lines!::Complete.(complete, tail))
             },
@@ -84,7 +86,7 @@ fn read_line(connection: Connection!, session: Session!) -> Action! {
 
 fn discard_read(session: Session!, outcome: StreamOutcome[Buffer!]) {
     outcome.discard();
-    eprint_buffer(f"Discarded a read for a closing session.\n");
+    eprint(f"Discarded a read for a closing session.\n");
     session.discard();
 }
 
@@ -92,7 +94,7 @@ fn retry_read(connection: Connection!, session: Session!) -> Action! {
     let { pending, retried } = session;
     let session = Session!.{ pending, retried: true };
     if retried { return close_session(connection, session); }
-    eprint_buffer(f"Retrying idle read.\n");
+    eprint(f"Retrying idle read.\n");
     read_line(connection, session)
 }
 
@@ -117,19 +119,19 @@ fn main() -> i32 {
     var listener = match Listener!::bind_connections(0, start) {
         Ok(listener) => listener,
         Err(code) => {
-            eprint_buffer(f"tcp-session: cannot listen (libuv error {code})\n");
+            eprint(f"tcp-session: cannot listen (libuv error {code})\n");
             return 1i32;
         },
     };
     let port = &listener.port();
-    if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on 127.0.0.1:{port}\n").is_err() {
         listener.stop();
         return 1i32;
     }
     match listener.run() {
         Ok(unit) => 0i32,
         Err(code) => {
-            eprint_buffer(f"tcp-session: listener stopped (libuv error {code})\n");
+            eprint(f"tcp-session: listener stopped (libuv error {code})\n");
             1i32
         },
     }

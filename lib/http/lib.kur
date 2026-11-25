@@ -1,4 +1,5 @@
 //! Request validation and ownership, and HTTP response serialization.
+use std::fmt::Writer;
 use std::ascii::{is_digit, to_lower};
 use std::buffer::Buffer!;
 use std::cmp::min;
@@ -125,7 +126,7 @@ impl ResponseHead {
         var { status, content_type, allow, range } = self;
         let wire = header_fields(status, content_type, framing, http10);
         let wire = if allow.is_empty() { wire }
-            else { wire.push_static("Allow: ").push_static(allow).push_static("\r\n") };
+            else { wire.put("Allow: ").put(allow).put("\r\n") };
         let wire = match range {
             Some(info) => {
                 let (offset, total) = info;
@@ -133,7 +134,7 @@ impl ResponseHead {
             },
             None => wire,
         };
-        wire.push_static("\r\n")
+        wire.put("\r\n")
     }
 }
 
@@ -214,7 +215,7 @@ impl Response! {
     fn text(status: u16, text: Slice[u8, 'static]) -> Response! {
         Response!.{
             head: ResponseHead::new(status, "text/plain; charset=utf-8"),
-            body: ResponseBody!::Buffered.(Buffer!::new().push_static(text)),
+            body: ResponseBody!::Buffered.(Buffer!::new().put(text)),
         }
     }
 
@@ -225,7 +226,7 @@ impl Response! {
     }
 
     fn rejected(status: u16) -> Response! {
-        let body = Buffer!::new().push_static(reason(status)).push_static("\n");
+        let body = Buffer!::new().put(reason(status)).put("\n");
         Response!.{ head: ResponseHead::new(status, "text/plain; charset=utf-8"), body: ResponseBody!::Buffered.(body) }
     }
 }
@@ -235,7 +236,7 @@ exposed enum ResponseFraming { Fixed(u64), Chunked, CloseDelimited }
 fn push_hex(wire: Buffer!, value: usize) -> Buffer! {
     let wire = if value >= 16 { push_hex(wire, value / 16) } else { wire };
     let digit = (value % 16) as u8;
-    wire.push_byte(if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) })
+    wire.write_byte(if digit < 10 { b'0' + digit } else { b'a' + (digit - 10) })
 }
 
 /// Frames a nonempty payload. Only clean EOF emits the terminal chunk.
@@ -243,7 +244,7 @@ fn encode_chunk(bytes: Buffer!) -> Buffer! {
     var bytes = bytes;
     let length = &bytes.len();
     if length == 0 { return bytes; }
-    push_hex(Buffer!::new(), length).push_static("\r\n").push_buffer(bytes).push_static("\r\n")
+    push_hex(Buffer!::new(), length).put("\r\n").put(bytes).put("\r\n")
 }
 
 fn header_space(byte: u8) -> bool { byte == b' ' || byte == b'\t' }
@@ -309,26 +310,26 @@ fn select_file_range(&access: C, header: Span['k], total: u64) -> (u16, u64, u64
 }
 
 fn encode_range(wire: Buffer!, status: u16, offset: u64, total: u64, framing: ResponseFraming) -> Buffer! {
-    let wire = wire.push_static("Accept-Ranges: bytes\r\n");
-    if status == 416 { return wire.push_static("Content-Range: bytes */").push_u64(total).push_static("\r\n"); }
+    let wire = wire.put("Accept-Ranges: bytes\r\n");
+    if status == 416 { return wire.put("Content-Range: bytes */").put(total).put("\r\n"); }
     if status != 206 { return wire; }
     match framing {
-        Fixed(length) => wire.push_static("Content-Range: bytes ")
-            .push_u64(offset).push_static("-").push_u64(offset + length - 1)
-            .push_static("/").push_u64(total).push_static("\r\n"),
+        Fixed(length) => wire.put("Content-Range: bytes ")
+            .put(offset).put("-").put(offset + length - 1)
+            .put("/").put(total).put("\r\n"),
         _ => wire,
     }
 }
 
 fn header_fields(status: u16, content_type: Slice[u8, 'static], framing: ResponseFraming, http10: bool) -> Buffer! {
     let version = if http10 { "HTTP/1.0 " } else { "HTTP/1.1 " };
-    let wire = Buffer!::new().push_static(version)
-        .push_usize(status as usize).push_static(" ").push_static(reason(status))
-        .push_static("\r\nContent-Type: ").push_static(content_type).push_static("\r\n");
+    let wire = Buffer!::new().put(version)
+        .put(status as usize).put(" ").put(reason(status))
+        .put("\r\nContent-Type: ").put(content_type).put("\r\n");
     let wire = match framing {
-        Fixed(length) => wire.push_static("Content-Length: ").push_u64(length).push_static("\r\n"),
-        Chunked => wire.push_static("Transfer-Encoding: chunked\r\n"),
+        Fixed(length) => wire.put("Content-Length: ").put(length).put("\r\n"),
+        Chunked => wire.put("Transfer-Encoding: chunked\r\n"),
         CloseDelimited => wire,
     };
-    wire.push_static("Connection: close\r\n")
+    wire.put("Connection: close\r\n")
 }

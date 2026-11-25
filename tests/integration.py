@@ -632,6 +632,31 @@ def gated_file_server(command, directory, library, gates=1, reset_notify=None):
         yield process, port, started, permit
 
 
+def check_file_collection(binary, directory):
+    root = directory / "file collection"
+    root.mkdir()
+    path = root / "large.bin"
+    payload = bytes(range(256)) * 257
+    for data, limit, budget, code, error in (
+        (b"", 0, [], 0, b""),
+        (payload, len(payload), [], 0, b""),
+        (payload, len(payload) - 1, [], 1, f"collect-file: exceeds {len(payload) - 1} bytes\n".encode()),
+        (payload, len(payload), ["0"], 1, b"collect-file: deadline expired\n"),
+    ):
+        path.write_bytes(data)
+        result = subprocess.run([binary, path, str(limit), *budget], capture_output=True, timeout=5)
+        assert (result.returncode, result.stderr) == (code, error), result
+        assert result.stdout == (data if code == 0 else b"")
+    command = [binary, path, str(len(payload)), "500"]
+    with gated_file_process(command, root, build_file_gate(directory), gates=8) as (process, started, permit):
+        wait_for_held_read(started, b"D")
+        assert not select.select([process.stderr], [], [], 0.75)[0], "collection returned before its read joined"
+        os.write(permit, b"R")
+        stdout, stderr = process.communicate(timeout=5)
+        assert (process.returncode, stdout, stderr) == (1, b"", b"collect-file: deadline expired\n")
+    print("Kable file collection checks passed")
+
+
 def check_timed_file_read(command, directory):
     root = directory / "timed read"
     root.mkdir()
@@ -1222,6 +1247,8 @@ def check_mapped_collection(port, stderr, check_timeout):
         assert_response(read_response(client), 200, b"A!B!C!")
         read_log_until(stderr, b"Finished collecting body.")
 
+    assert_response(exchange(port, headers, b"6\r\nabcdef\r\n0\r\n\r\n"), 413, b"Content Too Large\n")
+
     # These decoded bytes fit, but their transformed representation exceeds the limit.
     with connect(port) as client:
         client.sendall(observed)
@@ -1374,6 +1401,8 @@ def main():
             check_timer_engines(Path(directory))
             check_dependent_handoff(Path(directory))
             async_read = build("examples/async-read", Path(directory) / "async-read")
+            collect_file = build("examples/collect-file", Path(directory) / "collect-file")
+            check_file_collection(collect_file, Path(directory))
             file_copy = build("examples/file-copy", Path(directory) / "file-copy")
             file_position = build("tests/file-position", Path(directory) / "file-position")
             http_file = build("examples/http-file", Path(directory) / "http-file")

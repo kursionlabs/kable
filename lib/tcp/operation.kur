@@ -1,4 +1,5 @@
 //! Stages and collects the socket operations behind TCP plans.
+use std::fmt::Writer;
 use async::Scope!;
 use package::Connection!;
 use package::native::{
@@ -87,7 +88,7 @@ fn finish_write(state: (Connection!, Buffer!), request: *u8, completion: Complet
 }
 
 unsafe fn read_result(raw: *u8) -> StreamOutcome[Buffer!] {
-    unsafe with_read_bytes(raw, |data, length| unsafe Buffer!::with_capacity(length).push_n(data, length))
+    unsafe with_read_bytes(raw, |data, length| unsafe Buffer!::with_capacity(length).write_raw(data, length))
 }
 
 /// Gives the callback the joined read's bytes for the duration of the call.

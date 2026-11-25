@@ -1,4 +1,5 @@
 //! Serves regular files beneath the process working directory.
+use std::fmt::Writer;
 use async::{FileErrorKind, OpenedFile!, file_error_kind, open_file_beneath_cwd};
 use http::{Method, Request!, Response!, ResponseHead, select_file_range};
 use package::{Action!, kable_client_request, kable_range_header, reply, response_stream};
@@ -98,14 +99,14 @@ fn file_path(target: Buffer!) -> Option[Buffer!] {
         }
         valid = valid && byte >= 32 && byte != 127 && byte != b'\\';
         if valid {
-            decoded = decoded.push_byte(byte);
+            decoded = decoded.write_byte(byte);
             last = byte;
         }
         i = i + 1;
     }
     restore.restore(access).destroy();
     if valid {
-        Option::Some.(if last == b'/' { decoded.push_static("index.html") } else { decoded })
+        Option::Some.(if last == b'/' { decoded.put("index.html") } else { decoded })
     } else {
         decoded.destroy();
         Option::None

@@ -1,3 +1,4 @@
+use std::fmt::Writer;
 use async::{Scope!, run, run_sequence, run_with_deadline};
 use task::continuation::ChainPlan!;
 use std::buffer::Buffer!;
@@ -87,9 +88,9 @@ fn invalid_plan(status: Completion[T]) -> bool {
 
 fn check_invalid_root(missing_root: bool) -> bool {
     let first = InvalidRootTimer!.{
-        timer: sleep(Duration::from_nanos(0)), bytes: Buffer!::new().push_static("first"), missing_root,
+        timer: sleep(Duration::from_nanos(0)), bytes: Buffer!::new().put("first"), missing_root,
     };
-    let bytes = Buffer!::new().push_static("second");
+    let bytes = Buffer!::new().put("second");
     let second = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
     var ((first, first_status), (second, second_status), race_status) = run(select(first, second));
     let lengths_ok = &first.len() == 5 && &second.len() == 6;
@@ -121,11 +122,11 @@ instance Plan[RejectedPair, Driver -> bool] {
 }
 
 fn check_cancelled_join() -> bool {
-    let first = Buffer!::new().push_static("first");
-    let second = Buffer!::new().push_static("second");
-    let suffix = Buffer!::new().push_static(" returned");
+    let first = Buffer!::new().put("first");
+    let second = Buffer!::new().put("second");
+    let suffix = Buffer!::new().put(" returned");
     let first = sleep(Duration::from_nanos(0)).map(|status| (first, status));
-    let second = sleep(Duration::from_secs(30)).map(|status| (second.push_buffer(suffix), status));
+    let second = sleep(Duration::from_secs(30)).map(|status| (second.put(suffix), status));
     var ((first, first_status), (second, second_status), status) =
         run_with_deadline(join(first, second), Duration::from_millis(10));
     let lengths_ok = &first.len() == 5 && &second.len() == 15;
@@ -194,7 +195,7 @@ fn run_deadline_test(plan: Task, timer_result: Resolution) -> DeadlineStatus {
 }
 
 fn deadline_with_timer_result(timer_result: Resolution) -> DeadlineStatus {
-    let bytes = Buffer!::new().push_static("owned");
+    let bytes = Buffer!::new().put("owned");
     let plan = sleep(Duration::from_secs(1)).map(|status| (bytes, status));
     run_deadline_test(plan.observe_deadline(Duration::from_nanos(0)), timer_result)
 }
@@ -249,8 +250,8 @@ fn discard_expired(state: Buffer!, output: Option[Buffer!]) {
 }
 
 fn check_reported_deadline() -> bool {
-    let stage = ExpiredStage!.{ output: Buffer!::new().push_static("output") };
-    let plan = stage.then_owned_with(Buffer!::new().push_static("state"),
+    let stage = ExpiredStage!.{ output: Buffer!::new().put("output") };
+    let plan = stage.then_owned_with(Buffer!::new().put("state"),
         |state, output| unexpected_resume(state, output), discard_expired);
     var engine = EarlyDeadline.{};
     match drive_sequence_until(plan, &engine, Option::Some.(Duration::from_secs(1))) {
@@ -294,7 +295,7 @@ instance Stream[TestStream! -> Map![Sleep!, Completion[()], (TestStream!, Stream
         let source = TestStream!.{ marker, delay };
         sleep(delay).map(|status| {
             let outcome = match status {
-                Completion::Ready => StreamOutcome::Item.(TestItem!.{ bytes: Buffer!::new().push_static("item") }),
+                Completion::Ready => StreamOutcome::Item.(TestItem!.{ bytes: Buffer!::new().put("item") }),
                 TimedOut => StreamOutcome::TimedOut,
                 Cancelled => StreamOutcome::Cancelled,
                 Failed(failure) => StreamOutcome::Failed.(failure),
@@ -315,7 +316,7 @@ instance Sink[TestStream! -> TestItem!,
 }
 
 fn test_stream(delay: Duration) -> TestStream! {
-    TestStream!.{ marker: Buffer!::new().push_static("source"), delay }
+    TestStream!.{ marker: Buffer!::new().put("source"), delay }
 }
 
 fn check_returned_stream(source: TestStream!) -> bool {
@@ -361,12 +362,12 @@ fn check_timed_stream() -> bool {
 fn check_timed_send() -> bool {
     let immediate = Duration::from_millis(0);
     let pending = Duration::from_secs(30);
-    let item = TestItem!.{ bytes: Buffer!::new().push_static("send") };
+    let item = TestItem!.{ bytes: Buffer!::new().put("send") };
     let (writer, outcome) = run(test_stream(immediate).send(item));
     let returned = check_returned_stream(writer);
     match outcome { Ready => if !returned { return false; }, _ => return false };
 
-    let item = TestItem!.{ bytes: Buffer!::new().push_static("send") };
+    let item = TestItem!.{ bytes: Buffer!::new().put("send") };
     let send = test_stream(pending).send_within(item, immediate);
     let ((writer, outcome), sibling, status) = run(join(send, sleep(immediate)));
     let returned = check_returned_stream(writer);

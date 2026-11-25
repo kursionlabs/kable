@@ -1,8 +1,9 @@
 //! Chooses a footer from the first file's contents and appends it.
+use std::fmt::Writer;
 use async::{Task!, read_file};
 use package::FILE_LIMIT;
 use std::buffer::Buffer!;
-use std::io::eprint_buffer;
+use std::io::eprint;
 use std::raw::Span;
 use std::slice::{Slice, StaticRead};
 use task::{Completion, PlanOutput};
@@ -12,7 +13,7 @@ fn load() -> Task![Buffer!] {
     read_file(&access, "example.txt", FILE_LIMIT).map(|outcome| {
         match outcome {
             Completion::Cancelled => {
-                eprint_buffer(f"Sequence cancelled before the second read.\n");
+                eprint(f"Sequence cancelled before the second read.\n");
                 Completion::Cancelled
             },
             Ready(bytes) => Completion::Ready.(bytes),
@@ -29,12 +30,12 @@ fn load() -> Task![Buffer!] {
 
 fn append_footer(first: Buffer!, footer: Completion[Buffer!]) -> Completion[Buffer!] {
     match footer {
-        Ready(bytes) => Completion::Ready.(first.push_buffer(bytes)),
+        Ready(bytes) => Completion::Ready.(first.put(bytes)),
         Cancelled => {
             var first = first;
             let length = &first.len();
             first.destroy();
-            eprint_buffer(f"Sequence cancelled with {length} bytes from the first read.\n");
+            eprint(f"Sequence cancelled with {length} bytes from the first read.\n");
             Completion::Cancelled
         },
         TimedOut => { first.destroy(); Completion::TimedOut },

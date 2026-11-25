@@ -1,6 +1,6 @@
 use http::{Request!, Response!};
 use server::{Action!, Server!, after, reply};
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::Result;
 use std::time::Duration;
 
@@ -20,19 +20,19 @@ fn main() -> i32 {
     var server = match Server!::bind(0, hello) {
         Ok(server) => server,
         Err(code) => {
-            eprint_buffer(f"hello-server: cannot listen (libuv error {code})\n");
+            eprint(f"hello-server: cannot listen (libuv error {code})\n");
             return 1;
         },
     };
     let port = &server.port();
-    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
         return 1;
     }
     match server.run() {
         Ok(unit) => 0,
         Err(code) => {
-            eprint_buffer(f"hello-server: server stopped (libuv error {code})\n");
+            eprint(f"hello-server: server stopped (libuv error {code})\n");
             1
         },
     }

@@ -1,3 +1,4 @@
+use std::fmt::Writer;
 use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::Option;
@@ -7,7 +8,7 @@ use thunk::{Discard, Resumable, Step, defer, delay_with, suspend_with};
 fn check_force() -> bool {
     let calls = unsafe alloca[usize]();
     unsafe *calls = 0;
-    let work = delay_with(Buffer!::new().push_static("owned"), |bytes| {
+    let work = delay_with(Buffer!::new().put("owned"), |bytes| {
         unsafe *calls = (unsafe *calls) + 1;
         bytes
     }, Buffer!::destroy);
@@ -27,7 +28,7 @@ fn discard_line(state: (Buffer!, *usize)) {
 fn check_discard() -> bool {
     let released = unsafe alloca[usize]();
     unsafe *released = 0;
-    let work = delay_with((Buffer!::new().push_static("delayed"), released), |state| -> () {
+    let work = delay_with((Buffer!::new().put("delayed"), released), |state| -> () {
         discard_line(state);
         trap();
     }, discard_line);
@@ -47,10 +48,10 @@ fn discard_handoff(state: (Buffer!, *usize), prior: Option[Buffer!]) {
 fn check_one_shot(resume: bool) -> bool {
     let released = unsafe alloca[usize]();
     unsafe *released = 0;
-    let input = Buffer!::new().push_static("input");
-    let work = defer((Buffer!::new().push_static("state"), released), |state, input| {
+    let input = Buffer!::new().put("input");
+    let work = defer((Buffer!::new().put("state"), released), |state, input| {
         let (bytes, released) = state;
-        bytes.push_buffer(input)
+        bytes.put(input)
     }, discard_handoff);
     if !resume {
         work.discard_with(Option::Some.(input));
@@ -65,7 +66,7 @@ fn check_one_shot(resume: bool) -> bool {
 fn read_byte(state: (Buffer!, *usize), byte: u8, delimiter: u8) -> Step[(Buffer!, *usize), Buffer!] {
     let (bytes, released) = state;
     if byte == delimiter { Step::Done.(bytes) }
-    else { Step::Suspended.((bytes.push_byte(byte), released)) }
+    else { Step::Suspended.((bytes.write_byte(byte), released)) }
 }
 
 fn check_resume(finish: bool) -> bool {

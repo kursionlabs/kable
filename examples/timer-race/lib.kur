@@ -1,6 +1,7 @@
+use std::fmt::Writer;
 use async::{run, run_with_deadline};
 use std::buffer::Buffer!;
-use std::io::print_buffer;
+use std::io::print;
 use std::process::trap;
 use std::time::Duration;
 use task::{Completion, DeadlineStatus, PlanOutput, Side, join, select, sleep};
@@ -8,18 +9,18 @@ use task::{Completion, DeadlineStatus, PlanOutput, Side, join, select, sleep};
 fn main() -> i32 {
     if !ready(run(sleep(Duration::from_nanos(0)))) { return 1; }
 
-    let owned = Buffer!::new().push_static("owned by the slower task");
+    let owned = Buffer!::new().put("owned by the slower task");
     let slower = sleep(Duration::from_millis(100)).map(|status| (owned, status));
     let (timer, slower, status) = run(select(sleep(Duration::from_millis(20)), slower));
     if !reclaim_cancelled(slower) || !ready(timer) || !won(status, Side::First) { return 1; }
-    print_buffer(f"First timer won. Reclaimed the slower task's buffer.\n");
+    print(f"First timer won. Reclaimed the slower task's buffer.\n");
 
-    let owned = Buffer!::new().push_static("owned by the first task");
+    let owned = Buffer!::new().put("owned by the first task");
     let first = sleep(Duration::from_secs(30)).map(|status| (owned, status));
     let waiting = select(first, sleep(Duration::from_secs(60)));
     let (first, second, status) = run_with_deadline(waiting, Duration::from_millis(10));
     if !reclaim_cancelled(first) || !cancelled(second) || !cancelled(status) { return 1; }
-    print_buffer(f"Parent deadline cancelled both timers.\n");
+    print(f"Parent deadline cancelled both timers.\n");
     if !check_timer_resolution() || !check_join() || !check_nested_deadline() || !check_select() || !check_map() ||
         !check_within() { return 1i32; }
     0i32
@@ -36,14 +37,14 @@ fn check_timer_resolution() -> bool {
 }
 
 fn check_within() -> bool {
-    let owned = Buffer!::new().push_static("owned");
+    let owned = Buffer!::new().put("owned");
     let limited = sleep(Duration::from_secs(30)).map(|status| (owned, status)).observe_deadline(Duration::from_millis(10));
     let plan = join(limited, sleep(Duration::from_millis(25)));
     let (limited, sibling, status) = run(plan);
     let local_expired = reclaim_limited_buffer(limited, true);
     if !local_expired || !ready(status) || !ready(sibling) { return false; }
 
-    let owned = Buffer!::new().push_static("owned");
+    let owned = Buffer!::new().put("owned");
     let limited = sleep(Duration::from_secs(30)).map(|status| (owned, status)).observe_deadline(Duration::from_secs(20));
     let result = run_with_deadline(limited, Duration::from_millis(10));
     if !reclaim_limited_buffer(result, false) { return false; }
@@ -52,7 +53,7 @@ fn check_within() -> bool {
     match deadline {
         Completed => {
             if !ready(outcome) { return false; }
-            print_buffer(f"Local deadline left its sibling running; parent cancellation stayed distinct.\n");
+            print(f"Local deadline left its sibling running; parent cancellation stayed distinct.\n");
             true
         },
         _ => false,
@@ -73,17 +74,17 @@ fn reclaim_limited_buffer(result: ((Buffer!, Completion[()]), DeadlineStatus), l
 
 fn label(bytes: Buffer!, suffix: Buffer!, status: Completion[()]) -> (Buffer!, bool) {
     match status {
-        Ready => (bytes.push_buffer(suffix), true),
-        Cancelled => (bytes.push_buffer(suffix), false),
+        Ready => (bytes.put(suffix), true),
+        Cancelled => (bytes.put(suffix), false),
         _ => { bytes.destroy(); suffix.destroy(); trap() },
     }
 }
 
 fn check_map() -> bool {
-    let winner_label = Buffer!::new().push_static("-win");
-    let loser_label = Buffer!::new().push_static("-lose");
-    let first = Buffer!::new().push_static("a");
-    let second = Buffer!::new().push_static("b");
+    let winner_label = Buffer!::new().put("-win");
+    let loser_label = Buffer!::new().put("-lose");
+    let first = Buffer!::new().put("a");
+    let second = Buffer!::new().put("b");
     let first = sleep(Duration::from_nanos(0)).map(|status| label(first, winner_label, status));
     let second = sleep(Duration::from_secs(30)).map(|status| label(second, loser_label, status));
     var ((first, ready), (second, loser_ready), status) = run(select(first, second));
@@ -92,13 +93,13 @@ fn check_map() -> bool {
     second.destroy();
     if !valid { return false; }
 
-    let suffix = Buffer!::new().push_static("cancelled");
+    let suffix = Buffer!::new().put("cancelled");
     let bytes = Buffer!::new();
     let task = sleep(Duration::from_secs(30)).map(|status| label(bytes, suffix, status));
     var (bytes, ready) = run_with_deadline(task, Duration::from_nanos(0));
     let valid = !ready && &bytes.len() == 9usize;
     bytes.destroy();
-    if valid { print_buffer(f"Mapped the winning and cancelled outcomes with owned closures.\n"); }
+    if valid { print(f"Mapped the winning and cancelled outcomes with owned closures.\n"); }
     valid
 }
 
@@ -108,7 +109,7 @@ fn check_select() -> bool {
     let (first, pending, join_status) = loser;
     let reclaimed = cancelled(join_status) && ready(first) && cancelled(pending);
     if !won(status, Side::Second) || !reclaimed || !ready(winner) { return false; }
-    print_buffer(f"Select cancelled the unfinished part of a losing join.\n");
+    print(f"Select cancelled the unfinished part of a losing join.\n");
     true
 }
 
@@ -119,14 +120,14 @@ fn check_join() -> bool {
     let (a, b, selection) = winner;
     let second_won = won(selection, Side::Second) && cancelled(a) && ready(b);
     if !ready(status) || !second_won || !ready(timer) { return false; }
-    print_buffer(f"Join waited for the race and the other timer.\n");
+    print(f"Join waited for the race and the other timer.\n");
     true
 }
 
 fn check_nested_deadline() -> bool {
     let race = select(sleep(Duration::from_secs(60)), sleep(Duration::from_secs(60)));
     let slow = join(sleep(Duration::from_secs(30)), race);
-    let owned = Buffer!::new().push_static("ready");
+    let owned = Buffer!::new().put("ready");
     let plan = join(sleep(Duration::from_nanos(0)).map(|status| (owned, status)), slow);
     let (first, nested, status) = run_with_deadline(plan, Duration::from_millis(10));
     let (timer, race, nested_status) = nested;
@@ -137,7 +138,7 @@ fn check_nested_deadline() -> bool {
     buffer.destroy();
     if !ready(first_status) || length != 5 || !cancelled(status) || !cancelled(nested_status)
         || !cancelled(timer) || !race_cancelled { return false; }
-    print_buffer(f"Parent deadline kept the ready result and cancelled the nested waits.\n");
+    print(f"Parent deadline kept the ready result and cancelled the nested waits.\n");
     true
 }
 

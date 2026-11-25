@@ -22,20 +22,20 @@ instance Discard[Body!] {
 }
 
 /// Collects the remaining decoded bytes under the original request deadline.
-    /// The parser accumulates them within one plan, which can use a local deadline.
-    /// Exceeding the byte limit reports HTTP 413.
+/// The parser accumulates them within one plan, which can use a local deadline.
+/// Exceeding the byte limit reports LimitExceeded.
 fn collect(body: Body!, limit: usize) -> Map![BodyRead!, (Body!, StreamOutcome[Buffer!]), Completion[Buffer!], ()] {
-        BodyRead!.{ body, limit, all: true, pull: null(), id: Option::None }.map(|result| {
-            let (body, outcome) = result;
-            body.discard();
-            match outcome {
-                StreamOutcome::Item(bytes) => Completion::Ready.(bytes),
-                Eof => Completion::Ready.(Buffer!::new()),
-                TimedOut => Completion::TimedOut,
-                Cancelled => Completion::Cancelled,
-                Failed(failure) => Completion::Failed.(failure),
-            }
-        })
+    BodyRead!.{ body, limit, all: true, pull: null(), id: Option::None }.map(|result| {
+        let (body, outcome) = result;
+        body.discard();
+        match outcome {
+            StreamOutcome::Item(bytes) => Completion::Ready.(bytes),
+            Eof => Completion::Ready.(Buffer!::new()),
+            TimedOut => Completion::TimedOut,
+            Cancelled => Completion::Cancelled,
+            Failed(failure) => Completion::Failed.(failure),
+        }
+    })
 }
 
 instance Stream[Body! -> BodyRead!] {
@@ -75,6 +75,7 @@ unsafe fn pull_outcome(pull: *u8) -> StreamOutcome[Buffer!] {
     let length = unsafe alloca[usize]();
     let capacity = unsafe alloca[usize]();
     let status = unsafe kable_body_take(pull, bytes, length, capacity);
+    if status == 413 { return StreamOutcome::Failed.(Failure::LimitExceeded); }
     if status != 0 { return StreamOutcome::Failed.(Failure::Operation.(status)); }
     let count = unsafe *length;
     if count == 0 { return StreamOutcome::Eof; }

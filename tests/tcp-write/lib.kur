@@ -1,6 +1,6 @@
 use async::host::prepare_hosted;
 use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::mem::alloca;
 use std::option::{Option, Result};
 use std::process::{Args, trap};
@@ -27,7 +27,7 @@ fn finish_write(result: ((Connection!, Buffer!, Completion[()]), DeadlineStatus)
         Cancelled => "cancelled",
         Failed => "failed",
     };
-    eprint_buffer(f"write {reason}: {status}\n");
+    eprint(f"write {reason}: {status}\n");
     connection.close()
 }
 
@@ -39,14 +39,14 @@ fn finish_send(result: (Connection!, Completion[()])) -> Action! {
         Cancelled => "cancelled",
         Failed => "failed",
     };
-    eprint_buffer(f"send {status}\n");
+    eprint(f"send {status}\n");
     connection.close()
 }
 
 fn discard_write(connection: Connection!) -> Connection! {
     let returned = unsafe alloca[Option[Connection!]]();
     unsafe *returned = Option::None;
-    let write = connection.write(Buffer!::new().push_static("discarded"));
+    let write = connection.write(f"discarded");
     let hosted = prepare_hosted(write, |result, host, state| {
         var (connection, bytes, status) = result;
         let length = &bytes.len();
@@ -100,7 +100,7 @@ fn main(args: Args) -> i32 {
         Err(code) => return 1,
     };
     let port = &listener.port();
-    if print_buffer(f"Listening on 127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on 127.0.0.1:{port}\n").is_err() {
         listener.stop();
         return 1;
     }

@@ -1,10 +1,12 @@
 //! Structured waits, joins, and bounded file operations on libuv.
 use package::{and_then, host};
+use package::stream_collect::CollectBytes;
 use package::file_request::{
     FileRequest!, collect_chunk_count, collect_descriptor, collect_read, kable_file_chunk, kable_file_new,
     kable_file_write_chunk,
 };
 use std::heap::HeapAllocator;
+use std::io::c_string;
 use std::buffer::Buffer!;
 use std::mem::sizeof;
 use std::option::{Option, Result};
@@ -16,6 +18,7 @@ use task::driver::{Pair, PairKind, Plan, PlanDriver, Resolution, Resource, Scope
 use task::sequence::{Chain, Clock, Sequence!, SequenceOutcome, StageDriver, StageResult, drive_sequence_until};
 
 export host;
+export CollectBytes;
 
 extern "C" fn kable_now_millis() -> u64;
 
@@ -83,7 +86,7 @@ const FILE_CHUNK: u64 = 64 * 1024;
 forall C, S, Item where ReadBytes[C, S], Copy[S].
 unsafe fn file_path_plan(&cx: C, path: S, limit: usize, mode: u8,
     result: unsafe fn(*u8) -> Completion[Item]) -> FilePathPlan![Item] {
-    var path = Buffer!::new().push_bytes(&cx, path).push_byte(0);
+    let path = c_string(&cx, path);
     FilePathPlan!.{ path, limit, mode, request: FileRequest!::empty(), result }
 }
 

@@ -1,5 +1,5 @@
 use async::{FileChunks!, OutputFile!, Runner!, create_file, open_file, with_runner};
-use std::io::eprint_buffer;
+use std::io::eprint;
 use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
@@ -15,7 +15,7 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
             Send(write) => write,
             End(file, outcome) => {
                 destination = file;
-                eprint_buffer(match outcome {
+                eprint(match outcome {
                     Ready => f"file-copy: source ended early\n",
                     TimedOut => f"file-copy: read timed out\n",
                     Cancelled => f"file-copy: read cancelled\n",
@@ -33,11 +33,11 @@ fn transfer(&runner: Runner!, &source: FileChunks!, &destination: OutputFile!, d
         match outcome {
             Ready => (),
             TimedOut | Cancelled => {
-                eprint_buffer(f"file-copy: write timed out after {count} bytes\n");
+                eprint(f"file-copy: write timed out after {count} bytes\n");
                 return false;
             },
             Failed(failure) => {
-                eprint_buffer(f"file-copy: write failed after {count} bytes ({failure})\n");
+                eprint(f"file-copy: write failed after {count} bytes ({failure})\n");
                 return false;
             },
         }
@@ -49,19 +49,19 @@ fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'st
     var access = StaticRead::new();
     var input = match &runner.run(open_file(&access, source)) {
         Ready(file) => file,
-        TimedOut | Cancelled => { eprint_buffer(f"file-copy: source open cancelled\n"); return 1; },
-        Failed(failure) => { eprint_buffer(f"file-copy: opening source failed ({failure})\n"); return 1; },
+        TimedOut | Cancelled => { eprint(f"file-copy: source open cancelled\n"); return 1; },
+        Failed(failure) => { eprint(f"file-copy: opening source failed ({failure})\n"); return 1; },
     };
     var destination = match &runner.run(create_file(&access, destination)) {
         Ready(file) => file,
         TimedOut | Cancelled => {
             input.close();
-            eprint_buffer(f"file-copy: destination creation cancelled\n");
+            eprint(f"file-copy: destination creation cancelled\n");
             return 1;
         },
         Failed(failure) => {
             input.close();
-            eprint_buffer(f"file-copy: creating destination failed ({failure})\n");
+            eprint(f"file-copy: creating destination failed ({failure})\n");
             return 1;
         },
     };
@@ -71,12 +71,12 @@ fn copy(&runner: Runner!, source: Slice[u8, 'static], destination: Slice[u8, 'st
     source.close();
     match destination.close() {
         Ok(unit) => if copied { 0 } else { 1 },
-        Err(code) => { eprint_buffer(f"file-copy: closing destination failed ({code})\n"); 1 },
+        Err(code) => { eprint(f"file-copy: closing destination failed ({code})\n"); 1 },
     }
 }
 
 fn usage() -> i32 {
-    eprint_buffer(f"usage: file-copy SOURCE DESTINATION [WRITE_DEADLINE_MS]\n");
+    eprint(f"usage: file-copy SOURCE DESTINATION [WRITE_DEADLINE_MS]\n");
     2
 }
 

@@ -1,6 +1,7 @@
+use std::fmt::Writer;
 use async::{read_file, run_with_deadline};
 use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::Option;
 use std::parse::parse_u64;
 use std::process::Args;
@@ -13,18 +14,18 @@ fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
         Ready(first) => first,
         Failed(failure) => {
             right.discard();
-            eprint_buffer(f"async-read: first file failed ({failure})\n");
+            eprint(f"async-read: first file failed ({failure})\n");
             return 1;
         },
         TimedOut | Cancelled => { right.discard(); return 1; },
     };
     match right {
         Ready(second) => {
-            if print_buffer(first.push_buffer(second)).is_err() { 1 } else { 0 }
+            if print(first.put(second)).is_err() { 1 } else { 0 }
         },
         Failed(failure) => {
             first.destroy();
-            eprint_buffer(f"async-read: second file failed ({failure})\n");
+            eprint(f"async-read: second file failed ({failure})\n");
             1
         },
         TimedOut | Cancelled => { first.destroy(); 1 },
@@ -32,7 +33,7 @@ fn print_pair(left: Completion[Buffer!], right: Completion[Buffer!]) -> i32 {
 }
 
 fn usage() -> i32 {
-    eprint_buffer(f"usage: async-read LEFT RIGHT [DEADLINE_MS]\n");
+    eprint(f"usage: async-read LEFT RIGHT [DEADLINE_MS]\n");
     2i32
 }
 
@@ -60,12 +61,12 @@ fn main(args: Args) -> i32 {
         Ready => print_pair(left, right),
         TimedOut | Cancelled => {
             (left, right).discard();
-            eprint_buffer(f"async-read: deadline expired\n");
+            eprint(f"async-read: deadline expired\n");
             1i32
         },
         Failed(failure) => {
             (left, right).discard();
-            eprint_buffer(f"async-read: scope failed ({failure})\n");
+            eprint(f"async-read: scope failed ({failure})\n");
             1i32
         },
     }

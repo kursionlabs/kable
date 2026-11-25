@@ -1,0 +1,46 @@
+//! Prints file chunks collected within a byte limit and an optional time budget.
+use async::{CollectBytes, open_file, run, run_with_deadline};
+use std::io::{eprint, print};
+use std::option::Option;
+use std::parse::{parse_usize, parse_u64};
+use std::process::Args;
+use std::slice::StaticRead;
+use std::time::Duration;
+
+fn usage() -> i32 {
+    eprint("usage: collect-file PATH BYTE_LIMIT [DEADLINE_MS]\n");
+    2
+}
+
+fn main(args: Args) -> i32 {
+    if args.len() < 3 || args.len() > 4 { return usage(); }
+    var access = StaticRead::new();
+    let limit = match parse_usize(&access, args.bytes(2).unwrap()) {
+        Some(limit) => limit, None => return usage(),
+    };
+    let deadline = match args.bytes(3) {
+        Some(arg) => match parse_u64(&access, arg) {
+            Some(ms) => Option::Some.(Duration::from_millis(ms)), None => return usage(),
+        },
+        None => Option::None,
+    };
+    var file = match run(open_file(&access, args.bytes(1).unwrap())) {
+        Ready(file) => file,
+        Failed(failure) => { eprint(f"collect-file: {failure}\n"); return 1; },
+        _ => return 1,
+    };
+    let size = &file.len();
+    let plan = file.chunks(0, size).collect(limit);
+    let outcome = match deadline {
+        Some(duration) => run_with_deadline(plan, duration),
+        None => run(plan),
+    };
+    match outcome {
+        Ready(bytes) => if print(bytes).is_ok() { 0 } else { 1 },
+        Cancelled | TimedOut => { eprint("collect-file: deadline expired\n"); 1 },
+        Failed(failure) => match failure {
+            LimitExceeded => { eprint(f"collect-file: exceeds {limit} bytes\n"); 1 },
+            _ => { eprint(f"collect-file: {failure}\n"); 1 },
+        },
+    }
+}

@@ -127,12 +127,21 @@ implements `task::Stream` and yields decoded byte chunks. Use
 request deadline. A reply can finish the request before the peer sends the
 rest of the body.
 
-The server's `collect(limit)` returns a libuv plan for a bounded buffer.
-It composes with `within`, `respond`, and other plan adapters on owned byte
-streams through EOF under the same request deadline. It counts the bytes
-yielded by the stream, so `body.map_items(transform).collect(limit)` counts
-transformed bytes. Exceeding the collection limit yields `Failure::Operation`
-with HTTP status 413. The HTTP parser also enforces its own input cap.
+Import `async::CollectBytes` to call `source.collect(limit)` on an owned
+byte stream. The plan produces a buffer at EOF, including an empty buffer
+for empty input. It reports `Failure::LimitExceeded` if the yielded bytes
+exceed the limit. After a transform, the limit applies to the transformed
+bytes. The HTTP handler translates that failure to 413. The HTTP parser
+also enforces its own input cap and request deadline.
+
+The [collect-file example](examples/collect-file/lib.kur) uses the same
+operation on file chunks. It accepts a path, byte limit, and optional
+collection deadline in milliseconds.
+
+```sh
+../kursal/bin/kursal build examples/collect-file -o bin/collect-file
+bin/collect-file examples/http-file/example.txt 65536
+```
 
 `&body.content_length()` exposes the original declared length as an option.
 The HTTP stream test fixture passes the body and that option straight to

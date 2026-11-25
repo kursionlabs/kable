@@ -1,5 +1,6 @@
+use std::fmt::Writer;
 use std::buffer::Buffer!;
-use std::io::{Error, Input!, eprint, eprint_buffer, print_buffer, stdin};
+use std::io::{Error, Input!, eprint, print, stdin};
 use std::option::{Option, Result};
 use std::process::Args;
 use std::slice::StaticRead;
@@ -17,7 +18,7 @@ fn read_line(body: Buffer!, line: Buffer!) -> Step[Buffer!, Buffer!] {
         line.destroy();
         Step::Done.(body)
     } else {
-        Step::Suspended.(body.push_buffer(line).push_byte(b'\n'))
+        Step::Suspended.(body.put(line).write_byte(b'\n'))
     }
 }
 
@@ -47,7 +48,7 @@ fn main(args: Args) -> i32 {
 
     var input = match stdin() {
         Ok(input) => input,
-        Err(error) => { eprint_buffer(f"thunk-message: {error}\n"); return 1; },
+        Err(error) => { eprint(f"thunk-message: {error}\n"); return 1; },
     };
     let first = suspend(Buffer!::new(), |body, line| read_line(body, line));
     let result = read_message(&input, first);
@@ -57,20 +58,20 @@ fn main(args: Args) -> i32 {
             Some(body) => body,
             None => { eprint("thunk-message: expected a line containing only '.'\n"); return 1; },
         },
-        Err(error) => { eprint_buffer(f"thunk-message: {error}\n"); return 1; },
+        Err(error) => { eprint(f"thunk-message: {error}\n"); return 1; },
     };
 
     let output = delay(body, |body| {
         var body = body;
         let length = &body.len();
-        f"Message ({length} bytes)\n".push_buffer(body)
+        f"Message ({length} bytes)\n".put(body)
     });
     if check {
         output.discard();
         return 0;
     }
-    match print_buffer(output.force()) {
+    match print(output.force()) {
         Ok(unit) => 0,
-        Err(error) => { eprint_buffer(f"thunk-message: {error}\n"); 1 },
+        Err(error) => { eprint(f"thunk-message: {error}\n"); 1 },
     }
 }

@@ -1,7 +1,6 @@
 use http::{Method, Request!, Response!};
 use server::{Action!, Server!, after, body, reply};
-use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::process::Args;
 use std::raw::Span;
@@ -30,9 +29,10 @@ fn handle(request: Request!) -> Action! {
                     Completion::Ready(bytes) => return reply(Response!::ok(bytes)),
                     TimedOut | Cancelled => 408,
                     Failed(failure) => match failure {
+                        LimitExceeded => 413,
                         Failure::Operation(code) => {
                             if code < 0 { return Action!::Close; }
-                            if code == 400 || code == 413 { code as u16 } else { 500 }
+                            if code == 400 { 400 } else { 500 }
                         },
                         _ => 500,
                     },
@@ -82,7 +82,7 @@ fn parse_port(bytes: Slice[u8, 'static]) -> Option[u16] {
 }
 
 fn usage() -> i32 {
-    eprint_buffer(Buffer!::new().push_static("usage: kable [PORT]\n"));
+    eprint("usage: kable [PORT]\n");
     2i32
 }
 
@@ -98,19 +98,19 @@ fn main(args: Args) -> i32 {
     var server = match Server!::bind(port, handle) {
         Ok(server) => server,
         Err(code) => {
-            eprint_buffer(f"kable: cannot listen (libuv error {code})\n");
+            eprint(f"kable: cannot listen (libuv error {code})\n");
             return 1i32;
         },
     };
     let port = &server.port();
-    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
         return 1i32;
     }
     match server.run() {
         Ok(unit) => 0i32,
         Err(code) => {
-            eprint_buffer(f"kable: server stopped (libuv error {code})\n");
+            eprint(f"kable: server stopped (libuv error {code})\n");
             1i32
         },
     }

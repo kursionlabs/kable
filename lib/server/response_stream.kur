@@ -1,4 +1,5 @@
 //! Sends a response from an owned byte stream.
+use std::fmt::Writer;
 use async::Scope!;
 use async::host::prepare_hosted;
 use http::{Response!, ResponseFraming, ResponseHead, encode_chunk};
@@ -64,7 +65,7 @@ fn frame(framing: ResponseFraming, outcome: StreamOutcome[Buffer!]) -> ResponseS
     var bytes = match outcome {
         StreamOutcome::Item(bytes) => bytes,
         Eof => return match framing {
-            Chunked => ResponseStep!::Send.(ResponseFraming::Fixed.(0), Buffer!::new().push_static("0\r\n\r\n")),
+            Chunked => ResponseStep!::Send.(ResponseFraming::Fixed.(0), Buffer!::new().put("0\r\n\r\n")),
             CloseDelimited => ResponseStep!::Finish.(true),
             Fixed => ResponseStep!::Finish.(false),
         },

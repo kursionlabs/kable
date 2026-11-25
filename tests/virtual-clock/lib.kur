@@ -1,3 +1,4 @@
+use std::fmt::Writer;
 use std::buffer::Buffer!;
 use std::mem::alloca;
 use std::option::Option;
@@ -11,7 +12,7 @@ use virtual_clock::{Virtual!, run, run_sequence, run_with_deadline};
 fn check_deadline_order() -> bool {
     let deadline = Duration::from_nanos(2);
     let earlier = sleep(Duration::from_nanos(1));
-    let bytes = Buffer!::new().push_static("owned");
+    let bytes = Buffer!::new().put("owned");
     let tied = sleep(deadline).map(|status| (bytes, status));
     var (earlier, (bytes, tied), scope) = run_with_deadline(join(earlier, tied), deadline);
     let valid_buffer = &bytes.len() == 5;

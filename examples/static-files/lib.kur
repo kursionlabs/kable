@@ -1,5 +1,5 @@
 use server::{Server!, static_files};
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::{Option, Result};
 use std::parse::parse_u64;
 use std::process::Args;
@@ -8,7 +8,7 @@ use std::slice::StaticRead;
 extern "C" fn uv_chdir(path: *u8) -> i32;
 
 fn usage() -> i32 {
-    eprint_buffer(f"usage: static-files ROOT [PORT]\n");
+    eprint(f"usage: static-files ROOT [PORT]\n");
     2
 }
 
@@ -30,26 +30,26 @@ fn main(args: Args) -> i32 {
     let root = args.get(1).unwrap();
     let status = unsafe uv_chdir(root.as_ptr());
     if status < 0 {
-        eprint_buffer(f"static-files: cannot enter the document root (libuv error {status})\n");
+        eprint(f"static-files: cannot enter the document root (libuv error {status})\n");
         return 1;
     }
 
     var server = match Server!::bind(port, static_files::serve_from_cwd) {
         Ok(server) => server,
         Err(code) => {
-            eprint_buffer(f"static-files: cannot listen (libuv error {code})\n");
+            eprint(f"static-files: cannot listen (libuv error {code})\n");
             return 1;
         },
     };
     let port = &server.port();
-    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
         return 1;
     }
     match server.run() {
         Ok(unit) => 0,
         Err(code) => {
-            eprint_buffer(f"static-files: server stopped (libuv error {code})\n");
+            eprint(f"static-files: server stopped (libuv error {code})\n");
             1
         },
     }

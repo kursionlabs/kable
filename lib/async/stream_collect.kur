@@ -1,5 +1,6 @@
 //! Bounded collection of an owned byte stream, one joined pull at a time.
-use async::{Scope!, Task!};
+use std::fmt::Writer;
+use package::{Scope!, Task!};
 use std::buffer::Buffer!;
 use std::option::Option;
 use task::{Completion, Discard, Failure, PlanOutput, Stream, StreamOutcome};
@@ -8,12 +9,18 @@ use task::driver::Plan;
 
 struct Collection! { bytes: Option[Buffer!], remaining: usize }
 
+/// A stream of owned buffers that can be collected on the libuv driver.
+forall Source -> Read.
+trait CollectBytes {
+    fn collect(source: Source, limit: usize) -> Task![Buffer!];
+}
+
 forall Source, Read where Stream[Source -> Read], PlanOutput[Read -> (Source, StreamOutcome[Buffer!])],
     Discard[Source], Plan[Read, Scope! -> (Source, StreamOutcome[Buffer!])].
-impl Source {
-    /// Collects the yielded bytes. The request's original deadline still applies to body pulls.
-    fn collect(self, limit: usize) -> Task![Buffer!] {
-        repeat(self.next(), Collection!.{ bytes: Option::None, remaining: limit },
+instance CollectBytes[Source -> Read] {
+    /// Collects the yielded bytes. Returns LimitExceeded if the total exceeds limit.
+    fn collect(source: Source, limit: usize) -> Task![Buffer!] {
+        repeat(source.next(), Collection!.{ bytes: Option::None, remaining: limit },
             collect_next[Source, Read], cancel[Source], resolve_completion[Buffer!])
     }
 }
@@ -35,12 +42,12 @@ fn collect_next(state: Collection!, result: (Source, StreamOutcome[Buffer!]))
             var item = item;
             let length = &item.len();
             if length <= remaining {
-                let bytes = match bytes { Some(bytes) => bytes.push_buffer(item), None => item };
+                let bytes = match bytes { Some(bytes) => bytes.put(item), None => item };
                 return HandoffStep::Start.((source.next(), Collection!.{
                     bytes: Option::Some.(bytes), remaining: remaining - length }));
             }
             item.destroy();
-            Completion::Failed.(Failure::Operation.(413))
+            Completion::Failed.(Failure::LimitExceeded)
         },
         Eof => {
             source.discard();

@@ -1,6 +1,7 @@
+use std::fmt::Writer;
 use async::run_sequence;
 use std::buffer::Buffer!;
-use std::io::print_buffer;
+use std::io::print;
 use std::option::Option;
 use std::process::trap;
 use std::time::Duration;
@@ -10,7 +11,7 @@ use task::sequence::SequenceOutcome;
 fn append(state: Buffer!, prior: (Buffer!, Completion[()])) -> Buffer! {
     let (bytes, status) = prior;
     match status {
-        Ready => bytes.push_buffer(state),
+        Ready => bytes.put(state),
         _ => { bytes.destroy(); state.destroy(); trap(); },
     }
 }
@@ -20,7 +21,7 @@ fn stop(state: Buffer!, prior: (Buffer!, Completion[()])) {
     bytes.destroy();
     state.destroy();
     match status { Ready => (), _ => trap() };
-    print_buffer(f"Stopped after the first result and reclaimed both buffers.\n");
+    print(f"Stopped after the first result and reclaimed both buffers.\n");
 }
 
 fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
@@ -30,10 +31,10 @@ fn discard(state: Buffer!, prior: Option[(Buffer!, Completion[()])]) {
             let (bytes, status) = outcome;
             bytes.destroy();
             match status { Cancelled => (), _ => trap() };
-            print_buffer(f"Deadline reclaimed the first result and the pending state.\n");
+            print(f"Deadline reclaimed the first result and the pending state.\n");
         },
         None => {
-            print_buffer(f"Reclaimed the last adapter's state without starting it.\n");
+            print(f"Reclaimed the last adapter's state without starting it.\n");
         },
     }
 }
@@ -64,10 +65,10 @@ fn check_early_end(budget: Option[Duration]) {
 }
 
 fn check_chain(budget: Option[Duration], should_finish: bool) {
-    let bytes = Buffer!::new().push_static("first");
+    let bytes = Buffer!::new().put("first");
     let first = sleep(Duration::from_millis(65)).map(|status| (bytes, status));
     let plan = first
-        .then_owned(Buffer!::new().push_static("second"), |state, prior| {
+        .then_owned(Buffer!::new().put("second"), |state, prior| {
             let bytes = append(state, prior);
             Option::Some.(sleep(Duration::from_millis(150)).map(|status| (bytes, status)))
         });
@@ -104,7 +105,7 @@ fn main() -> i32 {
 
     check_chain(Option::None, true);
     check_chain(Option::Some.(Duration::from_millis(180)), false);
-    print_buffer(f"The second stage used the original deadline.\n");
+    print(f"The second stage used the original deadline.\n");
 
     check_early_end(Option::None);
     check_early_end(Option::Some.(Duration::from_millis(10)));

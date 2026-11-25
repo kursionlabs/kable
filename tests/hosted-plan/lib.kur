@@ -1,3 +1,4 @@
+use std::fmt::Writer;
 use async::{FileErrorKind, Scope!, file_error_kind, open_file, run, run_sequence, run_with_deadline, with_runner};
 use async::host::{HostedPlan!, prepare_handoff, prepare_hosted};
 use std::buffer::Buffer!;
@@ -63,8 +64,8 @@ fn startup_failed(status: Completion[()]) -> bool {
 }
 
 fn check_startup_failure() -> bool {
-    let first = Buffer!::new().push_static("first");
-    let second = Buffer!::new().push_static("second");
+    let first = Buffer!::new().put("first");
+    let second = Buffer!::new().put("second");
     let first = sleep(Duration::from_secs(30)).map(|status| (first, status));
     let second = sleep(Duration::from_secs(30)).map(|status| (second, status));
     let plan = join(first, join(second, FailStart.{ stage_nanos: 0 }));
@@ -136,7 +137,7 @@ fn check_one_shot_deadline(budget: Duration, init_time: Duration, should_finish:
 
 fn check_sequence_loop(error: i32) -> bool {
     let immediate = Duration::from_nanos(0);
-    let bytes = Buffer!::new().push_static("owned");
+    let bytes = Buffer!::new().put("owned");
     let plan = sleep(immediate).map(|status| (bytes, status))
         .then_owned_with((), |unit, prior| Option::Some.(sleep(immediate).map(|status| (prior, status))), discard_sequence);
     unsafe kable_test_loop_begin(error);
@@ -159,7 +160,7 @@ fn check_runner_reuse() -> bool {
     unsafe kable_test_loop_begin(0);
     unsafe kable_test_advance_clock_on_init(0);
     var (bytes, first, second, timer, joined) = with_runner(|&runner| {
-        let bytes = Buffer!::new().push_static("owned");
+        let bytes = Buffer!::new().put("owned");
         let slow = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
         let (bytes, first) = &runner.run_with_deadline(slow, immediate);
         let quick = sleep(immediate).map(|status| (bytes, status));
@@ -199,9 +200,9 @@ fn check_runner_sequence() -> bool {
     unsafe kable_test_advance_clock_on_init(0);
     let valid = with_runner(|&runner| {
         let before = &runner.run(sleep(immediate));
-        let bytes = Buffer!::new().push_static("output");
+        let bytes = Buffer!::new().put("output");
         let first = sleep(Duration::from_secs(30)).map(|status| (bytes, status));
-        let chain = first.then_owned_with((Buffer!::new().push_static("state"), cleaned), |state, prior| {
+        let chain = first.then_owned_with((Buffer!::new().put("state"), cleaned), |state, prior| {
             let (state, cleaned) = state;
             state.destroy();
             let (bytes, status) = prior;
@@ -231,7 +232,7 @@ fn discard_setup_sequence(cleaned: *u8, prior: Option[((Buffer!, Completion[()])
 fn check_sequence_expires_during_setup(allocation_time: Duration, init_time: Duration) -> bool {
     let cleaned = unsafe alloca[u8]();
     unsafe *cleaned = 0;
-    let bytes = Buffer!::new().push_static("owned");
+    let bytes = Buffer!::new().put("owned");
     let owned = sleep(Duration::from_nanos(0)).map(|status| (bytes, status));
     let first = join(owned, FailStart.{ stage_nanos: 0 });
     let plan = first.then_owned_with(cleaned, |cleaned, prior| -> Option[Sleep!] {
@@ -255,7 +256,7 @@ fn require_scope_closes(expected: u32) {
 
 fn pending() -> HostedPlan! {
     let closed_before = unsafe kable_test_scope_closes();
-    let bytes = Buffer!::new().push_static("owned");
+    let bytes = Buffer!::new().put("owned");
     let first = sleep(Duration::from_nanos(0)).map(|status| {
         require_scope_closes(closed_before);
         (bytes, status)
@@ -292,13 +293,13 @@ fn check_handoff_rejection() -> bool {
     let calls = unsafe alloca[usize]();
     unsafe *calls = 0;
     let closed_before = unsafe kable_test_scope_closes();
-    let bytes = Buffer!::new().push_static("outcome");
+    let bytes = Buffer!::new().put("outcome");
     let task = sleep(Duration::from_nanos(0)).map(|status| {
         require_scope_closes(closed_before);
         (bytes, status)
     });
     unsafe kable_test_track_scope();
-    let hosted = prepare_handoff(task, Buffer!::new().push_static("state"),
+    let hosted = prepare_handoff(task, Buffer!::new().put("state"),
         |state, outcome, host, flags| {
             (state, outcome).discard();
             trap()
@@ -323,7 +324,7 @@ fn check_synchronous_submission() -> bool {
     let count = unsafe alloca[usize]();
     unsafe *count = 0;
     let closed_before = unsafe kable_test_scope_closes();
-    let bytes = Buffer!::new().push_static("owned");
+    let bytes = Buffer!::new().put("owned");
     let first = FailStart.{ stage_nanos: 0 };
     let plan = join(first, sleep(Duration::from_secs(30))).map(|outcome| {
         require_scope_closes(closed_before);

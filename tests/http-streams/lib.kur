@@ -1,9 +1,10 @@
-use async::Scope!;
+use std::fmt::Writer;
+use async::{CollectBytes, Scope!};
 use http::{Body!, Request!, Response!};
 use server::{Action!, Server!, after, reply, response_stream};
 use std::ascii::to_upper;
 use std::buffer::Buffer!;
-use std::io::{eprint_buffer, print_buffer};
+use std::io::{eprint, print};
 use std::option::Option;
 use std::process::trap;
 use std::raw::Span;
@@ -16,7 +17,7 @@ struct Memory! { remaining: u8, may_pull: bool, report_discard: bool }
 instance Discard[Memory!] {
     fn discard(memory: Memory!) {
         let { remaining, may_pull, report_discard } = memory;
-        if report_discard { eprint_buffer(f"Discarded response source.\n"); }
+        if report_discard { eprint(f"Discarded response source.\n"); }
     }
 }
 
@@ -30,7 +31,7 @@ instance Stream[Memory! -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[
                 _ => return (Memory!.{ remaining, may_pull, report_discard }, StreamOutcome::Cancelled),
             };
             if remaining == 0 { return (Memory!.{ remaining, may_pull, report_discard }, StreamOutcome::Eof); }
-            let bytes = Buffer!::new().push_static(match remaining {
+            let bytes = Buffer!::new().put(match remaining {
                 3 => "abc",
                 2 => "",
                 _ => "def",
@@ -42,7 +43,7 @@ instance Stream[Memory! -> Map![Sleep!, Completion[()], (Memory!, StreamOutcome[
 
 fn discard_pull(bytes: Buffer!, result: (Body!, StreamOutcome[Buffer!])) {
     (bytes, result).discard();
-    eprint_buffer(f"Discarded pending body pull.\n");
+    eprint(f"Discarded pending body pull.\n");
 }
 
 fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
@@ -50,12 +51,12 @@ fn pull(body: Body!, bytes: Buffer!, chunks: usize) -> Action! {
         let (body, outcome) = result;
         match outcome {
             StreamOutcome::Item(item) => {
-                eprint_buffer(f"Received body chunk.\n");
-                pull(body, bytes.push_buffer(item), chunks + 1)
+                eprint(f"Received body chunk.\n");
+                pull(body, bytes.put(item), chunks + 1)
             },
             Eof => {
                 body.discard();
-                reply(Response!::ok(f"{chunks}:".push_buffer(bytes)))
+                reply(Response!::ok(f"{chunks}:".put(bytes)))
             },
             _ => { (body, bytes).discard(); reply(Response!::rejected(400)) },
         }
@@ -68,7 +69,7 @@ fn uppercase(bytes: Buffer!) -> Buffer! {
     var mapped = Buffer!::with_capacity(span.len());
     var index = 0;
     while index < span.len() {
-        mapped = mapped.push_byte(to_upper(span.at(&access, index)));
+        mapped = mapped.write_byte(to_upper(span.at(&access, index)));
         index = index + 1;
     }
     restore.restore(access).destroy();
@@ -80,7 +81,8 @@ fn collection_response(outcome: Completion[Buffer!]) -> Action! {
         Ready(bytes) => return reply(Response!::ok(bytes)),
         TimedOut | Cancelled => 408,
         Failed(failure) => match failure {
-            Operation(code) => if code == 400 || code == 413 { code as u16 } else { 500 },
+            LimitExceeded => 413,
+            Operation(code) => if code == 400 { 400 } else { 500 },
             _ => 500,
         },
     };
@@ -116,10 +118,10 @@ fn pull_plan(body: Body!) -> Action! {
 
 fn collect(body: Body!, observed: bool) -> Action! {
     body.map_items(|bytes| {
-        if observed { eprint_buffer(f"Transformed body chunk.\n"); }
-        uppercase(bytes).push_static("!")
+        if observed { eprint(f"Transformed body chunk.\n"); }
+        uppercase(bytes).put("!")
     }).collect(6).respond(|outcome| {
-        if observed { eprint_buffer(f"Finished collecting body.\n"); }
+        if observed { eprint(f"Finished collecting body.\n"); }
         collection_response(outcome)
     })
 }
@@ -143,7 +145,8 @@ fn serve(request: Request!) -> Action! {
             .within(Duration::from_millis(100)).respond(|outcome| match outcome {
                 Completion::TimedOut => Response!::rejected(504),
                 Ready(bytes) => Response!::ok(bytes),
-                Cancelled | Failed => Response!::rejected(500),
+                Cancelled => Response!::rejected(408),
+                Failed(failure) => match failure { LimitExceeded => Response!::rejected(413), _ => Response!::rejected(500) },
             });
     }
     let observed = &request.path_is("/collect-observed");
@@ -189,7 +192,7 @@ fn serve(request: Request!) -> Action! {
     }
     let response = response_stream::stream(200, "application/octet-stream", length, memory);
     if cancelled {
-        eprint_buffer(f"Scheduled delayed response.\n");
+        eprint(f"Scheduled delayed response.\n");
         return after(response, Duration::from_secs(30));
     }
     if delayed { return after(response, Duration::from_millis(20)); }
@@ -199,7 +202,7 @@ fn serve(request: Request!) -> Action! {
 fn main() -> i32 {
     var server = Server!::bind(0, serve).unwrap();
     let port = &server.port();
-    if print_buffer(f"Listening on http://127.0.0.1:{port}\n").is_err() {
+    if print(f"Listening on http://127.0.0.1:{port}\n").is_err() {
         server.stop();
         return 1;
     }

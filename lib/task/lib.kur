@@ -1,5 +1,5 @@
 //! Owned task plans and outcomes. Drivers supply primitive operations.
-use std::fmt::{Format, Writer, write_i64};
+use std::fmt::{Format, Writer};
 use std::option::Option;
 use std::time::Duration;
 use package::{continuation, deadline, driver, sequence};
@@ -22,6 +22,7 @@ exposed enum Failure {
     NotStarted,
     InvalidPlan,
     InvalidResult,
+    LimitExceeded,
     Startup(i32),
     Operation(i32),
 }
@@ -33,8 +34,9 @@ instance Format[Failure, W] {
             NotStarted => Writer[W]::write_static(out, "scope never started"),
             InvalidPlan => Writer[W]::write_static(out, "invalid scope plan"),
             InvalidResult => Writer[W]::write_static(out, "invalid scope result"),
-            Startup(code) => write_i64(Writer[W]::write_static(out, "startup error "), code as i64),
-            Operation(code) => write_i64(Writer[W]::write_static(out, "operation error "), code as i64),
+            LimitExceeded => Writer[W]::write_static(out, "byte limit exceeded"),
+            Startup(code) => out.put("startup error ").put(code),
+            Operation(code) => out.put("operation error ").put(code),
         };
         (value, out)
     }
@@ -176,7 +178,7 @@ forall Writer, Item, Write where Sink[Writer -> Item, Write],
 impl Writer {
     /// Plans a write that discards the item after join on every outcome.
     fn send(self, item: Item) -> Map![Write, (Writer, Item, Completion[()]), (Writer, Completion[()]), ()] {
-        self.write(item).map(|result| {
+        Sink[Writer -> Item, Write]::write(self, item).map(|result| {
             let (writer, item, completion) = result;
             item.discard();
             (writer, completion)
@@ -186,7 +188,7 @@ impl Writer {
     /// Sends under a local deadline, returning the writer and one completion after join.
     fn send_within(self, item: Item, duration: Duration) -> Map![PairPlan![Sleep!, Write, Side],
         (Completion[()], (Writer, Item, Completion[()]), Completion[Side]), (Writer, Completion[()]), ()] {
-        deadline::race(self.write(item), duration).map(|result| {
+        deadline::race(Sink[Writer -> Item, Write]::write(self, item), duration).map(|result| {
             let ((writer, item, completion), status) = deadline::resolve(result);
             item.discard();
             (writer, deadline::finish(completion, status))
