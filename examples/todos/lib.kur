@@ -2,45 +2,40 @@
 use http::{Request!, Response!};
 use std::buffer::Buffer!;
 use std::collections::vec::OwnedVec!;
-use std::fmt::Writer;
+use json::{Array!, Json!, Object!, Text!, decode};
 use std::io::{eprint, print};
-use std::mem::alloca;
 use std::option::{Option, Result};
-use std::ptr::is_null;
 use task::Discard;
 use web::{App!, AppAction!, JsonBody};
 
-struct Todos! { titles: OwnedVec![Buffer!] }
+struct Todos! { titles: OwnedVec![Text!] }
 
 instance Discard[Todos!] {
     fn discard(todos: Todos!) {
         let { titles } = todos;
-        titles.destroy_with(Buffer!::destroy);
+        titles.destroy_with(Text!::destroy);
     }
 }
 
-extern "C" fn todo_title(bytes: *u8, length: usize, size: *usize) -> *u8;
-extern "C" fn todo_title_free(title: *u8) -> ();
-
-fn decode_title(input: Buffer!) -> Option[Buffer!] {
-    var input = input;
-    let size = unsafe alloca[usize]();
-    let length = &input.len();
-    let raw = unsafe todo_title(unsafe &input.as_ptr(), length, size);
-    input.destroy();
-    if is_null(raw) { return Option::None; }
-    let title = unsafe Buffer!::with_capacity(unsafe *size).write_raw(raw, unsafe *size);
-    unsafe todo_title_free(raw);
-    Option::Some.(title)
+instance Discard[Text!] {
+    fn discard(text: Text!) { text.destroy(); }
 }
 
-fn insert(&todos: Todos!, title: Buffer!) -> usize {
+fn decode_title(input: Buffer!) -> Option[Text!] {
+    var title = decode(input).ok()
+        .and_then(|doc| doc.take_field("title"))
+        .and_then(|field| field.into_string())?;
+    if &title.len() > 0 { Option::Some.(title) } else { title.destroy(); Option::None }
+}
+
+fn insert(&todos: Todos!, title: Text!) -> usize {
     &todos.titles.push(title);
     &todos.titles.len()
 }
 
 fn created(id: usize) -> Response! {
-    Response!::buffered(201, "application/json", Buffer!::new().put("{\"id\":").put(id).put("}"))
+    let body = Object!::new().field("id", Json!::uint(id)).value().encode();
+    Response!::buffered(201, "application/json", body)
 }
 
 fn create(request: Request!) -> AppAction![Todos!] {
@@ -51,24 +46,19 @@ fn create(request: Request!) -> AppAction![Todos!] {
 
 fn list(&todos: Todos!, request: Request!) -> Response! {
     request.destroy();
-    var wire = Buffer!::new().put("[");
+    var items = Array!::new();
     var index = 0usize;
     while index < &todos.titles.len() {
-        if index > 0 { wire = wire.put(","); }
-        wire = wire.put("{\"id\":").put(index + 1).put(",\"title\":");
-        let quoted = &todos.titles.with(index, |title| {
-            var title = title;
-            let copy = &title.clone();
-            (title, copy)
-        }).unwrap();
-        wire = wire.put(quoted).put("}");
+        let title = &todos.titles.update(index, |&text| &text.clone()).unwrap();
+        let todo = Object!::new().field("id", Json!::uint(index + 1)).field("title", title.value());
+        &items.push(todo.value());
         index = index + 1;
     }
-    Response!::bytes(wire.put("]"), "application/json")
+    Response!::bytes(items.value().encode(), "application/json")
 }
 
 fn main() -> i32 {
-    let app = App!::new(Todos!.{ titles: OwnedVec!::new[Buffer!]() })
+    let app = App!::new(Todos!.{ titles: OwnedVec!::new[Text!]() })
         .get("/todos", list)
         .post("/todos", create);
     var server = match app.bind(0) {

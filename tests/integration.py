@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import errno
+import json
 import os
 from pathlib import Path
 import select
@@ -181,6 +182,35 @@ def check_hello_server(binary):
     print("Kable hello server checks passed")
 
 
+def check_json_codec(binary):
+    def run(payload):
+        return subprocess.run([binary], input=payload, capture_output=True, timeout=5)
+
+    for payload in (
+        b' [ null, true, false, {}, [], {"nested":[1,2,3]} ] ',
+        br'{"\u0078":"\b\f\n\r\t\/\\\"\u0000\ud83d\ude00"}',
+        '"café سماء"'.encode(),
+        b"[" * 128 + b"0" + b"]" * 128,
+    ):
+        result = run(payload)
+        assert result.returncode == 0, (payload, result.stderr)
+        assert json.loads(result.stdout) == json.loads(payload)
+    number = b"-12345678901234567890123.004500E+1234567"
+    assert run(number).stdout == number
+
+    for payload in (
+        b"", b"true false", b"+1", b"01", b".5", b"1.", b"1e-", b"NaN",
+        b"[1,]", b'{"key":}', b'{"a":0,}', br'{"a":1,"\u0061":2}',
+        b'\x0bnull', b'"\x00"', b'"\xc0\x80"', b'"\xf4\x90\x80\x80"',
+        br'"\x20"', br'"\u123"', br'"\ud800"', br'"\udc00"', br'"\ud800\u0020"',
+        b"[" * 129 + b"0" + b"]" * 129,
+    ):
+        result = run(payload)
+        assert result.returncode == 1 and result.stderr, (payload, result)
+    assert run(b"[0,?]").stderr.startswith(b"3:")
+    print("Kable JSON codec checks passed")
+
+
 def check_todo_pipeline(binary):
     get = b"GET /todos HTTP/1.1\r\nHost: localhost\r\n\r\n"
     post = b"POST /todos HTTP/1.1\r\nHost: localhost\r\n"
@@ -202,7 +232,7 @@ def check_todo_pipeline(binary):
             with connect(port) as reset:
                 reset.sendall(headers(slow) + slow[:8])
                 reset.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
-            for payload in (b"{", b'{"title":7}'):
+            for payload in (b"{", b"{}", b'{"title":7}', b'{"title":""}', b'{"title":"a","title":"b"}'):
                 assert_response(exchange(port, headers(payload), payload), 400, b"Bad Request\n")
             assert_response(exchange(port, post + b"Content-Length: 100\r\n\r\n"), 415, b"Unsupported Media Type\n")
             large = b"x" * 4097
@@ -213,6 +243,11 @@ def check_todo_pipeline(binary):
             allow = assert_response(exchange(port, get.replace(b"GET ", b"PUT ")), 405, b"Method Not Allowed\n")
             assert allow[b"allow"] == b"GET, HEAD, POST"
             assert_response(exchange(port, get.replace(b"/todos", b"/unknown")), 404, b"Not Found\n")
+            escaped = br'{"\u0074itle":"say \"hi\"\n\ud83d\ude00","extra":[true,null]}'
+            assert_response(exchange(port, headers(escaped), escaped), 201, b'{"id":3}')
+            version, status, response_headers, expected = exchange(port, get)
+            assert status == 200 and response_headers[b"content-type"] == b"application/json"
+            assert json.loads(expected)[-1] == {"id": 3, "title": 'say "hi"\n😀'}
             with connect(port) as pending:
                 pending.sendall(headers(slow) + slow[:8])
                 assert_response(exchange(port, get), 200, expected)
@@ -1464,6 +1499,7 @@ def main():
             check_tcp_api_boundary(Path(directory))
             tcp_write = build("tests/tcp-write", Path(directory) / "tcp-write")
             tcp_session = build("examples/tcp-session", Path(directory) / "tcp-session")
+            check_json_codec(build("tests/json", Path(directory) / "json-codec"))
             check_todo_pipeline(build("examples/todos", Path(directory) / "todos"))
             check_hello_server(hello)
             check_buffered_write(hello, Path(directory))

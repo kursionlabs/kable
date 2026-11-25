@@ -1,0 +1,13 @@
+use json::decode;
+use std::io::{eprint, print, read_all_stdin};
+
+fn main() -> i32 {
+    let bytes = match read_all_stdin() {
+        Ok(bytes) => bytes,
+        Err(error) => { eprint(f"{error}\n"); return 2; },
+    };
+    match decode(bytes) {
+        Ok(value) => if print(value.encode()).is_ok() { 0 } else { 2 },
+        Err(error) => { eprint(f"{error.at}: {error.expected}\n"); 1 },
+    }
+}

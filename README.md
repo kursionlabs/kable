@@ -65,9 +65,13 @@ synchronous call, then `reply_with` renders its output. Independent requests can
 finish in any order. A reset before handoff skips the update. A reset after an
 update can lose the response to that update.
 
-The example's JSON decoder uses the Jansson development library. The core
-`web` library takes its decoder as a function. Build and start the example,
-then use the printed loopback address:
+The Todo app uses Kable's synchronous Kursal JSON codec in [lib/json](lib/json/lib.kur).
+`decode` consumes a buffer and returns an owned value or an error with a byte offset.
+The handler takes the `title` field as decoded UTF-8 text. When a response is built,
+`encode` escapes strings and writes compact JSON. The decoder accepts up to 128
+nested arrays and objects and rejects duplicate keys, including escaped equivalents.
+
+Build and start the example, then use the printed loopback address.
 
 ```sh
 ../kursal/bin/kursal build examples/todos -o bin/todos

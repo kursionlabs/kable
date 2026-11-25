@@ -1,0 +1,7 @@
+[package]
+name="json"
+source_root="."
+kind="library"
+
+[dependencies.std]
+path="../../../kursal/lib/std"

@@ -1,8 +1,6 @@
 [package]
 name="todos"
 source_root="."
-c_sources=["title.c"]
-link_flags=["-ljansson"]
 kind="executable"
 entry="main"
 
@@ -17,3 +15,6 @@ path="../../lib/web"
 
 [dependencies.task]
 path="../../lib/task"
+
+[dependencies.json]
+path="../../lib/json"

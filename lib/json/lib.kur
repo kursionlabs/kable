@@ -1,0 +1,452 @@
+//! Owned JSON values. Strings hold decoded UTF-8 and numbers retain their exact spelling.
+use std::buffer::Buffer!;
+use std::cap::Exclusive!;
+use std::collections::vec::OwnedVec!;
+use std::cursor::Cursor;
+use std::fmt::Writer;
+use std::hash::Eq;
+use std::option::{Option, Result};
+use std::slice::{Slice, Str, byte_or_zero};
+use std::ascii::is_digit;
+use std::utf8;
+
+// The parser and constructors maintain the UTF-8 and number grammar invariants.
+exposed enum Json! { Null, True, False, Number(Number!), String(Text!), Array(Array!), Object(Object!) }
+struct Number! { spelling: Buffer! }
+struct Text! { bytes: Buffer! }
+struct Array! { items: OwnedVec![Json!] }
+exposed struct Member! { key: Text!, value: Json! }
+struct Object! { members: OwnedVec![Member!] }
+
+impl Number! {
+    /// Exact decimal spelling, including any fraction and exponent.
+    fn into_bytes(self) -> Buffer! { self.spelling }
+}
+
+impl Text! {
+    fn from_bytes(bytes: Buffer!) -> Option[Text!] {
+        var exists 'k. (tag, view, restore) = bytes.open();
+        let valid = utf8::validate(&tag, view);
+        let bytes = restore.restore(tag);
+        if valid { Option::Some.(Text!.{ bytes }) } else { bytes.destroy(); Option::None }
+    }
+
+    fn into_bytes(self) -> Buffer! { self.bytes }
+    fn destroy(self) { self.bytes.destroy(); }
+    fn len(&self) -> usize { &self.bytes.len() }
+    fn clone(&self) -> Text! { Text!.{ bytes: &self.bytes.clone() } }
+    fn value(self) -> Json! { Json!::String.(self) }
+}
+
+impl Array! {
+    fn new() -> Array! { Array!.{ items: OwnedVec!::new[Json!]() } }
+    fn into_items(self) -> OwnedVec![Json!] { self.items }
+    fn push(&self, value: Json!) { &self.items.push(value); }
+    fn value(self) -> Json! { Json!::Array.(self) }
+}
+
+impl Object! {
+    fn new() -> Object! { Object!.{ members: OwnedVec!::new[Member!]() } }
+    fn into_members(self) -> OwnedVec![Member!] { self.members }
+    fn field(self, name: Str['static], value: Json!) -> Object! {
+        var obj = self;
+        var key = Text!.{ bytes: Buffer!::new().put(name) };
+        match find_key(&obj, &key) {
+            Some(index) => free_member(&obj.members.remove(index).unwrap()),
+            None => (),
+        };
+        &obj.members.push(Member!.{ key, value });
+        obj
+    }
+    fn value(self) -> Json! { Json!::Object.(self) }
+}
+
+fn free_member(member: Member!) {
+    let { key, value } = member;
+    key.destroy();
+    value.destroy();
+}
+
+impl Json! {
+    fn uint(n: usize) -> Json! { Json!::Number.(Number!.{ spelling: Buffer!::new().put(n) }) }
+    fn destroy(self) {
+        match self {
+            Null | True | False => (),
+            Number(n) => n.into_bytes().destroy(),
+            String(s) => s.destroy(),
+            Array(a) => a.items.destroy_with(Json!::destroy),
+            Object(o) => o.members.destroy_with(free_member),
+        }
+    }
+    fn into_string(self) -> Option[Text!] {
+        match self {
+            String(s) => return Option::Some.(s),
+            Null | True | False => (),
+            Number(n) => n.into_bytes().destroy(),
+            Array(a) => a.value().destroy(),
+            Object(o) => o.value().destroy(),
+        };
+        Option::None
+    }
+    /// Transfers the named value and releases the rest of the document.
+    fn take_field(self, name: Str['static]) -> Option[Json!] {
+        var obj = match self {
+            Object(o) => o,
+            Null | False | True => return Option::None,
+            Number(n) => { n.into_bytes().destroy(); return Option::None; },
+            String(s) => { s.destroy(); return Option::None; },
+            Array(a) => { a.value().destroy(); return Option::None; },
+        };
+        while !&obj.members.is_empty() {
+            let { key, value } = &obj.members.pop().unwrap();
+            var exists 'k. (tag, bytes, restore) = key.into_bytes().open();
+            let found = bytes.is(&tag, name);
+            restore.restore(tag).destroy();
+            if found { obj.members.destroy_with(free_member); return Option::Some.(value); }
+            value.destroy();
+        }
+        obj.members.destroy_with(free_member);
+        Option::None
+    }
+    fn encode(self) -> Buffer! { write_value(Buffer!::new(), self) }
+}
+
+fn hex_digit(n: u8) -> u8 { if n < 10 { b'0' + n } else { b'a' + (n - 10) } }
+
+fn quoted(out: Buffer!, text: Text!) -> Buffer! {
+    var exists 'k. (tag, bytes, restore) = text.into_bytes().open();
+    var out = out.write_byte(b'"');
+    var i = 0usize;
+    while i < bytes.len() {
+        let b = bytes.at(&tag, i);
+        out = if b == b'"' || b == b'\\' { out.write_byte(b'\\').write_byte(b) }
+            else if b < 32 { out.put("\\u00").write_byte(hex_digit(b / 16)).write_byte(hex_digit(b % 16)) }
+            else { out.write_byte(b) };
+        i = i + 1;
+    }
+    restore.restore(tag).destroy();
+    out.write_byte(b'"')
+}
+
+fn write_value(out: Buffer!, value: Json!) -> Buffer! {
+    match value {
+        Null => out.put("null"),
+        False => out.put("false"),
+        True => out.put("true"),
+        Number(n) => out.put(n.into_bytes()),
+        String(s) => quoted(out, s),
+        Array(a) => {
+            var { items } = a;
+            &items.reverse();
+            var out = out.put("[");
+            while !&items.is_empty() {
+                out = write_value(out, &items.pop().unwrap());
+                if !&items.is_empty() { out = out.put(","); }
+            }
+            items.destroy_with(Json!::destroy);
+            out.put("]")
+        },
+        Object(o) => {
+            var { members } = o;
+            &members.reverse();
+            var out = out.put("{");
+            while !&members.is_empty() {
+                let { key, value } = &members.pop().unwrap();
+                out = write_value(quoted(out, key).put(":"), value);
+                if !&members.is_empty() { out = out.put(","); }
+            }
+            members.destroy_with(free_member);
+            out.put("}")
+        },
+    }
+}
+
+exposed struct JsonError { at: usize, expected: Str['static] }
+
+fn space(b: u8) -> bool { b == 32 || b == 9 || b == 10 || b == 13 }
+
+fn decode(input: Buffer!) -> Result[Json!, JsonError] {
+    var exists 'k. (tag, bytes, restore) = input.open();
+    let parsed = document(&tag, Cursor::new(bytes));
+    restore.restore(tag).destroy();
+    parsed
+}
+
+forall 't.
+fn peek_is(&tag: Exclusive!['t], cur: Cursor['t], byte: u8) -> bool {
+    let next = cur.peek(&tag);
+    let found = match next {
+        Some(b) => b == byte,
+        None => false,
+    };
+    found
+}
+
+forall 't.
+fn skip(cur: Cursor['t], count: usize) -> Cursor['t] {
+    match cur.take_exact(count) {
+        Some(taken) => {
+            let (c, bytes) = taken;
+            c
+        },
+        None => cur,
+    }
+}
+
+// The source text from `start` up to the cursor, as an owned buffer.
+forall 't.
+fn text_since(&tag: Exclusive!['t], cur: Cursor['t], start: usize) -> Buffer! {
+    let text = match cur.span_since(start) {
+        Some(bytes) => Buffer!::new().write(&tag, bytes),
+        None => Buffer!::new(),
+    };
+    text
+}
+
+fn fail(at: usize, expected: Slice[u8, 'static]) -> JsonError {
+    JsonError.{ at, expected }
+}
+
+// A number: an optional minus, an integer part without leading zeros, then
+// an optional fraction and exponent.
+forall 't.
+fn number(&tag: Exclusive!['t], cur: Cursor['t]) -> Result[(Cursor['t], Buffer!), JsonError] {
+    let start = cur.mark();
+    let cur = if peek_is(&tag, cur, b'-') {
+        skip(cur, 1)
+    } else {
+        cur
+    };
+    let taken = cur.take_matching(&tag, is_digit);
+    let (cur, whole) = taken;
+    if whole.len() == 0 {
+        return Result::Err.(fail(cur.pos(), "a digit"));
+    }
+    if whole.len() > 1 && byte_or_zero(&tag, whole, 0) == b'0' {
+        return Result::Err.(fail(start, "a number without leading zeros"));
+    }
+    let cur = if peek_is(&tag, cur, b'.') {
+        let taken = skip(cur, 1).take_matching(&tag, is_digit);
+        let (c, fraction) = taken;
+        if fraction.len() == 0 {
+            return Result::Err.(fail(c.pos(), "a digit"));
+        }
+        c
+    } else {
+        cur
+    };
+    let cur = if peek_is(&tag, cur, b'e') || peek_is(&tag, cur, b'E') {
+        let c = skip(cur, 1);
+        let c = if peek_is(&tag, c, b'+') || peek_is(&tag, c, b'-') {
+            skip(c, 1)
+        } else {
+            c
+        };
+        let taken = c.take_matching(&tag, is_digit);
+        let (c, exponent) = taken;
+        if exponent.len() == 0 {
+            return Result::Err.(fail(c.pos(), "a digit"));
+        }
+        c
+    } else {
+        cur
+    };
+    let text = text_since(&tag, cur, start);
+    Result::Ok.((cur, text))
+}
+
+forall 't.
+fn hex4(&tag: Exclusive!['t], cur: Cursor['t]) -> Result[(Cursor['t], u32), JsonError] {
+    var cur = cur;
+    var code = 0u32;
+    var i = 0usize;
+    while i < 4 {
+        let at = cur.pos();
+        let b = &cur.next(&tag).unwrap_or(0);
+        let digit = if is_digit(b) { b - b'0' }
+            else if b >= b'a' && b <= b'f' { b - b'a' + 10 }
+            else if b >= b'A' && b <= b'F' { b - b'A' + 10 }
+            else { return Result::Err.(fail(at, "a hexadecimal digit")); };
+        code = code * 16 + digit as u32;
+        i = i + 1;
+    }
+    Result::Ok.((cur, code))
+}
+
+forall 't.
+fn escaped(&tag: Exclusive!['t], cur: Cursor['t]) -> Result[(Cursor['t], u32), JsonError] {
+    var cur = cur;
+    let at = cur.pos();
+    let b = &cur.next(&tag).unwrap_or(0);
+    if b == b'u' {
+        let (cur, high) = hex4(&tag, cur)?;
+        if high >= 55296 && high <= 56319 {
+            if !cur.starts_with(&tag, "\\u") { return Result::Err.(fail(cur.pos(), "a low surrogate")); }
+            let (after, low) = hex4(&tag, skip(cur, 2))?;
+            if low < 56320 || low > 57343 { return Result::Err.(fail(cur.pos(), "a low surrogate")); }
+            return Result::Ok.((after, 65536 + (high - 55296) * 1024 + (low - 56320)));
+        }
+        if high >= 56320 && high <= 57343 { return Result::Err.(fail(at, "a Unicode scalar")); }
+        return Result::Ok.((cur, high));
+    }
+    let code = if b == b'"' || b == b'/' || b == b'\\' { b as u32 }
+        else if b == b'b' { 8 } else if b == b'f' { 12 } else if b == b'n' { 10 }
+        else if b == b'r' { 13 } else if b == b't' { 9 }
+        else { return Result::Err.(fail(at, "a JSON escape")); };
+    Result::Ok.((cur, code))
+}
+
+forall 't.
+fn string(&tag: Exclusive!['t], cur: Cursor['t]) -> Result[(Cursor['t], Text!), JsonError] {
+    var cur = skip(cur, 1);
+    var bytes = Buffer!::new();
+    while !cur.at_end() {
+        let at = cur.pos();
+        let b = byte_or_zero(&tag, cur.remaining_view(), 0);
+        if b == b'"' { return Result::Ok.((skip(cur, 1), Text!.{ bytes })); }
+        if b < 32 { bytes.destroy(); return Result::Err.(fail(at, "an escaped control character")); }
+        if b == b'\\' {
+            let (next, code) = match escaped(&tag, skip(cur, 1)) {
+                Ok(pair) => pair,
+                Err(e) => { bytes.destroy(); return Result::Err.(e); },
+            };
+            bytes = utf8::encode(bytes, code);
+            cur = next;
+        } else if b < 128 {
+            bytes = bytes.write_byte(b);
+            cur = skip(cur, 1);
+        } else {
+            let (code, width) = match utf8::decode(&tag, cur.remaining_view(), 0) {
+                Some(pair) => pair,
+                None => { bytes.destroy(); return Result::Err.(fail(at, "valid UTF-8")); },
+            };
+            bytes = utf8::encode(bytes, code);
+            cur = skip(cur, width);
+        }
+    }
+    bytes.destroy();
+    Result::Err.(fail(cur.pos(), "a closing quote"))
+}
+
+forall 't.
+fn array(&tag: Exclusive!['t], cur: Cursor['t], depth: usize) -> Result[(Cursor['t], Json!), JsonError] {
+    var cur = skip(cur, 1).skip_while(&tag, space);
+    var items = Array!::new();
+    if peek_is(&tag, cur, b']') { return Result::Ok.((skip(cur, 1), items.value())); }
+    var more = true;
+    while more {
+        let (next, item) = match value(&tag, cur, depth) {
+            Ok(pair) => pair,
+            Err(e) => { items.value().destroy(); return Result::Err.(e); },
+        };
+        &items.push(item);
+        cur = next.skip_while(&tag, space);
+        if peek_is(&tag, cur, b']') {
+            more = false;
+        } else if peek_is(&tag, cur, b',') {
+            cur = skip(cur, 1);
+        } else {
+            items.value().destroy();
+            return Result::Err.(fail(cur.pos(), "',' or ']'"));
+        }
+    }
+    Result::Ok.((skip(cur, 1), items.value()))
+}
+
+fn find_key(&obj: Object!, &key: Text!) -> Option[usize] {
+    var i = 0usize;
+    while i < &obj.members.len() {
+        let found = &obj.members.update_in(i, &key, |&member, &candidate| {
+            let (stored, wanted, same) = Eq[Buffer!, Buffer!]::eq(member.key.bytes, candidate.bytes);
+            member.key.bytes = stored;
+            candidate.bytes = wanted;
+            same
+        }).unwrap();
+        if found { return Option::Some.(i); }
+        i = i + 1;
+    }
+    Option::None
+}
+
+forall 't.
+fn object(&tag: Exclusive!['t], cur: Cursor['t], depth: usize) -> Result[(Cursor['t], Json!), JsonError] {
+    var cur = skip(cur, 1).skip_while(&tag, space);
+    var obj = Object!::new();
+    if peek_is(&tag, cur, b'}') { return Result::Ok.((skip(cur, 1), obj.value())); }
+    var more = true;
+    while more {
+        if !peek_is(&tag, cur, b'"') { obj.value().destroy(); return Result::Err.(fail(cur.pos(), "a string key")); }
+        let (next, key) = match string(&tag, cur) {
+            Ok(pair) => pair,
+            Err(e) => { obj.value().destroy(); return Result::Err.(e); },
+        };
+        var key = key;
+        if find_key(&obj, &key).is_some() {
+            key.destroy(); obj.value().destroy(); return Result::Err.(fail(cur.pos(), "a unique key"));
+        }
+        cur = next.skip_while(&tag, space);
+        if !peek_is(&tag, cur, b':') {
+            key.destroy(); obj.value().destroy(); return Result::Err.(fail(cur.pos(), "':'"));
+        }
+        let (next, item) = match value(&tag, skip(cur, 1), depth) {
+            Ok(pair) => pair,
+            Err(e) => { key.destroy(); obj.value().destroy(); return Result::Err.(e); },
+        };
+        &obj.members.push(Member!.{ key, value: item });
+        cur = next.skip_while(&tag, space);
+        if peek_is(&tag, cur, b'}') {
+            more = false;
+        } else if peek_is(&tag, cur, b',') {
+            cur = skip(cur, 1).skip_while(&tag, space);
+        } else {
+            obj.value().destroy();
+            return Result::Err.(fail(cur.pos(), "',' or '}'"));
+        }
+    }
+    Result::Ok.((skip(cur, 1), obj.value()))
+}
+
+forall 't.
+fn value(&tag: Exclusive!['t], cur: Cursor['t], depth: usize) -> Result[(Cursor['t], Json!), JsonError] {
+    let cur = cur.skip_while(&tag, space);
+    let at = cur.pos();
+    if peek_is(&tag, cur, b'{') {
+        if depth >= 128 { return Result::Err.(fail(at, "shallower nesting")); }
+        return object(&tag, cur, depth + 1);
+    }
+    if peek_is(&tag, cur, b'[') {
+        if depth >= 128 { return Result::Err.(fail(at, "shallower nesting")); }
+        return array(&tag, cur, depth + 1);
+    }
+    if peek_is(&tag, cur, b'"') {
+        let (cur, text) = string(&tag, cur)?;
+        return Result::Ok.((cur, text.value()));
+    }
+    if peek_is(&tag, cur, b'-') || is_digit(byte_or_zero(&tag, cur.remaining_view(), 0)) {
+        let (cur, text) = number(&tag, cur)?;
+        return Result::Ok.((cur, Json!::Number.(Number!.{ spelling: text })));
+    }
+    if cur.starts_with(&tag, "null") {
+        return Result::Ok.((skip(cur, 4), Json!::Null));
+    }
+    if cur.starts_with(&tag, "true") {
+        return Result::Ok.((skip(cur, 4), Json!::True));
+    }
+    if cur.starts_with(&tag, "false") {
+        return Result::Ok.((skip(cur, 5), Json!::False));
+    }
+    Result::Err.(fail(at, "a value"))
+}
+
+// One value and nothing after it but space.
+forall 't.
+fn document(&tag: Exclusive!['t], cur: Cursor['t]) -> Result[Json!, JsonError] {
+    let (cur, json) = value(&tag, cur, 0)?;
+    let cur = cur.skip_while(&tag, space);
+    if cur.at_end() {
+        Result::Ok.(json)
+    } else {
+        json.destroy();
+        Result::Err.(fail(cur.pos(), "the end of the input"))
+    }
+}
