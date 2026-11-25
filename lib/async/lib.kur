@@ -245,7 +245,7 @@ instance Stream[FileChunks! ->
 
 // The scope is lent only while staging operations or reading their outcomes.
 // Owned payloads stay in Kursal throughout the native event loop.
-exposed (package) struct Scope! { raw: *u8 }
+exposed(package) struct Scope! { raw: *u8 }
 
 enum RunLoop { Standalone, Reusable(*u8) }
 
